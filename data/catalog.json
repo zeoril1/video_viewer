@@ -1,0 +1,11 @@
+{
+  "items": [
+    {
+      "id": "demo",
+      "title": "Пример записи — замените магнет на реальный",
+      "magnet": "magnet:?xt=urn:btih:REPLACE_WITH_REAL_INFO_HASH&dn=example-video",
+      "category": "demo",
+      "size": "—"
+    }
+  ]
+}

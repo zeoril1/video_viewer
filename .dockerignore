@@ -1,0 +1,18 @@
+# VCS
+.git
+.gitignore
+
+# Артефакты сборки
+*.exe
+video_viewer
+video_viewer.exe
+
+# Логи и локальные данные
+*.log
+data/*.local.json
+
+# Jackett — отдельный сервис, его конфиг не нужен в контексте сборки
+jackett
+
+# Документация не нужна в образе
+README.md

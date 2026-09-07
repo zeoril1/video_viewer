@@ -1,0 +1,221 @@
+# video_viewer — микросервисная архитектура.
+#
+# Публичная точка входа — gateway (http://localhost:8080): раздаёт статику
+# фронтенда и проксирует /api/* на внутренние сервисы:
+#   catalog :8081 — каталог (IMDb/TMDB/Jackett, владеет PostgreSQL)
+#   stream  :8082 — торрент-клиент, стриминг, HLS/ffmpeg
+#   auth    :8083 — авторизация и история просмотра
+# Внутренние сервисы НЕ публикуют порты наружу (доступны только в сети
+# compose); наружу выставляются только gateway:8080 и торрент-порт 42069/udp.
+#
+# Логирование:
+#   docker compose up -d --build --progress plain   # подробный вывод сборки (все команды)
+#   docker compose logs -f                          # живые логи всех сервисов
+#   docker compose logs -f --tail=50 <service>      # логи одного сервиса (catalog/stream/auth/gateway/jackett/db)
+#   docker compose ps                               # статус и здоровье контейнеров
+# Логи каждого контейнера ограничены по размеру (см. logging у сервисов),
+# чтобы подробный лог не заполнял диск.
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: video-viewer-db
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-video_viewer}
+      POSTGRES_USER: ${POSTGRES_USER:-video_viewer}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-video_viewer}
+    ports:
+      - "5432:5432"        # PostgreSQL — доступ для pgAdmin 4 / внешних клиентов
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U video_viewer -d video_viewer"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # --- Сервис каталога (владеет таблицами films/sources в PostgreSQL) ---
+  catalog:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: catalog
+    image: video-viewer-catalog:latest
+    container_name: video-viewer-catalog
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    depends_on:
+      db:
+        condition: service_healthy
+      jackett:
+        condition: service_started
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgres://video_viewer:video_viewer@db:5432/video_viewer?sslmode=disable}
+      # Ключи TMDB (api.themoviedb.org). Задайте в .env рядом с
+      # docker-compose.yml (TMDB_API_KEY / TMDB_ACCESS_TOKEN) или в окружении.
+      TMDB_API_KEY: ${TMDB_API_KEY:-}
+      TMDB_ACCESS_TOKEN: ${TMDB_ACCESS_TOKEN:-}
+      # Dev-пользователь (SeedDevUser) — создаётся только если заданы оба.
+      DEV_USER: ${DEV_USER:-}
+      DEV_PASSWORD: ${DEV_PASSWORD:-}
+      # Прокси для IMDb — только статические (читаются из env).
+      PROXY_STATIC: ${PROXY_STATIC:-}
+      PROXY_TIMEOUT: ${PROXY_TIMEOUT:-10s}
+      PROXY_MAX_ATTEMPTS: ${PROXY_MAX_ATTEMPTS:-3}
+      # Jackett (Torznab) для поиска на трекерах с антиботом (RuTracker).
+      JACKETT_URL: ${JACKETT_URL:-http://jackett:9117}
+      JACKETT_API_KEY: ${JACKETT_API_KEY:-}
+      JACKETT_INDEXER: ${JACKETT_INDEXER:-rutracker-ru}
+    volumes:
+      - ./data:/app/data   # каталог (catalog.json) — правите без пересборки образа
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8081/api/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 10s
+
+  # --- Сервис стриминга (торрент-клиент + HLS/ffmpeg) ---
+  stream:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: stream
+        WITH_FFMPEG: "1"
+    image: video-viewer-stream:latest
+    container_name: video-viewer-stream
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    depends_on:
+      catalog:
+        condition: service_healthy
+    environment:
+      # Для резолва магнет-ссылки по id (/api/stream/{id} без ?magnet=).
+      CATALOG_URL: ${CATALOG_URL:-http://catalog:8081}
+    command: ["/app/app", "-addr", ":8082", "-port", "42069"]
+    ports:
+      - "42069:42069/udp"  # BitTorrent uTP/DHT (для входящих пиров)
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8082/api/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 10s
+
+  # --- Сервис авторизации и истории просмотра ---
+  auth:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: auth
+    image: video-viewer-auth:latest
+    container_name: video-viewer-auth
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgres://video_viewer:video_viewer@db:5432/video_viewer?sslmode=disable}
+      # Dev-пользователь (SeedDevUser) — создаётся только если заданы оба.
+      DEV_USER: ${DEV_USER:-}
+      DEV_PASSWORD: ${DEV_PASSWORD:-}
+      # COOKIE_SECURE=1 — ставить Secure-флаг на куку сессии (если фронт
+      # отдаётся за HTTPS-обратным прокси).
+      COOKIE_SECURE: ${COOKIE_SECURE:-}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8083/api/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 10s
+
+  # --- API-шлюз (публичная точка входа: web + прокси /api/*) ---
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: gateway
+    image: video-viewer-gateway:latest
+    container_name: video-viewer
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    depends_on:
+      catalog:
+        condition: service_healthy
+      stream:
+        condition: service_healthy
+      auth:
+        condition: service_healthy
+    environment:
+      CATALOG_URL: ${CATALOG_URL:-http://catalog:8081}
+      STREAM_URL: ${STREAM_URL:-http://stream:8082}
+      AUTH_URL: ${AUTH_URL:-http://auth:8083}
+    ports:
+      - "8080:8080"        # веб-интерфейс / API (единственный публичный HTTP-порт)
+    volumes:
+      - ./web:/app/web     # фронтенд — правите без пересборки образа
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/api/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 10s
+
+  # --- Jackett — поиск раздач на трекерах с антиботом/приватных (RuTracker):
+  # сам хранит доступы, решает капчу при настройке и обходит Cloudflare. ---
+  jackett:
+    image: linuxserver/jackett
+    container_name: video-viewer-jackett
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    environment:
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+      TZ: ${TZ:-Europe/Moscow}
+      AUTO_UPDATE: "true"
+    ports:
+      - "${JACKETT_PORT:-9117}:9117"  # веб-интерфейс Jackett (добавить индексер RuTracker)
+    volumes:
+      # Конфиг Jackett (индексера, API-ключ) хранится в ./jackett — не теряется
+      # при пересоздании контейнера. API-ключ: ./jackett/Jackett/ServerConfig.json.
+      - ./jackett:/config
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9117/ >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 20s
+
+volumes:
+  pgdata:

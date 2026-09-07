@@ -1,0 +1,219 @@
+/* Админ-страница: таблица записей с пустыми полями, редактирование,
+   кнопки обновления из TMDB и лог прогресса. */
+.admin-main {
+  padding: 20px 24px 40px;
+  max-width: 100%;
+  margin: 0 auto;
+}
+
+.admin-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.admin-tabs .section-btn.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.admin-tables {
+  min-width: 0;
+}
+
+.admin-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+
+.admin-count {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.admin-layout {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 18px;
+  align-items: start;
+}
+
+.admin-table-wrap {
+  overflow-x: auto;
+  border: 1px solid #222736;
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.admin-table {
+  table-layout: fixed;
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 11px;
+}
+
+.admin-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #161a24;
+  color: var(--muted);
+  font-weight: 600;
+  text-align: left;
+  padding: 6px 4px;
+  border-bottom: 1px solid #2a3040;
+  font-size: 11px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.admin-table td {
+  padding: 4px 3px;
+  border-bottom: 1px solid #1b202c;
+  vertical-align: top;
+}
+
+.admin-table td input,
+.admin-table td textarea {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  background: #0f1117;
+  border: 1px solid #2a3040;
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 11px;
+  padding: 3px 4px;
+  outline: none;
+}
+
+.admin-table td input:focus,
+.admin-table td textarea:focus {
+  border-color: var(--accent);
+}
+
+.admin-table td textarea {
+  resize: vertical;
+  min-height: 30px;
+  overflow-wrap: anywhere;
+}
+
+.admin-id {
+  font-family: monospace;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.admin-actions {
+  white-space: nowrap;
+}
+
+.admin-actions button {
+  margin: 2px 0;
+  width: 100%;
+  display: block;
+}
+
+.btn-save,
+.btn-refresh {
+  border-radius: 6px;
+  border: 1px solid #2a3040;
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 12px;
+  padding: 5px 8px;
+  cursor: pointer;
+}
+
+.btn-save:hover {
+  border-color: #22c55e;
+  color: #22c55e;
+}
+
+.btn-refresh:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.btn-unmark {
+  margin: 2px 0;
+  width: 100%;
+  display: block;
+  border-radius: 6px;
+  border: 1px solid #2a3040;
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 12px;
+  padding: 5px 8px;
+  cursor: pointer;
+}
+
+.btn-unmark:hover {
+  border-color: #ef4444;
+  color: #ef4444;
+}
+
+.btn-refresh:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.admin-empty {
+  text-align: center;
+  color: var(--muted);
+  padding: 24px;
+}
+
+tr.flash-ok {
+  background: rgba(34, 197, 94, 0.12);
+}
+
+tr.flash-err {
+  background: rgba(239, 68, 68, 0.14);
+}
+
+/* ---- Лог ---- */
+.admin-log-wrap {
+  border: 1px solid #222736;
+  border-radius: var(--radius);
+  background: var(--panel);
+  padding: 10px;
+}
+
+.admin-log-title {
+  margin: 0 0 8px;
+  font-size: 14px;
+}
+
+.admin-log {
+  height: 300px;
+  overflow-y: auto;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  background: #0b0e14;
+  border-radius: 8px;
+  padding: 8px;
+}
+
+.log-line {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.log-info {
+  color: var(--muted);
+}
+
+.log-ok {
+  color: #22c55e;
+}
+
+.log-error {
+  color: #ef4444;
+}

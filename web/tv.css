@@ -1,0 +1,54 @@
+/* ============================================================================
+   TV-режим (Android TV / пульт).
+   Включается, когда <body> получает класс .tv (его ставит web/tv.js при
+   обнаружении ?tv=1, localStorage vv_tv=1 или user-agent VVTV/1.0).
+   Работает аддитивно: обычный браузер без tv=1 эти стили не видит.
+   ========================================================================== */
+
+body.tv {
+  background: #0a0e13;
+  overflow-x: hidden;
+}
+
+/* На ТВ нет курсора — прячем его и элементы, требующие мыши. */
+body.tv, body.tv * { cursor: none !important; }
+body.tv .filter-controls, body.tv .lang-switch { display: none !important; }
+body.tv .continue-remove { display: none !important; }
+
+/* Плеер: пульт не водит мышью, поэтому панель управления держим видимой,
+   кнопку «во весь экран» прячем — приложение и так занимает весь экран. */
+body.tv #player-controls {
+  opacity: 1 !important;
+  visibility: visible !important;
+  transform: none !important;
+}
+body.tv #ctrl-fullscreen { display: none !important; }
+
+/* Плавный «рост» при фокусе карточек */
+body.tv .card,
+body.tv .continue-card {
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+  will-change: transform;
+}
+
+/* Хорошо заметный фокусный контур для пульта */
+body.tv :focus {
+  outline: 3px solid #3ec2ff !important;
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+
+/* Карточки каталога/«Продолжить» — контур рамкой + лёгкое увеличение. */
+body.tv .card:focus,
+body.tv .continue-card:focus {
+  outline: none !important;
+  box-shadow: 0 0 0 4px #0a0e13, 0 0 0 7px #3ec2ff !important;
+  transform: scale(1.04);
+  z-index: 3;
+  position: relative;
+}
+body.tv .card:focus .play,
+body.tv .continue-card:focus .play { opacity: 1; }
+
+/* Скрываем горизонтальный скролл у рядов чипов — на ТВ листаем фокусом. */
+body.tv .sec-drop { min-width: 260px; }

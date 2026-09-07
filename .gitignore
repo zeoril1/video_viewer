@@ -1,0 +1,27 @@
+# Binaries
+/video_viewer
+/video_viewer.exe
+*.exe
+
+# Go build artifacts
+*.test
+*.out
+
+# Локальные данные и логи
+data/*.local.json
+*.log
+
+# Секреты и локальное окружение
+.env
+
+# OS
+.DS_Store
+Thumbs.db
+docs/public-trackers.md
+
+# Jackett runtime state (docker-compose монтирует ./jackett:/config): весь
+# каталог Jackett/ — живые данные контейнера (ServerConfig.json с API-ключом,
+# Indexers/*.json с доступами к трекерам, DataProtection/, log.txt, updater.txt).
+# В репозиторий не попадает.
+jackett/Jackett/
+.vscode/settings.json
