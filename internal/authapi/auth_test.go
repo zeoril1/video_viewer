@@ -3,6 +3,7 @@ package authapi
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -124,5 +125,42 @@ func TestCheckOriginHandler(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNoContent {
 		t.Errorf("свой Origin -> %d, want 204", rec.Code)
+	}
+}
+
+// TestCookieSecureFlag проверяет, что Secure-флаг куки сессии выбирается по
+// внешней схеме запроса: локальный HTTP — без флага (иначе вход по
+// http://192.168.x.x:8080 не работал бы), публичный HTTPS (в том числе
+// терминация TLS на обратном прокси) — с флагом.
+func TestCookieSecureFlag(t *testing.T) {
+	httpsReq := httptest.NewRequest(http.MethodPost, "/api/auth/login", nil)
+	httpsReq.Header.Set("X-Forwarded-Proto", "https")
+	plainReq := httptest.NewRequest(http.MethodPost, "/api/auth/login", nil)
+	spoofed := httptest.NewRequest(http.MethodPost, "/api/auth/login", nil)
+	spoofed.Header.Set("X-Forwarded-Proto", "https, http")
+
+	cases := []struct {
+		name       string
+		req        *http.Request
+		force      bool
+		wantSecure bool
+	}{
+		{"локальный http", plainReq, false, false},
+		{"за https-прокси", httpsReq, false, true},
+		{"список схем от прокси", spoofed, false, true},
+		{"COOKIE_SECURE=1 форсирует", plainReq, true, true},
+	}
+	for _, c := range cases {
+		h := &authHandler{secureCookies: c.force}
+		if got := h.cookieSecure(c.req); got != c.wantSecure {
+			t.Errorf("%s: cookieSecure=%v, ожидалось %v", c.name, got, c.wantSecure)
+		}
+		rec := httptest.NewRecorder()
+		setSessionCookie(rec, "tok", h.cookieSecure(c.req))
+		got := strings.Contains(rec.Header().Get("Set-Cookie"), "Secure")
+		if got != c.wantSecure {
+			t.Errorf("%s: Set-Cookie=%q (Secure=%v), ожидалось %v",
+				c.name, rec.Header().Get("Set-Cookie"), got, c.wantSecure)
+		}
 	}
 }

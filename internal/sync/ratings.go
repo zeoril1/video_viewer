@@ -1,9 +1,7 @@
-// Пакет sync — фоновая джоба периодического обновления рейтингов
-// фильмов каталога из TMDB (надёжный источник с мягким rate-limit
-// ~40 req/s, в отличие от IMDb, который блокирует не-браузерные запросы).
-// Джоба обновляет рейтинги ТОЛЬКО «популярных» фильмов (чарты IMDb+TMDB);
-// рейтинг любого фильма также обновляется on-demand при открытии карточки
-// (RefreshFilmRating).
+// Пакет sync — фоновая джоба периодического обновления рейтингов фильмов каталога из TMDB
+// (надёжный источник с мягким rate-limit ~40 req/s, в отличие от IMDb, который блокирует не-браузерные запросы).
+// Джоба обновляет рейтинги ТОЛЬКО «популярных» фильмов (чарты IMDb+TMDB); рейтинг любого фильма
+// также обновляется on-demand при открытии карточки (RefreshFilmData).
 package sync
 
 import (
@@ -24,10 +22,9 @@ import (
 // DefaultRatingsInterval — периодичность джобы обновления рейтингов.
 const DefaultRatingsInterval = 6 * time.Hour
 
-// RatingsRefresher периодически обновляет рейтинги (и даты выпуска)
-// фильмов из TMDB. За один проход обрабатывает ограниченную партию самых
-// «старых» по времени последнего обновления записей, с паузой между
-// запросами — чтобы не упираться в лимиты API и не рисковать блокировкой.
+// RatingsRefresher периодически обновляет рейтинги (и даты выпуска) фильмов из TMDB. За один проход
+// обрабатывает ограниченную партию самых «старых» по обновлению записей с паузой между запросами —
+// чтобы не упираться в лимиты API и не рисковать блокировкой.
 type RatingsRefresher struct {
 	db       *db.Repo
 	tm       *tmdb.Client
@@ -50,8 +47,7 @@ func NewRatingsRefresher(db *db.Repo, tm *tmdb.Client, batch int, pace, interval
 	return &RatingsRefresher{db: db, tm: tm, batch: batch, pace: pace, interval: interval}
 }
 
-// Run запускает обновление сразу при старте и далее каждые interval.
-// Блокирующий; остановить можно отменой ctx.
+// Run запускает обновление сразу при старте и далее каждые interval; блокирующий, остановка — отменой ctx.
 func (r *RatingsRefresher) Run(ctx context.Context) {
 	r.RefreshOnce(ctx)
 
@@ -67,8 +63,7 @@ func (r *RatingsRefresher) Run(ctx context.Context) {
 	}
 }
 
-// RefreshOnce выполняет один проход: обновляет рейтинги партии фильмов,
-// которые дольше всего не обновлялись.
+// RefreshOnce выполняет один проход: обновляет рейтинги партии фильмов, которые дольше всего не обновлялись.
 func (r *RatingsRefresher) RefreshOnce(ctx context.Context) {
 	films, err := r.db.FilmsNeedingRatingRefresh(ctx, r.batch)
 	if err != nil {
@@ -88,7 +83,6 @@ func (r *RatingsRefresher) RefreshOnce(ctx context.Context) {
 		default:
 		}
 
-		// Пауза между запросами, чтобы не долбить API.
 		if i > 0 {
 			select {
 			case <-ctx.Done():
@@ -100,10 +94,9 @@ func (r *RatingsRefresher) RefreshOnce(ctx context.Context) {
 		film, err := fetchFilmRating(ctx, r.tm, f)
 		if err != nil {
 			if errors.Is(err, errNoMatch) {
-				// На TMDB нет совпадения — помечаем запись как «попробовано»
-				// (rating_updated_at=now, рейтинг и tmdb_id не трогаем), чтобы
-				// не переспрашивать её каждый проход, и ставим отметку
-				// tmdb_not_found (отдельная таблица на админ-странице).
+				// На TMDB нет совпадения — помечаем запись как «попробовано» (rating_updated_at=now,
+				// рейтинг и tmdb_id не трогаем), чтобы не переспрашивать её каждый проход,
+				// и ставим отметку tmdb_not_found (отдельная таблица на админ-странице).
 				if derr := r.db.UpdateRating(ctx, f.IMDBID, 0, 0, "", ""); derr != nil {
 					log.Printf("ratings: backoff %s: %v", f.IMDBID, derr)
 				}
@@ -117,8 +110,7 @@ func (r *RatingsRefresher) RefreshOnce(ctx context.Context) {
 			skipped++
 			continue
 		}
-		// Привязываем найденный tmdb_id — запись «подключается» к TMDB,
-		// и в следующий раз рейтинг обновится точно по нему (ByID).
+		// Привязываем найденный tmdb_id: далее рейтинг обновится точно по нему (ByID).
 		if err := r.db.UpdateRating(ctx, f.IMDBID, film.Rating, film.Votes, film.ReleaseDate,
 			strconv.FormatInt(film.TMDBID, 10)); err != nil {
 			log.Printf("ratings: update %s: %v", f.IMDBID, err)
@@ -137,13 +129,10 @@ func (r *RatingsRefresher) RefreshOnce(ctx context.Context) {
 // errNoMatch — на TMDB не удалось найти тот же фильм (нет совпадения).
 var errNoMatch = errors.New("no matching film on TMDB")
 
-// RefreshFilmData заполняет недостающие данные одного фильма из TMDB и,
-// если передан imdb-клиент, добирает рейтинг/голоса IMDb и русские
-// название/описание (on-demand при открытии карточки, кнопка «Обновить»
-// в админке и одноразовый бэкфилл cmd/backfill): рейтинг, голоса, дату
-// выпуска, русское и английское описания, жанры, постер, длительность,
-// режиссёра/актёров и привязывает tmdb_id. Уже заполненные поля не
-// затираются. Не блокирует HTTP-запрос — вызывается в фоне.
+// RefreshFilmData заполняет недостающие данные одного фильма из TMDB (рейтинг, голоса, дату выпуска,
+// русское и английское описания, жанры, постер, длительность, режиссёра/актёров, привязка tmdb_id),
+// а при наличии imdb-клиента добирает рейтинг/голоса IMDb и русские название/описание.
+// Заполненные поля не затираются. Не блокирует HTTP-запрос — вызывается в фоне.
 func RefreshFilmData(ctx context.Context, repo *db.Repo, tm *tmdb.Client, im *imdb.Client, id string) error {
 	f, ok, err := repo.GetByIMDBID(ctx, id)
 	if err != nil {
@@ -154,9 +143,8 @@ func RefreshFilmData(ctx context.Context, repo *db.Repo, tm *tmdb.Client, im *im
 	}
 	film, err := fetchFilmRating(ctx, tm, f)
 	if err != nil {
-		// «Нет совпадения» — помечаем запись (отдельная таблица админки;
-		// из списка «пустых полей» такие исключаются). Сетевые ошибки не
-		// помечаем — это не «не найден», а временный сбой.
+		// «Нет совпадения» — помечаем запись (отдельная таблица админки; из списка «пустых полей»
+		// такие исключаются). Сетевые ошибки не помечаем — это не «не найден», а временный сбой.
 		if errors.Is(err, errNoMatch) {
 			if derr := repo.SetTMDBNotFound(ctx, id, true); derr != nil {
 				log.Printf("refresh %s: mark not-found: %v", id, derr)
@@ -187,8 +175,8 @@ func RefreshFilmData(ctx context.Context, repo *db.Repo, tm *tmdb.Client, im *im
 		dir, actors, _ := tm.Credits(ctx, film.TMDBID, film.Kind)
 		d.Director, d.Actors = dir, actors
 	}
-	// Добираем из IMDb то, чего не дал TMDB: рейтинг/голоса IMDb (JSON-LD,
-	// если IMDb доступен) и русские название/описание (Wikidata → Википедия).
+	// Добираем из IMDb то, чего не дал TMDB: рейтинг/голоса IMDb (JSON-LD, если IMDb доступен)
+	// и русские название/описание (Wikidata → Википедия).
 	if im != nil && (d.Rating <= 0 || d.PlotRU == "" || d.TitleRU == "") {
 		if imf, err := im.GetByID(ctx, id); err == nil {
 			if d.Rating <= 0 && imf.Rating > 0 {
@@ -209,17 +197,14 @@ func RefreshFilmData(ctx context.Context, repo *db.Repo, tm *tmdb.Client, im *im
 // fetchFilmRating получает свежий рейтинг фильма из TMDB. Приоритет:
 //  1. по сохранённому tmdb_id (точно);
 //  2. по настоящему IMDb-адресу (tt...), если он есть;
-//  3. поиском по названию с проверкой совпадения (год, название RU/EN,
-//     при наличии — режиссёр/актёры) — для записей без IMDb-ссылки,
-//     например синтетических id Кинопоиска ("kp...").
+//  3. поиском по названию с проверкой совпадения (год, название RU/EN, при наличии — режиссёр/актёры) —
+//     для записей без IMDb-ссылки, например синтетических id Кинопоиска ("kp...").
 //
-// Искать по самому id "kp..." нельзя — это не IMDb-ссылка, TMDB его не
-// знает, и он мог бы совпасть с чужим фильмом.
+// Искать по самому id "kp..." нельзя — это не IMDb-ссылка, TMDB его не знает, и он мог бы совпасть с чужим фильмом.
 func fetchFilmRating(ctx context.Context, tm *tmdb.Client, f db.Film) (tmdb.Film, error) {
 	if f.TMDBID != "" {
 		if id, err := strconv.ParseInt(f.TMDBID, 10, 64); err == nil && id > 0 {
-			// По типу: сериалы — /tv/{id}, иначе /movie/{id}, иначе /movie
-			// мог бы вернуть другой фильм с тем же числовым id.
+			// По типу: сериалы — /tv/{id}, иначе /movie/{id} (иначе /movie мог бы вернуть другой фильм с тем же id).
 			if film, err := tm.ByIDKind(ctx, id, f.Kind); err == nil {
 				return film, nil
 			}
@@ -233,9 +218,8 @@ func fetchFilmRating(ctx context.Context, tm *tmdb.Client, f db.Film) (tmdb.Film
 	return searchAndMatch(ctx, tm, f)
 }
 
-// searchAndMatch ищет фильм на TMDB по названию и убеждается, что это
-// тот же фильм: сравнивает год и название (в т.ч. на другом языке), а
-// если у записи есть режиссёр/актёры — и их (через /credits).
+// searchAndMatch ищет фильм на TMDB по названию и убеждается, что это тот же фильм:
+// сравнивает год и название (в т.ч. на другом языке), а если есть режиссёр/актёры — и их (через /credits).
 func searchAndMatch(ctx context.Context, tm *tmdb.Client, f db.Film) (tmdb.Film, error) {
 	q := f.TitleRU
 	if q == "" {
@@ -261,7 +245,6 @@ func searchAndMatch(ctx context.Context, tm *tmdb.Client, f db.Film) (tmdb.Film,
 		return tmdb.Film{}, errNoMatch
 	}
 
-	// Сверка по режиссёру/актёрам, если у записи они есть.
 	if f.Director != "" || len(f.Actors) > 0 {
 		dir, actors, err := tm.Credits(ctx, best.TMDBID, best.Kind)
 		if err == nil && !creditsAgree(f, dir, actors) {
@@ -271,11 +254,9 @@ func searchAndMatch(ctx context.Context, tm *tmdb.Client, f db.Film) (tmdb.Film,
 	return best, nil
 }
 
-// filmMatchScore — насколько кандидат TMDB соответствует фильму БД
-// (0 — не соответствует). Требуются совпадение названия (RU или EN:
-// точное нормализованное либо вложенное) и года. Год допускает разницу
-// в ±1 — у разных источников дата премьеры может отличаться на год
-// (например, «Обсессия» 2025 у КП, но 2026 на TMDB).
+// filmMatchScore — насколько кандидат TMDB соответствует фильму БД (0 — не соответствует).
+// Требуются совпадение названия (RU или EN: точное нормализованное либо вложенное) и года.
+// Год допускает разницу в ±1 — у источников дата премьеры может отличаться на год.
 func filmMatchScore(f db.Film, c tmdb.Film) int {
 	yearScore := 0
 	if f.Year > 0 {
@@ -307,16 +288,14 @@ func filmMatchScore(f db.Film, c tmdb.Film) int {
 	}
 
 	score := titleScore + yearScore
-	// Предпочтение точному совпадению русского названия записи.
 	if titleExact(f.TitleRU, c.TitleRU) || titleExact(f.TitleRU, c.Title) {
 		score += 5
 	}
 	return score
 }
 
-// titleMatches — названия совпадают: точное нормализованное равенство
-// либо одно содержит другое (при достаточной длине, чтобы не ловить
-// ложные совпадения на коротких словах).
+// titleMatches — названия совпадают: точное нормализованное равенство либо одно содержит другое
+// (при достаточной длине, чтобы не ловить ложные совпадения на коротких словах).
 func titleMatches(a, b string) bool {
 	a, b = normTitle(a), normTitle(b)
 	if a == "" || b == "" {
@@ -337,12 +316,10 @@ func titleExact(a, b string) bool {
 	return a != "" && a == b
 }
 
-// creditsAgree — совпадают ли режиссёр/актёры фильма БД с данными TMDB.
-// Совпадение любого имени даёт согласие. Если совпадений нет, отклоняем
-// только когда есть с чем сравнивать в ОДНОМ алфавите: имена в разных
-// алфавитах (русская транслитерация режиссёра из Кинопоиска против
-// английского имени в TMDB) сравнить нельзя — не спорим. Пустые данные
-// с любой стороны тоже не являются поводом для отказа.
+// creditsAgree — совпадают ли режиссёр/актёры фильма БД с данными TMDB (совпадение любого имени = согласие).
+// Если совпадений нет, отклоняем только когда есть с чем сравнивать в ОДНОМ алфавите: русскую
+// транслитерацию режиссёра из Кинопоиска и английское имя в TMDB сравнить нельзя — не спорим.
+// Пустые данные с любой стороны тоже не являются поводом для отказа.
 func creditsAgree(f db.Film, dir string, actors []string) bool {
 	if f.Director != "" && dir != "" && normTitle(f.Director) == normTitle(dir) {
 		return true
@@ -360,8 +337,6 @@ func creditsAgree(f db.Film, dir string, actors []string) bool {
 			}
 		}
 	}
-	// Ничего не совпало. Отклоняем только при сравнимых (одноалфавитных)
-	// данных; если данных нет или они в разных алфавитах — не спорим.
 	if f.Director != "" && dir != "" && sameScript(f.Director, dir) {
 		return false
 	}
@@ -377,14 +352,12 @@ func creditsAgree(f db.Film, dir string, actors []string) bool {
 	return true
 }
 
-// sameScript — строки в одном алфавите (обе кириллические или обе
-// латинские). Нужно, чтобы не сравнивать русские транслитерации имён
-// с английскими напрямую.
+// sameScript — строки в одном алфавите (обе кириллические или обе латинские): иначе русские
+// транслитерации имён и английские имена сравнивать напрямую нельзя.
 func sameScript(a, b string) bool {
 	return isCyrillic(a) == isCyrillic(b)
 }
 
-// isCyrillic — содержит ли строка кириллические символы.
 func isCyrillic(s string) bool {
 	for _, r := range s {
 		if r >= '\u0400' && r <= '\u04FF' {
@@ -394,8 +367,7 @@ func isCyrillic(s string) bool {
 	return false
 }
 
-// normTitle нормализует название для сравнения: нижний регистр, только
-// буквы и цифры, пробелы схлопываются в один.
+// normTitle нормализует название для сравнения: нижний регистр, только буквы и цифры, пробелы схлопываются в один.
 func normTitle(s string) string {
 	var b strings.Builder
 	space := false

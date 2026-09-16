@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,10 +15,8 @@ import (
 )
 
 // sourceItem — вариант для просмотра, найденный on-demand на трекере.
-// Quality — разрешение (2160/1080/720/480, может быть пустым); Audio —
-// ключ озвучки (dub/multi/two/single/original/subs); Season — сезон
-// (для сериалов; 0 — не определён). Поля парсятся из заголовка раздачи
-// и используются для ранжирования и группировки «сезон → озвучка → качество».
+// Quality — разрешение (2160/1080/720/480), Audio — ключ озвучки, Season — сезон (0 — не определён);
+// поля парсятся из заголовка и используются для ранжирования и группировки «сезон → озвучка → качество».
 type sourceItem struct {
 	Title   string `json:"title"`
 	Size    string `json:"size"`
@@ -25,16 +24,14 @@ type sourceItem struct {
 	Magnet  string `json:"magnet"`
 	Quality string `json:"quality,omitempty"`
 	Audio   string `json:"audio,omitempty"`
-	// Season всегда в JSON (без omitempty): сезон 0 (полный сборник) должен
-	// приходить явно, иначе на фронтенде s.season === undefined и проверки
-	// вида s.season === 0 (полный сборник покрывает все сезоны) ломаются.
+	// Season всегда в JSON (без omitempty): сезон 0 (полный сборник) должен приходить явно,
+	// иначе на фронтенде s.season === undefined и проверки вида s.season === 0 ломаются.
 	Season int `json:"season"`
 	// Provider — трекер, где найден вариант (jackett и т.п.).
 	Provider string `json:"provider,omitempty"`
 }
 
-// Парсинг качества/озвучки/сезона из заголовка — в internal/magnet/parse.go
-// (общий с фоновым поиском магнетов, чтобы метаданные заполнялись одинаково).
+// Парсинг качества/озвучки/сезона из заголовка — в internal/magnet/parse.go (общий с фоновым поиском).
 
 // srcAudioScore — приоритет озвучки (выше — лучше; первичный признак).
 func srcAudioScore(audio string) int {
@@ -88,12 +85,8 @@ func normSeason(s int) int {
 }
 
 // isSeriesKind — является ли тип контента сериалом (есть сезоны/серии).
-// Помимо «чистых» типов сериалов учитывается legacy-тип "animation":
-// Кинопоиск (удалён) сохранял в БД мультсериалы (Рик и Морти, Симпсоны и
-// т.п.) как kind="animation", и без этого у них не работали ни сезоны
-// (поиск по сезонам/число сезонов), ни селектор серий на фронтенде.
-// Для анимационных фильмов вреда нет: Seasons<=0 → обычный поиск по
-// названию, а селектор серий не показывается для торрента с одним файлом.
+// Помимо «чистых» типов учитывается legacy-тип "animation": Кинопоиск (удалён) сохранял мультсериалы
+// как kind="animation", без этого у них не работали ни сезоны, ни селектор серий на фронтенде.
 func isSeriesKind(kind string) bool {
 	switch imdb.NormalizeKind(kind) {
 	case "tvSeries", "tvMiniSeries", "animation":
@@ -102,80 +95,84 @@ func isSeriesKind(kind string) bool {
 	return false
 }
 
-// sourceQuery — поисковый запрос к трекеру. seasonHint > 0 означает, что
-// запрос искал раздачи конкретного сезона (для сериалов): если сезон не
-// распознался из названия раздачи, он считается искомым.
+// sourceQuery — поисковый запрос к трекеру; seasonHint > 0 — запрос искал раздачи конкретного сезона (подсказка при нераспознанном сезоне).
 type sourceQuery struct {
 	q          string
 	seasonHint int
 }
 
-// maxSeasonQueries — максимум отдельных запросов по сезонам (чтобы не
-// спамить трекер на длинных сериалах; Jackett тоже ограничивает частоту).
-const maxSeasonQueries = 8
+// maxSeasonQueries — максимум отдельных запросов по сезонам: не спамим трекер (Jackett ограничивает частоту); 16 хватает сериалам с 14 сезонами.
+const maxSeasonQueries = 16
 
-// trackerTitle строит заголовок для поиска на трекере: «Русское / English»,
-// если есть оба названия (раздачи на трекерах названы так же —
-// «Одержимость / Whiplash (2014)»). Если перевода нет — берём одно
-// доступное название.
-func trackerTitle(f db.Film) string {
-	ru := strings.TrimSpace(f.TitleRU)
-	en := strings.TrimSpace(f.Title)
-	if ru != "" && en != "" && !strings.EqualFold(ru, en) {
-		return ru + " / " + en
-	}
-	if ru != "" {
-		return ru
-	}
-	return en
-}
-
-// sourceQueries формирует поисковые запросы к трекеру для фильма.
-// Обычный фильм / сериал с одним сезоном — «название + год» (как раньше,
-// но название с переводом: «Одержимость / Whiplash 2014»).
-// Сериал с несколькими сезонами — по одному запросу на сезон, иначе трекер
-// отдаёт раздачи только 1-го сезона (год в запросе привязывает поиск к
-// нему), плюс один запрос по названию для полных сборников (все сезоны
-// в одной раздаче).
-func sourceQueries(f db.Film) []sourceQuery {
-	title := trackerTitle(f)
-	if isSeriesKind(f.Kind) && f.Seasons > 1 {
-		n := f.Seasons
-		if n > maxSeasonQueries {
-			n = maxSeasonQueries
+// trackerTitles — названия фильма для поиска на трекере, в порядке предпочтения: русское, затем исходное.
+//
+// ВАЖНО: запрос строится из ОДНОГО названия. Вариант «Русское / English» на трекерах, которые ищут все слова
+// запроса (RuTracker, MegaPeer, NoNaMe-club, BigFanGroup), даёт ПУСТУЮ выдачу — раздачи там названы по-русски,
+// и оставались только результаты rutor (в UI — лишь свежие сезоны).
+func trackerTitles(f db.Film) []string {
+	var out []string
+	add := func(s string) {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return
 		}
-		qs := make([]sourceQuery, 0, n+1)
-		for s := 1; s <= n; s++ {
-			// Первый сезон ищем по ГОДУ сериала (film.Year) — так трекер
-			// находит сборки сезона с несколькими озвучками («[S1] … S1E18 …
-			// LostFilm+NewStudio+BaibaKo+Eng»), которые запрос «… 1 сезон»
-			// не отдаёт. Для остальных сезонов годы точно не знаем — как
-			// раньше, по «N сезон».
-			if s == 1 && f.Year > 0 {
-				qs = append(qs, sourceQuery{q: fmt.Sprintf("%s %d", title, f.Year), seasonHint: s})
-			} else {
-				qs = append(qs, sourceQuery{q: fmt.Sprintf("%s %d сезон", title, s), seasonHint: s})
+		for _, v := range out {
+			if strings.EqualFold(v, s) {
+				return
 			}
 		}
-		// Полный сборник / все сезоны (сезон 0).
-		qs = append(qs, sourceQuery{q: title})
-		return qs
+		out = append(out, s)
+	}
+	add(f.TitleRU)
+	add(f.Title)
+	return out
+}
+
+// trackerTitle — основное название для запроса: русское (трекеры называют раздачи по-русски), иначе исходное.
+func trackerTitle(f db.Film) string {
+	ts := trackerTitles(f)
+	if len(ts) == 0 {
+		return ""
+	}
+	return ts[0]
+}
+
+// trackerTitleAlt — запасное название (пусто, если совпадает с основным); нужен второй проход
+// для зарубежных сериалов, где поиск по русскому названию ничего не находит.
+func trackerTitleAlt(f db.Film) string {
+	ts := trackerTitles(f)
+	if len(ts) < 2 {
+		return ""
+	}
+	return ts[1]
+}
+
+func sourceQueries(f db.Film) []sourceQuery {
+	return sourceQueriesFor(f, trackerTitle(f))
+}
+
+// sourceQueriesFor формирует запросы для указанного названия.
+//
+// У сериала с несколькими сезонами — ОДИН общий запрос по названию: разбивать его на «… N сезон» заранее вредно
+// (RuTracker на такие запросы даёт мусор, а каждый лишний запрос — отдельный обход всех индексаров Jackett).
+// Недостающие сезоны добирает missingSeasonQueries — точечно и по факту пробела.
+func sourceQueriesFor(f db.Film, title string) []sourceQuery {
+	if strings.TrimSpace(title) == "" {
+		return nil
+	}
+	if isSeriesKind(f.Kind) && f.Seasons > 1 {
+		return []sourceQuery{{q: title}}
 	}
 	q := title
 	if f.Year > 0 {
+		// Один точный запрос «название год» — не цепляет одноимённые фильмы (корейская «Одержимость», не Whiplash).
 		q = fmt.Sprintf("%s %d", q, f.Year)
 	}
-	// Один точный запрос «Русское / English год»: он уникально определяет
-	// фильм и не цепляет одноимённые (напр. корейский «Одержимость /
-	// Inganjungdok (2014)» — не Whiplash). Запасные запросы по одному
-	// названию добавляли бы чужие фильмы.
 	return []sourceQuery{{q: q}}
 }
 
-// handleFilmSources обрабатывает GET /api/films/{id}/sources.
-// Отдаёт доступные варианты из кэша (БД) сразу, а поиск на трекере
-// (через Jackett) запускает в фоне — пользователь не ждёт. Пока идёт
-// фоновый поиск, статус = "searching" (фронтенд опрашивает повторно).
+// handleFilmSources обрабатывает GET /api/films/{id}/sources: отдаёт варианты из кэша (БД) сразу,
+// а поиск на трекере запускает в фоне (пока идёт — status="searching").
 func handleFilmSources(cfg Config, mgr *sourcesManager, id string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if cfg.DB == nil || cfg.Magnet == nil {
@@ -188,18 +185,16 @@ func handleFilmSources(cfg Config, mgr *sourcesManager, id string) http.HandlerF
 			return
 		}
 
-		// Запрос отдаёт кэш из БД и запускает фоновый поиск — выполняется
-		// быстро, таймаут не нужен большой.
+		// Запрос только читает кэш и ставит фоновый поиск — отвечает быстро, большой таймаут не нужен.
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		defer cancel()
 
-		srcs, ready := mgr.sourcesForView(ctx, id)
-
-		// Тип фильма (сериал/фильм) — для ранжирования сезонов.
 		var film db.Film
 		if f, ok, err := cfg.DB.GetByIMDBID(ctx, id); err == nil && ok {
 			film = f
 		}
+		seasons := seasonEpisodes(ctx, cfg, film)
+		srcs, ready := mgr.sourcesForView(ctx, id)
 		items := sourceItemsFromDB(srcs, film)
 
 		status := "ready"
@@ -208,6 +203,42 @@ func handleFilmSources(cfg Config, mgr *sourcesManager, id string) http.HandlerF
 		}
 		log.Printf("sources: GET %s -> %d вариантов (status=%s)", id, len(items), status)
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		_ = json.NewEncoder(w).Encode(map[string]any{"id": id, "items": items, "status": status})
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": id, "items": items, "status": status,
+			"seasons": seasons,
+		})
 	}
+}
+
+// seasonEpisode — число серий сезона TMDB: каноническая сетка серий сериала.
+type seasonEpisode struct {
+	Season   int `json:"season"`
+	Episodes int `json:"episodes"`
+}
+
+// seasonEpisodes отдаёт структуру сезонов из TMDB (nil — нет клиента, это не сериал или нет tmdb_id).
+// Нужна для сетки серий: раздачи трекеров покрывают сезон ЧАСТИЧНО (паки «[S01-02x01-41]» и «[01-21]»
+// дают 40 и 21 серию из 50), иначе в сетке было бы столько серий, сколько отдала первая раздача.
+func seasonEpisodes(ctx context.Context, cfg Config, film db.Film) []seasonEpisode {
+	if cfg.TMDB == nil || !isSeriesKind(film.Kind) {
+		return nil
+	}
+	tmdbID, err := strconv.ParseInt(strings.TrimSpace(film.TMDBID), 10, 64)
+	if err != nil || tmdbID <= 0 {
+		return nil
+	}
+	st, refreshErr := cfg.DB.SeriesSeasons(ctx, tmdbID, cfg.TMDB.SeasonStructure)
+	if refreshErr != nil {
+		log.Printf("seasons: refresh %d: %v", tmdbID, refreshErr)
+	}
+	if len(st) == 0 {
+		return nil
+	}
+	out := make([]seasonEpisode, 0, len(st))
+	for _, s := range st {
+		if s.Number > 0 && s.Episodes > 0 {
+			out = append(out, seasonEpisode{Season: s.Number, Episodes: s.Episodes})
+		}
+	}
+	return out
 }

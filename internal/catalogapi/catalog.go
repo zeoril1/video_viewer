@@ -35,7 +35,7 @@ type CatalogItem struct {
 	Genres      []string `json:"genres,omitempty"`
 	IMDbID      string   `json:"imdb_id,omitempty"`
 	TMDBID      string   `json:"tmdb_id,omitempty"`
-	Seasons     int      `json:"seasons,omitempty"` // число сезонов (для сериалов)
+	Seasons     int      `json:"seasons,omitempty"`
 	MovieLength int      `json:"movie_length,omitempty"`
 	Countries   []string `json:"countries,omitempty"`
 	Director    string   `json:"director,omitempty"`
@@ -50,30 +50,23 @@ type catalogEntry struct {
 	magnet string
 }
 
-// catalogCacheTTL — время жизни кэша каталога и меты. Список фильмов и
-// счётчики разделов почти не меняются между синхронизациями (раз в сутки),
-// а фронтенд дёргает /api/catalog/meta при каждом клике по вкладкам/жанрам:
-// без кэша это полный скан таблицы films на каждый запрос.
+// catalogCacheTTL — время жизни кэша каталога и меты: без него /api/catalog/meta на каждый клик по вкладкам/жанрам сканировал бы таблицу films.
 const catalogCacheTTL = 30 * time.Second
 
-// catalogService объединяет записи из локального каталога (магнет-ссылки),
-// фильмов из БД (IMDb + TMDB) и on-demand внешнего поиска.
+// catalogService объединяет записи локального каталога (магнеты), фильмы БД (IMDb + TMDB) и on-demand внешнего поиска.
 type catalogService struct {
 	jsonCat *catalog.Catalog
 	db      *db.Repo
 	imdb    *imdb.Client // может быть nil — внешний поиск отключён
 	tm      *tmdb.Client // может быть nil
 
-	// Кэш с TTL: allCache — объединённый каталог, metaCache — результаты
-	// Meta по ключу "q|genre". Становится свежим после истечения TTL
-	// (например, после синхронизации чартов).
+	// Кэш с TTL: allCache — объединённый каталог, metaCache — результаты Meta по ключу "q|genre".
 	cacheMu     sync.Mutex
 	allCache    []catalogEntry
 	allCachedAt time.Time
 	metaCache   map[string]metaCacheEntry
 }
 
-// metaCacheEntry — кэшированный результат Meta.
 type metaCacheEntry struct {
 	kinds  map[string]int
 	genres []string
@@ -90,8 +83,7 @@ func newCatalogService(jsonCat *catalog.Catalog, repo *db.Repo, im *imdb.Client,
 	}
 }
 
-// All возвращает объединённый каталог: сначала фильмы из БД (топ-250,
-// популярные, затем остальные), потом локальные магнет-записи.
+// All возвращает объединённый каталог: сначала фильмы БД (топ-250, популярные, затем остальные), потом магнет-записи.
 func (s *catalogService) All(ctx context.Context) []catalogEntry {
 	s.cacheMu.Lock()
 	if s.allCache != nil && time.Since(s.allCachedAt) < catalogCacheTTL {
@@ -104,8 +96,7 @@ func (s *catalogService) All(ctx context.Context) []catalogEntry {
 	var out []catalogEntry
 
 	if s.db != nil {
-		// Лёгкая выборка без описаний: карточки каталога их не показывают,
-		// а описания догружаются при открытии фильма (GET /api/films/{id}).
+		// Лёгкая выборка без описаний — они догружаются при открытии фильма (GET /api/films/{id}).
 		films, err := s.db.ListFilmsLite(ctx)
 		if err != nil {
 			log.Printf("catalog: list films: %v", err)
@@ -139,18 +130,11 @@ func (s *catalogService) All(ctx context.Context) []catalogEntry {
 	return out
 }
 
-// SearchPage возвращает страницу каталога. Записи фильтруются по запросу
-// q (название, русское название, категория, IMDb ID), секции section
-// (movie, series, tv_movie, short, video, episode, cartoon, anime,
-// popular, other), жанру genre и флагу onlyReleased («только вышедшие»),
-// затем сортируются по sortBy и разбиваются на страницы по perPage.
-// Секция popular использует объединённый список «популярных» IMDb+TMDB
-// и сортировку не применяет — там порядок чарта.
-// collection — подборка внутри раздела «Фильмы»/«Сериалы»: "best"
-// («Лучшие» — чарт top_rated) или "popular" («Популярные сериалы»);
-// пустая строка — обычный раздел. В подборках порядок — чарта.
-// sortBy: "year" (по умолчанию — дата выпуска, новые сверху), "rating"
-// (по лучшему рейтингу) или "title" (по названию).
+// SearchPage возвращает страницу каталога: фильтр по q (название, русское название, категория, IMDb ID),
+// section, genre и onlyReleased, затем сортировка по sortBy и разбивка на страницы.
+// Секция popular и подборки (collection — "best" = чарт top_rated, "popular" = «Популярные сериалы»,
+// пусто — обычный раздел) сортировку не применяют: там порядок чарта.
+// sortBy: "year" (по умолчанию — новые сверху), "rating" или "title".
 func (s *catalogService) SearchPage(ctx context.Context, q, section, genre, sortBy, collection string, onlyReleased bool, page, perPage int) ([]catalogEntry, int) {
 	// Подборки работают только внутри разделов «Фильмы»/«Сериалы».
 	if collection != "" && section != "movie" && section != "series" {
@@ -187,8 +171,7 @@ func (s *catalogService) SearchPage(ctx context.Context, q, section, genre, sort
 	}
 	all = filtered
 
-	// Для обычных разделов (кроме «Популярное» и подборок) сортируем
-	// (по умолчанию — по дате выпуска). В подборках порядок — чарта.
+	// В «Популярном» и подборках порядок чарта, остальные разделы сортируем (по умолчанию — по дате выпуска).
 	if section != "popular" && collection == "" {
 		if sortBy == "" {
 			sortBy = "year"
@@ -216,11 +199,9 @@ func (s *catalogService) SearchPage(ctx context.Context, q, section, genre, sort
 	return all[start:end], total
 }
 
-// sortCatalogEntries сортирует записи каталога по критерию sortBy:
-// "year" (по умолчанию — дата выпуска, с учётом месяца и дня, новые
-// сверху), "rating" (по лучшему из доступных рейтингов) или "title"
-// (по названию). Все варианты имеют детерминированный tiebreaker по ID —
-// порядок стабилен между запросами (важно для бесконечной прокрутки).
+// sortCatalogEntries сортирует записи по sortBy: "year" (по умолчанию — полная дата выпуска, новые сверху),
+// "rating" (лучший из доступных рейтингов) или "title".
+// У всех вариантов детерминированный tiebreaker по ID — порядок стабилен между запросами (важно для бесконечной прокрутки).
 func sortCatalogEntries(entries []catalogEntry, sortBy string) {
 	switch sortBy {
 	case "rating":
@@ -254,9 +235,8 @@ func sortCatalogEntries(entries []catalogEntry, sortBy string) {
 	}
 }
 
-// releaseKey — сортировочный ключ даты выпуска "YYYY-MM-DD". Для записей
-// с известной датой возвращает её (с валидацией формата); иначе — только
-// год в виде "YYYY-00-00"; если нет и года — пустая строка (всегда в конце).
+// releaseKey — сортировочный ключ даты выпуска: сама дата "YYYY-MM-DD" (с валидацией),
+// иначе год в виде "YYYY-00-00", при отсутствии года — пустая строка (всегда в конце).
 func releaseKey(it CatalogItem) string {
 	if it.ReleaseDate != "" {
 		if _, err := time.Parse("2006-01-02", it.ReleaseDate); err == nil {
@@ -269,8 +249,7 @@ func releaseKey(it CatalogItem) string {
 	return ""
 }
 
-// cmpReleaseKey сравнивает ключи дат по убыванию: пустой ключ (нет данных)
-// всегда меньше непустого (сортируется в конец).
+// cmpReleaseKey сравнивает ключи дат по убыванию; пустой ключ (нет данных) всегда меньше непустого (в конец).
 func cmpReleaseKey(a, b string) int {
 	switch {
 	case a == "" && b == "":
@@ -288,9 +267,7 @@ func cmpReleaseKey(a, b string) int {
 	}
 }
 
-// isReleased сообщает, вышел ли фильм (дата выпуска не в будущем).
-// Записи без известной даты считаются вышедшими (не можем определить —
-// не скрываем). Используется фильтром «только вышедшие».
+// isReleased — вышел ли фильм (дата не в будущем); записи без даты считаем вышедшими (не знаем — не скрываем).
 func isReleased(it CatalogItem) bool {
 	if it.ReleaseDate == "" {
 		return true
@@ -319,10 +296,8 @@ func sortTitle(it CatalogItem) string {
 	return it.Title
 }
 
-// Meta возвращает статистику каталога для фильтров интерфейса:
-// количество записей по секциям (с учётом активных поиска q и жанра
-// genre — счётчики пересчитываются при выборе жанра) и полный
-// отсортированный список жанров.
+// Meta отдаёт статистику каталога для фильтров: счётчики записей по секциям (с учётом активных q и genre)
+// и полный отсортированный список жанров.
 func (s *catalogService) Meta(ctx context.Context, q, genre string) (map[string]int, []string) {
 	key := strings.TrimSpace(q) + "\x00" + genre
 	s.cacheMu.Lock()
@@ -340,8 +315,7 @@ func (s *catalogService) Meta(ctx context.Context, q, genre string) (map[string]
 	for _, e := range s.All(ctx) {
 		it := e.item
 
-		// Полный список жанров — независимо от активных фильтров,
-		// чтобы выпадающий список не «схлопывался».
+		// Полный список жанров — независимо от активных фильтров, иначе выпадающий список «схлопывался».
 		for _, g := range it.Genres {
 			if g = strings.TrimSpace(g); g != "" {
 				genreSet[g] = true
@@ -358,7 +332,7 @@ func (s *catalogService) Meta(ctx context.Context, q, genre string) (map[string]
 		kinds[sectionForItem(it)]++
 	}
 
-	// Счётчик раздела «Популярное» — объединённый список IMDb + Кинопоиск.
+	// Счётчик раздела «Популярное» — объединённый список IMDb + TMDB.
 	if s.db != nil {
 		if films, err := s.db.ListPopular(ctx); err == nil {
 			kinds["popular"] = 0
@@ -381,7 +355,6 @@ func (s *catalogService) Meta(ctx context.Context, q, genre string) (map[string]
 	}
 	sort.Strings(genres)
 
-	// Кэшируем результат (с простым прунингом карты при переполнении).
 	s.cacheMu.Lock()
 	if len(s.metaCache) >= 128 {
 		s.metaCache = make(map[string]metaCacheEntry)
@@ -391,22 +364,17 @@ func (s *catalogService) Meta(ctx context.Context, q, genre string) (map[string]
 	return kinds, genres
 }
 
-// matchesQuery проверяет запись на совпадение с поисковым запросом.
-// Запрос может содержать русское и/или английское название и год, в т.ч.
-// через разделители ("Одержимость / Whiplash 2014") — все слова запроса
-// должны встретиться в названиях (русском/английском), категории, ID или
-// годе записи.
+// matchesQuery проверяет запись на совпадение с запросом. Запрос может содержать русское и/или
+// английское название и год, в т.ч. через разделители ("Одержимость / Whiplash 2014») — все слова запроса
+// должны встретиться в названиях, категории, ID или годе записи.
 func matchesQuery(it CatalogItem, q string) bool {
 	norm := strings.ToLower(strings.TrimSpace(q))
 	if norm == "" {
 		return true
 	}
-	// Разделители "/" и "\\" превращаем в пробелы, чтобы "RU / EN год"
-	// разбивался на отдельные слова.
+	// Разделители "/" и "\\" превращаем в пробелы, чтобы "RU / EN год" разбивался на отдельные слова.
 	norm = strings.NewReplacer("/", " ", "\\", " ").Replace(norm)
 
-	// Ищем по всему, что можно: русское/английское название, категория,
-	// IMDb-ссылка и год.
 	hay := strings.ToLower(strings.Join([]string{
 		it.Title, it.TitleRU, it.Category, it.IMDbID, strconv.Itoa(it.Year),
 	}, " "))
@@ -422,10 +390,8 @@ func matchesQuery(it CatalogItem, q string) bool {
 	return true
 }
 
-// cleanSearchQuery готовит запрос для внешних API (Кинопоиск/IMDb): берёт
-// часть до первого "/" (обычно русское название) и убирает год. Например,
-// "Одержимость / Whiplash 2014" -> "одержимость" — внешние поисковики
-// не понимают формат «RU / EN год».
+// cleanSearchQuery готовит запрос для внешних API (TMDB/IMDb): часть до первого "/" (обычно русское название) без года —
+// внешние поисковики не понимают формат «RU / EN год» ("Одержимость / Whiplash 2014" -> "одержимость").
 func cleanSearchQuery(q string) string {
 	q = strings.TrimSpace(q)
 	if i := strings.IndexByte(q, '/'); i >= 0 {
@@ -440,7 +406,6 @@ func cleanSearchQuery(q string) string {
 	return strings.TrimSpace(q)
 }
 
-// hasGenre проверяет, что запись относится к жанру genre.
 func hasGenre(it CatalogItem, genre string) bool {
 	gl := strings.ToLower(genre)
 	for _, g := range it.Genres {
@@ -451,8 +416,7 @@ func hasGenre(it CatalogItem, genre string) bool {
 	return false
 }
 
-// knownKindsSet — все типы IMDb, отнесённые к конкретным секциям
-// (не входящие в него попадают в секцию "other").
+// knownKindsSet — все типы IMDb, отнесённые к конкретным секциям (не входящие в него попадают в секцию "other").
 var knownKindsSet = map[string]bool{
 	"":             true, // нет типа (например, магнеты) — считаем фильмом
 	"feature":      true,
@@ -489,8 +453,7 @@ func sectionForKind(kind string) string {
 	}
 }
 
-// sectionForItem определяет секцию записи с учётом жанров (аниме — по
-// жанру Anime; прочие мультфильмы — по типу animation/жанру Animation).
+// sectionForItem определяет секцию записи с учётом жанров (аниме — по жанру Anime; остальные мультфильмы — по типу/жанру Animation).
 func sectionForItem(it CatalogItem) string {
 	if isAnime(it) {
 		return "anime"
@@ -501,8 +464,7 @@ func sectionForItem(it CatalogItem) string {
 	return sectionForKind(it.Kind)
 }
 
-// isAnimation сообщает, относится ли запись к анимации (мультфильм или
-// аниме): по нормализованному типу animation либо по жанру.
+// isAnimation — анимация ли запись (мультфильм или аниме): по нормализованному типу animation либо по жанру.
 func isAnimation(it CatalogItem) bool {
 	if imdb.NormalizeKind(it.Kind) == "animation" {
 		return true
@@ -527,9 +489,8 @@ func isAnime(it CatalogItem) bool {
 	return false
 }
 
-// matchesSection проверяет, что запись относится к секции section.
-// Используется в SearchPage и при фильтрации внешних (on-demand)
-// результатов поиска, чтобы вкладки работали и во время поиска.
+// matchesSection проверяет, что запись относится к секции section; используется в SearchPage и при фильтрации
+// внешних (on-demand) результатов, чтобы вкладки работали и во время поиска.
 func matchesSection(it CatalogItem, section string) bool {
 	switch section {
 	case "anime":
@@ -537,14 +498,12 @@ func matchesSection(it CatalogItem, section string) bool {
 	case "cartoon":
 		return isAnimation(it) && !isAnime(it)
 	case "other":
-		// «Другое» — не-анимационные записи с неизвестным типом: анимация
-		// и аниме относятся к своим разделам «Мультфильмы»/«Аниме».
+		// «Другое» — не-анимационные записи с неизвестным типом (анимация/аниме — в своих разделах).
 		return !isAnimation(it) && !knownKindsSet[imdb.NormalizeKind(it.Kind)]
 	}
-	// Анимация и аниме имеют собственные разделы — исключаем их из обычных
-	// (типовых) разделов «Фильмы», «Сериалы» и т.п., иначе мультфильмы
-	// попадали в «Фильмы» (kind=feature + жанр Animation). Разделы «Все»
-	// и «Популярное» не фильтруются по типу.
+	// Анимация и аниме имеют собственные разделы — исключаем их из типовых («Фильмы», «Сериалы»),
+	// иначе мультфильмы с kind=feature и жанром Animation попадали в «Фильмы».
+	// Разделы «Все» и «Популярное» по типу не фильтруются.
 	if section != "all" && section != "popular" && isAnimation(it) {
 		return false
 	}
@@ -555,8 +514,7 @@ func matchesSection(it CatalogItem, section string) bool {
 	return kindFilter[imdb.NormalizeKind(it.Kind)]
 }
 
-// Popular возвращает объединённый список «популярных» фильмов
-// (чарт IMDb moviemeter + популярные Кинопоиска), без дублей.
+// Popular возвращает объединённый список «популярных» (чарт IMDb moviemeter + популярные TMDB), без дублей.
 func (s *catalogService) Popular(ctx context.Context) []catalogEntry {
 	var out []catalogEntry
 	if s.db == nil {
@@ -573,8 +531,7 @@ func (s *catalogService) Popular(ctx context.Context) []catalogEntry {
 	return out
 }
 
-// Best возвращает «лучшие» записи (чарт top_rated IMDb+TMDB) для фильмов
-// (series=false) или сериалов (series=true) — подборка «Лучшие …».
+// Best возвращает «лучшие» записи (чарт top_rated IMDb+TMDB) для фильмов (series=false) или сериалов — подборка «Лучшие …».
 func (s *catalogService) Best(ctx context.Context, series bool) []catalogEntry {
 	var out []catalogEntry
 	if s.db == nil {
@@ -591,9 +548,7 @@ func (s *catalogService) Best(ctx context.Context, series bool) []catalogEntry {
 	return out
 }
 
-// PopularKind возвращает «популярные» записи (чарты IMDb+TMDB) для фильмов
-// (series=false) или сериалов (series=true) — подборки «Популярные фильмы/
-// сериалы».
+// PopularKind возвращает «популярные» (чарты IMDb+TMDB) для фильмов (series=false) или сериалов — подборки «Популярные …».
 func (s *catalogService) PopularKind(ctx context.Context, series bool) []catalogEntry {
 	var out []catalogEntry
 	if s.db == nil {
@@ -610,12 +565,10 @@ func (s *catalogService) PopularKind(ctx context.Context, series bool) []catalog
 	return out
 }
 
-// SearchExternal ищет фильмы в Кинопоиске и IMDb (on-demand), сохраняет их
-// в БД и возвращает записи каталога. Используется, когда локальный поиск
-// по БД вернул мало результатов — поиск «не только в БД».
+// SearchExternal ищет фильмы в TMDB и IMDb (on-demand), сохраняет их в БД и возвращает записи каталога
+// (используется, когда локальный поиск по БД дал мало результатов).
 func (s *catalogService) SearchExternal(ctx context.Context, q string) []catalogEntry {
-	// Для внешних API берём чистый запрос: часть до "/" (обычно русское
-	// название) без года — Кинопоиску/IMDb не нужно «RU / EN 2014».
+	// Для внешних API берём чистый запрос (часть до "/" без года) — TMDB/IMDb не нужно «RU / EN 2014».
 	eq := cleanSearchQuery(q)
 	seen := map[string]bool{}
 	var out []catalogEntry
@@ -663,7 +616,6 @@ func (s *catalogService) SearchExternal(ctx context.Context, q string) []catalog
 	return out
 }
 
-// mergeEntries объединяет записи каталога, убирая дубли по ID.
 func mergeEntries(groups ...[]catalogEntry) []catalogEntry {
 	seen := map[string]bool{}
 	var out []catalogEntry
@@ -679,8 +631,7 @@ func mergeEntries(groups ...[]catalogEntry) []catalogEntry {
 	return out
 }
 
-// kindsForSection возвращает множество сырых типов для секции.
-// nil — секция "all" (без фильтра по типу).
+// kindsForSection — множество сырых типов для секции; nil — секция "all" (без фильтра по типу).
 func kindsForSection(section string) map[string]bool {
 	switch section {
 	case "movie":
@@ -700,9 +651,8 @@ func kindsForSection(section string) map[string]bool {
 	}
 }
 
-// FindMagnet ищет магнет-ссылку по id записи: только в локальном каталоге
-// (data/catalog.json). Магнет-ссылки фильмов БД живут в таблице sources
-// (колонка films.magnet удалена как legacy) — в самой БД магнета нет.
+// FindMagnet ищет магнет-ссылку по id только в локальном каталоге (data/catalog.json):
+// магнеты фильмов БД живут в таблице sources (колонка films.magnet удалена как legacy) — в самой БД магнета нет.
 func (s *catalogService) FindMagnet(ctx context.Context, id string) (string, bool) {
 	if it, ok := s.jsonCat.Get(id); ok && it.Magnet != "" {
 		return it.Magnet, true
@@ -710,7 +660,6 @@ func (s *catalogService) FindMagnet(ctx context.Context, id string) (string, boo
 	return "", false
 }
 
-// dbFilmToEntry превращает фильм БД в запись каталога.
 func dbFilmToEntry(f db.Film) catalogEntry {
 	source := "imdb"
 	if strings.HasPrefix(f.IMDBID, "kp") {
@@ -744,7 +693,6 @@ func dbFilmToEntry(f db.Film) catalogEntry {
 	}
 }
 
-// tmdbFilmToEntry превращает фильм TMDB (on-demand) в запись каталога.
 func tmdbFilmToEntry(f tmdb.Film) catalogEntry {
 	return catalogEntry{
 		item: CatalogItem{

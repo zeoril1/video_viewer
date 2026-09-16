@@ -15,7 +15,7 @@ type suggestionResponse struct {
 }
 
 type suggestionItem struct {
-	ID string `json:"id"` // tt..., nm... и т.п.
+	ID string `json:"id"` // tt..., nm...
 	L  string `json:"l"`  // название
 	Y  int    `json:"y"`  // год
 	Q  string `json:"q"`  // тип: feature, tvSeries, ...
@@ -24,15 +24,13 @@ type suggestionItem struct {
 	} `json:"i"`
 }
 
-// Search ищет фильмы и сериалы по запросу через собственный
-// JSON-эндпоинт автодополнения IMDb (без API-ключа).
+// Search ищет фильмы и сериалы через JSON-эндпоинт автодополнения IMDb (без API-ключа).
 func (c *Client) Search(ctx context.Context, q string) ([]Film, error) {
 	q = strings.TrimSpace(q)
 	if q == "" {
 		return nil, fmt.Errorf("imdb: empty search query")
 	}
 
-	// Путь эндпоинта: /suggestion/{первая буква}/{запрос}.json
 	letter := "x"
 	if r, _ := utf8.DecodeRuneInString(strings.ToLower(q)); r != utf8.RuneError {
 		letter = string(r)
@@ -71,8 +69,8 @@ func normalizeID(id string) string {
 	return id
 }
 
-// getBasic возвращает базовые данные фильма (id, название, год, постер)
-// через suggestion API IMDb. Если точного совпадения нет — ошибка.
+// getBasic возвращает базовые данные (id, название, год, постер)
+// через suggestion API; при отсутствии точного совпадения — ошибка.
 func (c *Client) getBasic(ctx context.Context, id string) (Film, error) {
 	id = normalizeID(id)
 	if !strings.HasPrefix(id, "tt") {

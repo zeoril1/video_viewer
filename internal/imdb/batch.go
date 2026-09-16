@@ -11,8 +11,8 @@ import (
 	"time"
 )
 
-// wdqsURL — Wikidata Query Service (SPARQL). Отдельный сервис от
-// www.wikidata.org/w/api.php, позволяет получать данные пакетно.
+// wdqsURL — Wikidata Query Service (SPARQL): отдельный сервис, позволяет
+// получать данные пакетно (в отличие от www.wikidata.org/w/api.php).
 const wdqsURL = "https://query.wikidata.org/sparql"
 
 // postSparql выполняет SPARQL-запрос к WDQS с повторами при
@@ -45,7 +45,7 @@ func (c *Client) postSparql(ctx context.Context, query string) ([]byte, error) {
 
 		resp, err := c.hc.Do(req)
 		if err != nil {
-			lastErr = err // сетевая ошибка — повторяем
+			lastErr = err // сетевую ошибку повторяем
 			continue
 		}
 		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxBody))
@@ -60,7 +60,7 @@ func (c *Client) postSparql(ctx context.Context, query string) ([]byte, error) {
 			continue
 		case resp.StatusCode >= 500:
 			lastErr = fmt.Errorf("imdb: WDQS: %s", resp.Status)
-			continue // транзиентная ошибка сервера — повторяем
+			continue // транзиентная ошибка — повторяем
 		case resp.StatusCode == http.StatusOK && readErr == nil:
 			return body, nil
 		default:
@@ -70,16 +70,15 @@ func (c *Client) postSparql(ctx context.Context, query string) ([]byte, error) {
 	return nil, lastErr
 }
 
-// LocalizedTitle — русское название фильма и заголовок его статьи
-// в русской Википедии (для последующего получения описания).
+// LocalizedTitle — русское название фильма и заголовок его статьи в ru-wiki
+// (нужен для получения описания).
 type LocalizedTitle struct {
 	TitleRU     string
 	RuWikiTitle string
 }
 
-// LocalizeTitles пакетно получает русские названия (и заголовки статей
-// ru-wiki) для списка IMDb ID. Один SPARQL-запрос заменяет сотни
-// поштучных обращений к API Wikidata.
+// LocalizeTitles пакетно получает русские названия (и заголовки статей ru-wiki)
+// для списка IMDb ID: один SPARQL-запрос вместо сотен поштучных обращений.
 func (c *Client) LocalizeTitles(ctx context.Context, imdbIDs []string) (map[string]LocalizedTitle, error) {
 	out := make(map[string]LocalizedTitle)
 	const chunk = 100
@@ -136,8 +135,7 @@ func (c *Client) localizeTitlesBatch(ctx context.Context, imdbIDs []string) (map
 	return out, nil
 }
 
-// PlotFromRuWiki возвращает вступительный абзац статьи русской Википедии
-// (по заголовку, полученному из WDQS). Используется фоновым локализатором.
+// PlotFromRuWiki возвращает вступительный абзац статьи ru-wiki по заголовку из WDQS.
 func (c *Client) PlotFromRuWiki(ctx context.Context, ruWikiTitle string) (string, error) {
 	return c.wikiExtract(ctx, wikipediaRUAPI, ruWikiTitle)
 }

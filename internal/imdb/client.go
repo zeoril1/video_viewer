@@ -11,12 +11,10 @@ import (
 )
 
 const (
-	// suggestionAPI — собственный JSON-эндпоинт автодополнения IMDb,
-	// работает без ключа и используется сайтом для поиска.
+	// suggestionAPI — JSON-эндпоинт автодополнения IMDb (без ключа).
 	suggestionAPI = "https://v2.sg.media-imdb.com/suggestion/%s/%s.json"
 
-	// userAgent — IMDb отдаёт страницы не-браузерным клиентам редко,
-	// поэтому представляемся обычным браузером.
+	// userAgent — IMDb плохо отдаёт страницы не-браузерным клиентам.
 	userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
 
 	// maxBody — ограничение на размер загружаемого тела (8 МБ).
@@ -25,21 +23,19 @@ const (
 
 // Config — параметры клиента IMDb.
 type Config struct {
-	// Scrape — разрешает парсинг официальных страниц чартов IMDb.
-	// Работает там, где IMDb не блокирует автоматические запросы.
+	// Scrape — разрешает парсинг официальных страниц чартов IMDb
+	// (работает не всегда: IMDb блокирует автоматические запросы).
 	Scrape bool
 
-	// Top250URL / PopularURL — URL зеркал чартов (JSON-массивы),
-	// используемые как фолбэк, если скрапер недоступен или пуст.
-	// Пустая строка означает «не использовать зеркало».
+	// Top250URL / PopularURL — URL зеркал чартов (JSON) как фолбэк;
+	// пустая строка — зеркало не используется.
 	Top250URL  string
 	PopularURL string
 
 	// Timeout — таймаут HTTP-запросов.
 	Timeout time.Duration
 
-	// Transport — необязательный http.RoundTripper (например, пул прокси
-	// из internal/proxy). Если nil — используется стандартный транспорт.
+	// Transport — необязательный http.RoundTripper (например, пул прокси).
 	Transport http.RoundTripper
 }
 
@@ -65,8 +61,7 @@ func NewClient(cfg Config) *Client {
 }
 
 // get выполняет GET-запрос с повторами при транзиентных сетевых ошибках
-// (обрывы соединения, rate-limit 429). Ошибки со стабильными статусами
-// (202, 404 и т.п.) не повторяются.
+// (обрывы соединения, rate-limit 429); стабильные статусы (202, 404) не повторяются.
 func (c *Client) get(ctx context.Context, u string) ([]byte, error) {
 	var lastErr error
 	for attempt := 0; attempt < 4; attempt++ {
@@ -103,12 +98,12 @@ func (c *Client) getOnce(ctx context.Context, u string) ([]byte, bool, error) {
 
 	resp, err := c.hc.Do(req)
 	if err != nil {
-		return nil, true, err // сетевая ошибка — можно повторить
+		return nil, true, err // сетевую ошибку можно повторить
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusTooManyRequests {
-		// Rate limit: повторяем с паузой, уважая Retry-After.
+		// 429 — повторяем с паузой из Retry-After.
 		return nil, true, &statusError{
 			msg:        fmt.Sprintf("imdb: GET %s: 429 too many requests", u),
 			retryAfter: parseRetryAfter(resp.Header.Get("Retry-After")),

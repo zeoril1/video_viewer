@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/zeoril1/video_viewer/internal/db"
+	"github.com/zeoril1/video_viewer/internal/httpx"
 )
 
 const (
@@ -24,17 +25,23 @@ const (
 // usernameRe — допустимый логин: 3-32 символа, буквы/цифры/_.-
 var usernameRe = regexp.MustCompile(`^[a-zA-Z0-9_.-]{3,32}$`)
 
-// authHandler — обработчики регистрации/входа/выхода. Требует БД (repo);
-// без БД все эндпоинты возвращают 503 «auth disabled».
+// authHandler — обработчики регистрации/входа/выхода (без БД отдают 503).
 type authHandler struct {
 	repo          *db.Repo
 	secureCookies bool          // Secure-флаг на куке сессии (HTTPS)
 	limiter       *loginLimiter // ограничение попыток входа/регистрации
 }
 
-// setSessionCookie записывает httpOnly-куку с токеном сессии. secure —
-// ставить флаг Secure (передаётся только по HTTPS; включается через
-// COOKIE_SECURE, когда фронтенд отдаётся за HTTPS-обратным прокси).
+// cookieSecure решает, ставить ли флаг Secure на куку сессии: COOKIE_SECURE=1
+// включает принудительно, иначе флаг берётся из запроса (HTTPS напрямую или
+// через прокси). Так один сервис обслуживает и локальный HTTP (иначе вход
+// не работал бы), и публичный HTTPS.
+func (h *authHandler) cookieSecure(r *http.Request) bool {
+	return h.secureCookies || httpx.IsSecureRequest(r)
+}
+
+// setSessionCookie записывает httpOnly-куку с токеном сессии (secure —
+// ставить флаг Secure, то есть отдавать куку только по HTTPS).
 func setSessionCookie(w http.ResponseWriter, token string, secure bool) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookie,
@@ -62,9 +69,8 @@ func clearSessionCookie(w http.ResponseWriter, secure bool) {
 
 // ---- CSRF: мутирующие запросы должны приходить с того же origin ----
 
-// sameOrigin проверяет, что Origin/Referer запроса совпадает с Host.
-// Браузеры присылают Origin на всех POST/DELETE; если заголовков нет
-// (curl, внутренние клиенты) — запрос пропускается.
+// sameOrigin проверяет, что Origin/Referer совпадает с Host. Браузеры шлют
+// Origin на всех POST/DELETE; без заголовков (curl, внутренние клиенты) — пропускаем.
 func sameOrigin(r *http.Request) bool {
 	origin := r.Header.Get("Origin")
 	if origin == "" {
@@ -180,6 +186,10 @@ func clientKey(r *http.Request, username string) string {
 	if h, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
 		ip = h
 	}
+	// This header is overwritten by gateway; auth is an internal service.
+	if forwarded := net.ParseIP(r.Header.Get("X-Video-Viewer-Client-IP")); forwarded != nil {
+		ip = forwarded.String()
+	}
 	return ip + "|" + strings.ToLower(strings.TrimSpace(username))
 }
 
@@ -210,7 +220,7 @@ func (h *authHandler) register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Регистрация ограничивается по IP (имени ещё нет).
-	if !h.limiter.allow(clientKey(r, "")) {
+	if !h.limiter.takeRegistration(clientKey(r, "")) {
 		http.Error(w, "too many attempts, try again later", http.StatusTooManyRequests)
 		return
 	}
@@ -257,7 +267,7 @@ func (h *authHandler) register(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "db error", http.StatusInternalServerError)
 		return
 	}
-	setSessionCookie(w, token, h.secureCookies)
+	setSessionCookie(w, token, h.cookieSecure(r))
 	log.Printf("auth: register %s (id=%d)", body.Username, userID)
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	_ = json.NewEncoder(w).Encode(map[string]any{"user": db.User{ID: userID, Username: body.Username}})
@@ -304,7 +314,7 @@ func (h *authHandler) login(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "db error", http.StatusInternalServerError)
 		return
 	}
-	setSessionCookie(w, token, h.secureCookies)
+	setSessionCookie(w, token, h.cookieSecure(r))
 	log.Printf("auth: login %s (id=%d)", u.Username, u.ID)
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	_ = json.NewEncoder(w).Encode(map[string]any{"user": u})
@@ -318,7 +328,7 @@ func (h *authHandler) logout(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(sessionCookie); err == nil && c.Value != "" && h.repo != nil {
 		_ = h.repo.DeleteSession(r.Context(), c.Value)
 	}
-	clearSessionCookie(w, h.secureCookies)
+	clearSessionCookie(w, h.cookieSecure(r))
 	log.Printf("auth: logout")
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -336,4 +346,23 @@ func (h *authHandler) me(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	_ = json.NewEncoder(w).Encode(map[string]any{"user": u})
+}
+
+// takeRegistration атомарно резервирует попытку ДО разбора тела и хеширования
+// пароля (ключ регистрации — только IP и не пересекается с попытками входа).
+func (l *loginLimiter) takeRegistration(key string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := time.Now()
+	s := l.state[key]
+	if s == nil || now.Sub(s.window) >= loginWindow {
+		s = &loginState{window: now}
+		l.state[key] = s
+	}
+	if s.fails >= loginMaxAttempts {
+		return false
+	}
+	s.fails++
+	l.pruneLocked(now)
+	return true
 }

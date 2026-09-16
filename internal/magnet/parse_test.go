@@ -59,6 +59,32 @@ func TestParseTitle(t *testing.T) {
 	}
 }
 
+// TestNamesVoiceStudio — названа ли в заголовке студия озвучки. Нужно для
+// раздач без сидов: их сохраняем только со студией в заголовке (иначе мусор).
+func TestNamesVoiceStudio(t *testing.T) {
+	cases := []struct {
+		title string
+		want  bool
+	}{
+		{"Хороший доктор / The Good Doctor / S2E1-18 of 18 (2018) WEB-DL [H.264/1080p]  TVShows", true},
+		{"Хороший доктор / The Good Doctor [S02] (2018) WEB-DL 1080p-Jaskier", true},
+		{"Хороший доктор / The Good Doctor / S2E1-18 of 18 (2018) WEB-DL  Novamedia", true},
+		{"Хороший доктор / The Good Doctor [S02] (2018) WEBRip 720p | Gears Media", true},
+		{"Хороший доктор / The Good Doctor [S01] (2017-2018) WEBRip 1080p-Amedia", true},
+		{"Сериал (2021) WEB-DL 1080p LostFilm", true},
+		{"Фильм (2019) WEBRip 1080p Авторский перевод Гоблин", true},
+		// Нет студии — чужой фильм/мусор из широкого запроса.
+		{"Хороший доктор / Docteur? (2019) BDRip 1080p-селезень-iTunes", false},
+		{"Хороший доктор / Фантастические врачи / Fantastic Doctors [S01] (2023) WEBRip 1080p | D", false},
+		{"Рик и Морти / Rick and Morty [S1-9] (2013-2026) BDRip 1080p", false},
+	}
+	for _, c := range cases {
+		if got := NamesVoiceStudio(c.title); got != c.want {
+			t.Errorf("NamesVoiceStudio(%q) = %v, want %v", c.title, got, c.want)
+		}
+	}
+}
+
 func TestIsFullCollection(t *testing.T) {
 	cases := []struct {
 		title string
@@ -80,7 +106,7 @@ func TestIsFullCollection(t *testing.T) {
 
 func TestParseTitleFullHD(t *testing.T) {
 	// srcResRe берёт самое левое совпадение: «FullHD» даёт 1080, хотя в
-	// заголовке есть и «4K» — левосторонний матч регэкспа (заданное поведение).
+	// заголовке есть и «4K» (левосторонний матч регэкспа — заданное поведение).
 	q, _, _ := ParseTitle("FullHD 4K")
 	if q != "1080" {
 		t.Errorf("ParseTitle(FullHD 4K) quality = %q, want 1080", q)

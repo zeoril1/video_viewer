@@ -56,9 +56,8 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Прокси для запросов к клиенту IMDb — только статические (PROXY_STATIC).
-	// Динамические списки (PROXY_SOURCES) и их периодическое обновление
-	// не используются.
+	// Прокси для запросов к IMDb — только статические (PROXY_STATIC);
+	// динамические списки (PROXY_SOURCES) не используются.
 	proxyPool := proxy.NewPool(proxy.Config{
 		Static:  splitCSV(*proxyStatic),
 		Timeout: *proxyTimeout,
@@ -73,10 +72,8 @@ func main() {
 	}
 	log.Printf("catalog loaded: %d items", len(cat.Items))
 
-	// PostgreSQL (нужен для IMDb-каталога; без него сервис работает
-	// только с локальными магнет-ссылками). Подключаемся с ретраями: при
-	// одновременном старте стека БД может быть ещё не готова, и разовый
-	// сбой не должен оставлять каталог пустым.
+	// PostgreSQL (нужен для IMDb-каталога; без него — только локальные
+	// магнет-ссылки). Ретраи: при старте стека БД может быть ещё не готова.
 	var repo *db.Repo
 	if *dsn != "" {
 		conn, err := db.OpenRetry(ctx, *dsn, 12, 5*time.Second)
@@ -132,8 +129,8 @@ func main() {
 			tmSyncer := sync.NewTMDBChart(repo, tmdbClient, *imdbInterval)
 			go tmSyncer.Run(ctx)
 
-			// Фоновая джоба обновления рейтингов фильмов из TMDB
-			// (редко и с паузой между запросами, чтобы не заблокировали).
+			// Фоновая джоба обновления рейтингов из TMDB (редко и с паузой,
+			// чтобы не заблокировали).
 			ratings := sync.NewRatingsRefresher(repo, tmdbClient, *ratingsBatch, *ratingsPace, *ratingsInterval)
 			go ratings.Run(ctx)
 		}

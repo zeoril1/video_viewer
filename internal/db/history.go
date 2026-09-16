@@ -16,8 +16,7 @@ type WatchProgress struct {
 	Duration float64 // полная длительность (сек)
 }
 
-// HistoryEntry — запись истории просмотра с данными фильма (для карточек
-// «Продолжить просмотр» на главной странице).
+// HistoryEntry — запись истории просмотра с данными фильма (для карточек «Продолжить просмотр» на главной).
 type HistoryEntry struct {
 	FilmID    string    `json:"film_id"`
 	Title     string    `json:"title"`
@@ -51,15 +50,13 @@ CREATE TABLE IF NOT EXISTS watch_history (
 CREATE INDEX IF NOT EXISTS idx_watch_history_user ON watch_history (user_id, updated_at DESC);
 `
 
-// ensureHistorySchema создаёт таблицу истории просмотра.
 func (r *Repo) ensureHistorySchema(ctx context.Context) error {
 	_, err := r.conn.ExecContext(ctx, historySchema)
 	return err
 }
 
-// SaveWatchProgress сохраняет/обновляет позицию просмотра (upsert по
-// user+film+magnet+file — один эпизод одного источника = одна запись,
-// чтобы при повторном поиске источников не плодились дубли).
+// SaveWatchProgress сохраняет/обновляет позицию просмотра (upsert по user+film+magnet+file —
+// один эпизод одного источника = одна запись, чтобы при повторном поиске источников не плодились дубли).
 func (r *Repo) SaveWatchProgress(ctx context.Context, userID int64, p WatchProgress) error {
 	_, err := r.conn.ExecContext(ctx, `
 		INSERT INTO watch_history (user_id, film_id, magnet, file, season, episode, position_sec, duration_sec)
@@ -74,11 +71,9 @@ func (r *Repo) SaveWatchProgress(ctx context.Context, userID int64, p WatchProgr
 	return err
 }
 
-// ListWatchHistory возвращает историю просмотра пользователя, отсортированную
-// по времени последнего просмотра (свежие сверху), с данными фильма.
-// Для каждого фильма (film_id) возвращается ТОЛЬКО самая свежая запись
-// (последняя просмотренная серия у сериалов) — DISTINCT ON по film_id
-// с сортировкой по updated_at DESC, затем общий порядок по свежести.
+// ListWatchHistory возвращает историю просмотра пользователя, отсортированную по свежести, с данными фильма.
+// Для каждого film_id возвращается ТОЛЬКО самая свежая запись (последняя серия у сериалов) —
+// DISTINCT ON по film_id с сортировкой по updated_at DESC, затем общий порядок по свежести.
 func (r *Repo) ListWatchHistory(ctx context.Context, userID int64, limit int) ([]HistoryEntry, error) {
 	rows, err := r.conn.QueryContext(ctx, `
 		SELECT film_id, title, title_ru, kind, year, poster_url,
@@ -118,8 +113,7 @@ func (r *Repo) ListWatchHistory(ctx context.Context, userID int64, limit int) ([
 	return out, rows.Err()
 }
 
-// DeleteWatchHistory удаляет одну запись истории (по film+magnet+file)
-// или все записи фильма, если magnet пустой.
+// DeleteWatchHistory удаляет одну запись истории (по film+magnet+file) или все записи фильма, если magnet пустой.
 func (r *Repo) DeleteWatchHistory(ctx context.Context, userID int64, filmID, magnet string, file int) error {
 	if magnet != "" {
 		_, err := r.conn.ExecContext(ctx, `

@@ -1,6 +1,5 @@
-// Провайдер поиска раздач через внешний Jackett (Torznab API). Удобен для
-// трекеров с антиботом/приватных (RuTracker): доступы, капча и обход
-// Cloudflare выполняются в Jackett, а наш сервис просто шлёт запросы.
+// Провайдер поиска раздач через внешний Jackett (Torznab API): доступы, капча
+// и обход Cloudflare для приватных трекеров (RuTracker) — на стороне Jackett.
 package magnet
 
 import (
@@ -16,14 +15,18 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/anacrolix/torrent/metainfo"
 )
 
+// maxTorrentFetches — сколько раздач без готового магнета индексера может
+// «докачать» (.torrent) за один поисковый запрос.
+const maxTorrentFetches = 8
+
 // Jackett — поиск раздач через Jackett (Torznab). indexer — ID индексера
-// в Jackett (например "rutracker-ru"), список через запятую
-// ("rutracker-ru,rutor,anilibria") или "all" (все настроенные индексера).
+// в Jackett ("rutracker-ru"), список через запятую или "all" (все настроенные).
 type Jackett struct {
 	baseURL string
 	apiKey  string
@@ -31,8 +34,7 @@ type Jackett struct {
 	hc      *http.Client
 }
 
-// NewJackett создаёт провайдер Jackett. rt — необязательный http.RoundTripper
-// (пул прокси) для запросов к самому Jackett.
+// NewJackett создаёт провайдер Jackett; rt — необязательный RoundTripper (пул прокси).
 func NewJackett(baseURL, apiKey, indexer string, rt http.RoundTripper) *Jackett {
 	hc := &http.Client{Timeout: 30 * time.Second}
 	if rt != nil {
@@ -69,9 +71,8 @@ type jackettItem struct {
 	downloadURL string // ссылка на .torrent через Jackett (если не magnet)
 }
 
-// indexerIDs возвращает список индексереров для опроса: один ID, несколько
-// через запятую ("rutracker-ru,rutor,anilibria") или "all" (все настроенные
-// в Jackett). Пустое значение трактуется как "all".
+// indexerIDs возвращает список индексеров для опроса: один ID, несколько
+// через запятую или "all"; пустое значение — "all".
 func (j *Jackett) indexerIDs() []string {
 	raw := strings.TrimSpace(j.indexer)
 	if raw == "" {
@@ -89,8 +90,7 @@ func (j *Jackett) indexerIDs() []string {
 	return ids
 }
 
-// Search ищет раздачи через Torznab по всем настроенным индексерам
-// (список из j.indexer) и возвращает их с готовыми магнетами.
+// Search ищет раздачи через Torznab по всем настроенным индексерам (j.indexer).
 func (j *Jackett) Search(ctx context.Context, q string, limit int) ([]Result, error) {
 	if limit <= 0 {
 		limit = 8
@@ -111,18 +111,17 @@ func (j *Jackett) Search(ctx context.Context, q string, limit int) ([]Result, er
 		log.Printf("jackett: %s '%s' -> %d результатов", id, q, len(res))
 		all = append(all, res...)
 	}
-	if len(all) == 0 && len(errs) > 0 {
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	if len(errs) > 0 {
 		log.Printf("jackett: '%s' — все индексера ошиблись: %s", q, strings.Join(errs, "; "))
-		return nil, fmt.Errorf("jackett: %s", strings.Join(errs, "; "))
+		return dedupJackettResults(all), fmt.Errorf("jackett: %s", strings.Join(errs, "; "))
 	}
 	all = dedupJackettResults(all)
 	// НЕ обрезаем объединение до limit: каждый индексера уже ограничен своим
-	// limit в searchIndexer, а обрезка ИТОГА до лимита приводила к тому, что
-	// результаты первого индексера в списке заполняли весь лимит и вытесняли
-	// реальные раздачи остальных. Например, при поиске обычного фильма
-	// аниме-трекер anilibria (стоит первым) отдаёт мусорные аниме — и они
-	// занимали все 8 слотов, а настоящие раздачи с переводами (rutracker,
-	// rutor, megapeer) отбрасывались.
+	// limit, а обрезка итога приводила к тому, что первый индексера (аниме)
+	// заполнял весь лимит и вытеснял реальные раздачи остальных.
 	log.Printf("jackett: '%s' -> всего %d результатов (после дедупа)", q, len(all))
 	return all, nil
 }
@@ -155,8 +154,7 @@ func (j *Jackett) searchIndexer(ctx context.Context, id, q string, limit int) ([
 		return nil, err
 	}
 	// Jackett отдаёт ошибки в теле XML даже при HTTP 200 — превращаем их
-	// в настоящие ошибки, чтобы не получить молча «пусто» (и логировалось
-	// в sources_bg, а не терялось).
+	// в настоящие ошибки, чтобы не получить молча «пусто».
 	if m := jtErrorRe.FindStringSubmatch(string(body)); len(m) == 3 {
 		return nil, fmt.Errorf("jackett: %s (code=%s)", strings.TrimSpace(m[2]), m[1])
 	}
@@ -168,13 +166,16 @@ func (j *Jackett) searchIndexer(ctx context.Context, id, q string, limit int) ([
 		return nil, nil
 	}
 
-	// Для каждой раздачи получаем магнет: из ссылки (если уже magnet),
-	// иначе качаем .torrent через Jackett и строим magnet.
+	// Магнет берём из ссылки (если там уже magnet), иначе качаем .torrent
+	// через Jackett: скачивание — лишний запрос к трекеру на каждую раздачу,
+	// поэтому на поисковый запрос ставим бюджет maxTorrentFetches.
+	// У rutracker/rutor магнет приходит атрибутом magneturl — доп. запросов нет.
 	var (
-		wg  sync.WaitGroup
-		sem = make(chan struct{}, 3)
-		mu  sync.Mutex
-		out = make([]Result, len(items))
+		wg     sync.WaitGroup
+		sem    = make(chan struct{}, 3)
+		mu     sync.Mutex
+		out    = make([]Result, len(items))
+		budget = int32(maxTorrentFetches)
 	)
 	for i := range items {
 		wg.Add(1)
@@ -189,6 +190,9 @@ func (j *Jackett) searchIndexer(ctx context.Context, id, q string, limit int) ([
 			it := items[i]
 			m := it.magnet
 			if m == "" && it.downloadURL != "" {
+				if atomic.AddInt32(&budget, -1) < 0 {
+					return // бюджет скачиваний .torrent исчерпан
+				}
 				m, _ = j.downloadMagnet(ctx, it.downloadURL)
 			}
 			if m == "" {
@@ -210,8 +214,7 @@ func (j *Jackett) searchIndexer(ctx context.Context, id, q string, limit int) ([
 	return results, nil
 }
 
-// magnetInfoHash извлекает xt=urn:btih:<hex> из magnet-ссылки (40 или 32
-// символа) для дедупликации.
+// magnetInfoHash извлекает xt=urn:btih:<hex> (40 или 32 символа) — для дедупа.
 func magnetInfoHash(m string) string {
 	const p = "xt=urn:btih:"
 	i := strings.Index(strings.ToLower(m), p)
@@ -228,8 +231,8 @@ func magnetInfoHash(m string) string {
 	return ""
 }
 
-// dedupJackettResults оставляет первую запись по info_hash — один и тот же
-// релиз может найтись на нескольких индексерах.
+// dedupJackettResults оставляет первую запись по info_hash — один релиз
+// может найтись на нескольких индексерах.
 func dedupJackettResults(in []Result) []Result {
 	seen := make(map[string]struct{}, len(in))
 	out := make([]Result, 0, len(in))
@@ -268,14 +271,18 @@ func parseJackettItems(xml string) []jackettItem {
 			switch strings.ToLower(m[1]) {
 			case "seeders":
 				it.seeds, _ = strconv.Atoi(m[2])
+			case "magneturl":
+				// rutracker/rutor отдают готовый магнет — качать .torrent не нужно.
+				if it.magnet == "" {
+					it.magnet = html.UnescapeString(strings.TrimSpace(m[2]))
+				}
 			case "size":
 				if n, err := strconv.ParseInt(m[2], 10, 64); err == nil {
 					it.sizeHuman = formatBytes(n)
 				}
 			}
 		}
-		// Размер не всегда приходит как torznab:attr — некоторые индексера
-		// отдают его прямым тегом <size> (если attr не разобрался).
+		// Размер иногда приходит тегом <size>, а не torznab:attr.
 		if it.sizeHuman == "" {
 			if m := jtSizeRe.FindStringSubmatch(block); len(m) == 2 {
 				if n, err := strconv.ParseInt(strings.TrimSpace(m[1]), 10, 64); err == nil {
@@ -302,10 +309,9 @@ func parseJackettItems(xml string) []jackettItem {
 
 // downloadMagnet скачивает .torrent через Jackett и строит magnet-ссылку.
 func (j *Jackett) downloadMagnet(ctx context.Context, u string) (string, error) {
-	// Jackett по умолчанию формирует ссылки на себя как http://localhost:9117,
-	// а наш сервис может ходить к нему по другому адресу (например
-	// http://jackett:9117 в docker-compose). Подменяем localhost/127.0.0.1
-	// на реальный адрес Jackett из конфигурации.
+	// Jackett формирует ссылки на себя как http://localhost:9117, а наш сервис
+	// ходит к нему по другому адресу (http://jackett:9117 в docker-compose):
+	// подменяем localhost/127.0.0.1 на реальный адрес из конфигурации.
 	if parsed, err := url.Parse(u); err == nil {
 		if h := parsed.Hostname(); h == "localhost" || h == "127.0.0.1" {
 			if b, err2 := url.Parse(j.baseURL); err2 == nil && b.Host != "" {

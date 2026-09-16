@@ -48,14 +48,12 @@ CREATE TABLE IF NOT EXISTS films (
 );
 `
 
-// yearExpr — год фильма, вычисляемый из release_date ("YYYY-MM-DD": год —
-// первые 4 символа). Колонка year удалена; release_date — единственный
-// источник года (для сортировки, поиска и сопоставления с TMDB).
+// yearExpr — год фильма из release_date ("YYYY-MM-DD": первые 4 символа). Колонка year удалена;
+// release_date — единственный источник года (сортировка, поиск, сопоставление с TMDB).
 const yearExpr = `COALESCE(NULLIF(SUBSTRING(release_date FROM 1 FOR 4), '')::int, 0)`
 
-// releaseDateUpsert — обновление release_date в ON CONFLICT: точная дата
-// ("2024-05-10") не затирается «фолбэком по году» ("2024-01-01") из
-// источника без даты; фолбэк заменяется точной датой, когда она приходит.
+// releaseDateUpsert — обновление release_date в ON CONFLICT: точная дата ("2024-05-10") не затирается
+// «фолбэком по году» ("2024-01-01") из источника без даты; фолбэк заменяется точной датой, когда она приходит.
 const releaseDateUpsert = `release_date = CASE
 		WHEN NULLIF(EXCLUDED.release_date, '') IS NULL THEN films.release_date
 		WHEN films.release_date = SUBSTRING(EXCLUDED.release_date FROM 1 FOR 4) || '-01-01' THEN EXCLUDED.release_date
@@ -63,9 +61,7 @@ const releaseDateUpsert = `release_date = CASE
 		ELSE COALESCE(NULLIF(EXCLUDED.release_date, ''), films.release_date)
 	END`
 
-// releaseDateVal возвращает дату выпуска для записи в БД: полную дату,
-// либо фолбэк по году "YYYY-01-01" (год теперь берётся из release_date),
-// либо "" (дата неизвестна).
+// releaseDateVal возвращает дату выпуска для записи в БД: полную дату, фолбэк по году "YYYY-01-01" (год берётся из release_date) или "".
 func releaseDateVal(releaseDate string, year int) string {
 	if strings.TrimSpace(releaseDate) != "" {
 		return releaseDate
@@ -76,7 +72,7 @@ func releaseDateVal(releaseDate string, year int) string {
 	return ""
 }
 
-// filmCols — колонки для SELECT (с COALESCE, чтобы сканировать без NULL).
+// filmCols — колонки для SELECT (везде COALESCE, чтобы сканировать без NULL).
 // genres хранится как JSON-строка: pgx stdlib не сканирует text[] в []string.
 const filmCols = `imdb_id, title, COALESCE(title_ru, ''), COALESCE(kind, ''), ` + yearExpr + `,
 	COALESCE(rating, 0), COALESCE(votes, 0), COALESCE(plot, ''),
@@ -88,9 +84,7 @@ const filmCols = `imdb_id, title, COALESCE(title_ru, ''), COALESCE(kind, ''), ` 
 	COALESCE(release_date, ''),
 	COALESCE(tmdb_not_found, false)`
 
-// filmColsLite — лёгкий набор колонок для списков каталога: без тяжёлых
-// описаний plot/plot_ru (карточки их не показывают, а описания догружаются
-// при открытии фильма). Тянем меньше данных на каждую страницу каталога.
+// filmColsLite — лёгкий набор колонок для списков каталога: без тяжёлых описаний plot/plot_ru (догружаются при открытии фильма).
 const filmColsLite = `imdb_id, title, COALESCE(title_ru, ''), COALESCE(kind, ''), ` + yearExpr + `,
 	COALESCE(rating, 0), COALESCE(votes, 0),
 	COALESCE(genres, '[]'), COALESCE(poster_url, ''),
@@ -127,17 +121,17 @@ type Film struct {
 	Countries       []string `json:"countries,omitempty"`
 	Director        string   `json:"director,omitempty"`
 	Actors          []string `json:"actors,omitempty"`
-	// RatingUpdatedAt — когда последний раз обновлялся рейтинг (заполняется
-	// только запросом джобы обновления рейтингов; в общих списках — нулевое).
+	// RatingUpdatedAt — когда последний раз обновлялся рейтинг (заполняется только джобой обновления рейтингов; в списках — нулевое).
 	RatingUpdatedAt time.Time `json:"-"`
-	// TMDBNotFound — на TMDB не найдено совпадение (выводится отдельной
-	// таблицей на админ-странице, из списка «пустые поля» исключается).
+	// TMDBNotFound — совпадение на TMDB не найдено (отдельная таблица на админ-странице, из «пустых полей» исключается).
 	TMDBNotFound bool `json:"tmdb_not_found,omitempty"`
 }
 
-// EnsureSchema создаёт таблицу films, если её нет, и применяет миграции
-// (новые колонки локализации) к уже существующим таблицам.
+// EnsureSchema создаёт таблицу films, если её нет, и применяет миграции (новые колонки локализации) к существующим.
 func (r *Repo) EnsureSchema(ctx context.Context) error {
+	if _, err := r.conn.ExecContext(ctx, seriesSchema); err != nil {
+		return err
+	}
 	if _, err := r.conn.ExecContext(ctx, schema); err != nil {
 		return err
 	}
@@ -199,11 +193,14 @@ func (r *Repo) EnsureSchema(ctx context.Context) error {
 	if err := r.ensureAuthSchema(ctx); err != nil {
 		return err
 	}
-	return r.ensureHistorySchema(ctx)
+	if err := r.ensureHistorySchema(ctx); err != nil {
+		return err
+	}
+	// Таблицы IPTV (плейлисты, каналы, телепрограмма).
+	return r.ensureIPTVSchema(ctx)
 }
 
-// UpsertFilms сохраняет фильмы чарта IMDb в БД: новые записи вставляются,
-// существующие — обновляются (метаданные и позиция в чарте).
+// UpsertFilms сохраняет фильмы чарта IMDb: новые вставляет, существующие обновляет (метаданные и позиция в чарте).
 // Возвращает число вставленных записей.
 func (r *Repo) UpsertFilms(ctx context.Context, films []imdb.Film, chart imdb.ChartKind) (int, error) {
 	if len(films) == 0 {
@@ -274,38 +271,8 @@ func (r *Repo) UpsertFilms(ctx context.Context, films []imdb.Film, chart imdb.Ch
 	return inserted, nil
 }
 
-// ListFilms возвращает все фильмы: сначала топ-250, затем популярные,
-// затем остальные.
-func (r *Repo) ListFilms(ctx context.Context) ([]Film, error) {
-	rows, err := r.conn.QueryContext(ctx, `
-		SELECT `+filmCols+`
-		FROM films
-		ORDER BY
-			CASE WHEN rank_top250  IS NOT NULL THEN 0
-			     WHEN rank_popular IS NOT NULL THEN 1
-			     ELSE 2 END,
-			COALESCE(rank_top250, rank_popular, 2147483647),
-			created_at DESC
-	`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var films []Film
-	for rows.Next() {
-		f, err := scanFilm(rows)
-		if err != nil {
-			return nil, err
-		}
-		films = append(films, f)
-	}
-	return films, rows.Err()
-}
-
-// ListFilmsLite возвращает фильмы каталога лёгким набором колонок (без
-// описаний plot/plot_ru) — используется для страниц и метаданных каталога.
-// Порядок тот же, что в ListFilms: топ-250, популярные, затем остальные.
+// ListFilmsLite возвращает фильмы каталога лёгким набором колонок (без описаний plot/plot_ru) — для страниц и метаданных.
+// Порядок: топ-250, популярные, затем остальные.
 func (r *Repo) ListFilmsLite(ctx context.Context) ([]Film, error) {
 	rows, err := r.conn.QueryContext(ctx, `
 		SELECT `+filmColsLite+`
@@ -347,47 +314,7 @@ func (r *Repo) GetByIMDBID(ctx context.Context, id string) (Film, bool, error) {
 	return f, true, nil
 }
 
-// FilmsMissingLocalization возвращает IMDb ID фильмов, у которых нет
-// русского названия или описания (для фоновой локализации каталога).
-func (r *Repo) FilmsMissingLocalization(ctx context.Context, limit int) ([]string, error) {
-	rows, err := r.conn.QueryContext(ctx, `
-		SELECT imdb_id FROM films
-		WHERE title_ru IS NULL OR title_ru = '' OR plot_ru IS NULL OR plot_ru = ''
-		ORDER BY created_at
-		LIMIT $1
-	`, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		ids = append(ids, id)
-	}
-	return ids, rows.Err()
-}
-
-// UpdateLocalization сохраняет русские название/описание (и английское
-// описание, если оно было пустым) для фильма.
-func (r *Repo) UpdateLocalization(ctx context.Context, id, titleRU, plotRU, plot string) error {
-	_, err := r.conn.ExecContext(ctx, `
-		UPDATE films SET
-			title_ru   = COALESCE(NULLIF($2, ''), title_ru),
-			plot_ru    = COALESCE(NULLIF($3, ''), plot_ru),
-			plot       = COALESCE(NULLIF($4, ''), plot),
-			updated_at = now()
-		WHERE imdb_id = $1
-	`, id, titleRU, plotRU, plot)
-	return err
-}
-
-// FilmsMissingTitleRU возвращает IMDb ID фильмов без русского названия
-// (для пакетной локализации названий).
+// FilmsMissingTitleRU возвращает IMDb ID фильмов без русского названия (для пакетной локализации названий).
 func (r *Repo) FilmsMissingTitleRU(ctx context.Context, limit int) ([]string, error) {
 	rows, err := r.conn.QueryContext(ctx, `
 		SELECT imdb_id FROM films
@@ -411,8 +338,7 @@ func (r *Repo) FilmsMissingTitleRU(ctx context.Context, limit int) ([]string, er
 	return ids, rows.Err()
 }
 
-// SetTitleLocalization сохраняет русское название и заголовок статьи
-// в русской Википедии для фильма.
+// SetTitleLocalization сохраняет русское название и заголовок статьи в русской Википедии для фильма.
 func (r *Repo) SetTitleLocalization(ctx context.Context, imdbID, titleRU, ruWiki string) error {
 	_, err := r.conn.ExecContext(ctx, `
 		UPDATE films SET
@@ -430,8 +356,7 @@ type RuWikiFilm struct {
 	RuWikiTitle string
 }
 
-// FilmsWithRuWikiNoPlot возвращает фильмы, у которых есть статья в
-// ru-wiki, но нет русского описания (для фоновой загрузки описаний).
+// FilmsWithRuWikiNoPlot возвращает фильмы со статьёй в ru-wiki, но без русского описания (для фоновой загрузки описаний).
 func (r *Repo) FilmsWithRuWikiNoPlot(ctx context.Context, limit int) ([]RuWikiFilm, error) {
 	rows, err := r.conn.QueryContext(ctx, `
 		SELECT imdb_id, ruwiki_title FROM films
@@ -465,11 +390,7 @@ func (r *Repo) SetPlotRU(ctx context.Context, imdbID, plotRU string) error {
 	return err
 }
 
-// FilmsWithoutMagnet больше не нужен: фоновый автопоиск магнетов удалён
-// (поиск источников — только on-demand через /api/films/{id}/sources).
-
-// SaveFilm сохраняет (или обновляет) одиночный фильм из IMDb.
-// Используется при on-demand загрузке, когда фильма нет в БД.
+// SaveFilm сохраняет (или обновляет) одиночный фильм из IMDb (on-demand загрузка, когда фильма нет в БД).
 func (r *Repo) SaveFilm(ctx context.Context, f imdb.Film) error {
 	_, err := r.conn.ExecContext(ctx, `
 		INSERT INTO films (imdb_id, title, title_ru, kind, release_date, rating, votes, plot, plot_ru, genres, poster_url, seasons)
@@ -493,9 +414,8 @@ func (r *Repo) SaveFilm(ctx context.Context, f imdb.Film) error {
 	return err
 }
 
-// SaveTMDBFilm сохраняет (или обновляет) одиночный фильм из TMDB
-// (on-demand поиск/открытие). Рейтинг TMDB пишется в rating_tmdb, поле
-// rating (IMDb) не затирается.
+// SaveTMDBFilm сохраняет (или обновляет) одиночный фильм из TMDB (on-demand поиск/открытие).
+// Рейтинг TMDB пишется в rating_tmdb, поле rating (IMDb) не затирается.
 func (r *Repo) SaveTMDBFilm(ctx context.Context, f tmdb.Film) error {
 	_, err := r.conn.ExecContext(ctx, `
 		INSERT INTO films (imdb_id, title, title_ru, kind, release_date, plot_ru, genres, poster_url, tmdb_id, rating_tmdb, votes_tmdb)
@@ -517,9 +437,8 @@ func (r *Repo) SaveTMDBFilm(ctx context.Context, f tmdb.Film) error {
 	return err
 }
 
-// UpdateFilmExtras сохраняет расширенные данные карточки фильма
-// (длительность, страна, режиссёр, главные роли), полученные on-demand
-// из Кинопоиска при открытии. Пустые значения не затирают уже сохранённые.
+// UpdateFilmExtras сохраняет расширенные данные карточки (длительность, страна, режиссёр, главные роли)
+// из Wikidata. Пустые значения не затирают уже сохранённые.
 func (r *Repo) UpdateFilmExtras(ctx context.Context, imdbID string, movieLength int, countries []string, director string, actors []string) error {
 	_, err := r.conn.ExecContext(ctx, `
 		UPDATE films SET
@@ -533,8 +452,7 @@ func (r *Repo) UpdateFilmExtras(ctx context.Context, imdbID string, movieLength 
 	return err
 }
 
-// UpdateSeasons сохраняет число сезонов сериала (дозаполнение данных
-// для записей, сохранённых по источнику без сезонов).
+// UpdateSeasons сохраняет число сезонов сериала (дозаполнение для записей, сохранённых по источнику без сезонов).
 func (r *Repo) UpdateSeasons(ctx context.Context, imdbID string, seasons int) error {
 	_, err := r.conn.ExecContext(ctx, `
 		UPDATE films SET seasons = $2, updated_at = now() WHERE imdb_id = $1
@@ -561,25 +479,6 @@ func FromIMDB(f imdb.Film) Film {
 	}
 }
 
-// FromTMDB преобразует фильм TMDB в запись БД. Рейтинг TMDB кладётся
-// в rating_tmdb (поле rating — это IMDb-рейтинг, не затираем).
-func FromTMDB(f tmdb.Film) Film {
-	return Film{
-		IMDBID:      f.IMDBID,
-		TMDBID:      itoa(f.TMDBID),
-		Title:       f.Title,
-		TitleRU:     f.TitleRU,
-		Kind:        f.Kind,
-		Year:        f.Year,
-		ReleaseDate: f.ReleaseDate,
-		RatingTMDB:  f.Rating,
-		VotesTMDB:   f.Votes,
-		PlotRU:      f.OverviewRU,
-		Genres:      f.Genres,
-		PosterURL:   f.PosterURL,
-	}
-}
-
 func itoa(v int64) string {
 	if v == 0 {
 		return ""
@@ -587,11 +486,9 @@ func itoa(v int64) string {
 	return strconv.FormatInt(v, 10)
 }
 
-// UpsertTMDBFilms сохраняет фильмы чарта TMDB (top_rated или популярные)
-// в БД. Идентификация — по imdb_id (из /movie/{id}/external_ids), для
-// фильмов без IMDb — пустой imdb_id не вставляется (без IMDb-дубля в
-// каталог такие записи не добавляем). Жанры объединяются с уже
-// сохранёнными. Возвращает число вставленных записей.
+// UpsertTMDBFilms сохраняет фильмы чарта TMDB (top_rated или популярные) в БД. Идентификация — по imdb_id
+// (из /movie/{id}/external_ids); записи без IMDb не вставляем (без IMDb-дубля они не попадают в каталог).
+// Жанры объединяются с уже сохранёнными. Возвращает число вставленных записей.
 func (r *Repo) UpsertTMDBFilms(ctx context.Context, films []tmdb.Film, chart tmdb.ChartKind) (int, error) {
 	if len(films) == 0 {
 		return 0, nil
@@ -671,11 +568,9 @@ func (r *Repo) UpsertTMDBFilms(ctx context.Context, films []tmdb.Film, chart tmd
 	return inserted, nil
 }
 
-// chartKindSQL возвращает SQL-выражение набора kind для чарта: «фильмы»
-// (feature + legacy пустой kind) или «сериалы» (tvSeries/tvMiniSeries).
-// Чарты фильмов и сериалов делят одни колонки рангов (rank_tmdb_top250/
-// rank_tmdb_popular), поэтому чистка идёт ТОЛЬКО по нужному типу — иначе
-// цикл чарта фильмов затирал бы ранги сериалов и наоборот.
+// chartKindSQL возвращает SQL-выражение набора kind для чарта: «фильмы» (feature + legacy пустой kind)
+// или «сериалы» (tvSeries/tvMiniSeries). Чарты фильмов и сериалов делят одни колонки рангов
+// (rank_tmdb_top250/rank_tmdb_popular), поэтому чистка идёт ТОЛЬКО по нужному типу — иначе цикл фильмов затирал бы ранги сериалов.
 func chartKindSQL(series bool) string {
 	if series {
 		return "kind IN ('tvSeries','tvMiniSeries')"
@@ -683,9 +578,8 @@ func chartKindSQL(series bool) string {
 	return "kind IN ('feature', '')"
 }
 
-// ClearTMDBRank сбрасывает ранги чарта TMDB (top_rated или популярные)
-// для указанного типа контента (фильмы/сериалы) перед загрузкой свежего
-// списка, чтобы сошедшие с чарта записи не сохраняли устаревшие позиции.
+// ClearTMDBRank сбрасывает ранги чарта TMDB (top_rated или популярные) для указанного типа контента
+// перед загрузкой свежего списка, чтобы сошедшие с чарта записи не сохраняли устаревшие позиции.
 func (r *Repo) ClearTMDBRank(ctx context.Context, chart tmdb.ChartKind, series bool) error {
 	col := "rank_tmdb_top250"
 	if chart == tmdb.ChartPopular {
@@ -695,9 +589,7 @@ func (r *Repo) ClearTMDBRank(ctx context.Context, chart tmdb.ChartKind, series b
 	return err
 }
 
-// ListPopular возвращает «популярные» фильмы одним списком: из чарта
-// IMDb (moviemeter, rank_popular) и из TMDB (rank_tmdb_popular),
-// объединённые без дублей.
+// ListPopular — «популярные» одним списком: чарт IMDb (moviemeter, rank_popular) + TMDB (rank_tmdb_popular), без дублей.
 func (r *Repo) ListPopular(ctx context.Context) ([]Film, error) {
 	rows, err := r.conn.QueryContext(ctx, `
 		SELECT `+filmCols+`
@@ -725,10 +617,8 @@ func (r *Repo) ListPopular(ctx context.Context) ([]Film, error) {
 	return films, rows.Err()
 }
 
-// ListTopRated возвращает «лучшие» записи (чарт top_rated: IMDb rank_top250
-// и/или TMDB rank_tmdb_top250) для фильмов (series=false) или сериалов
-// (series=true), в порядке позиции чарта. Используется подборками
-// «Лучшие фильмы» / «Лучшие сериалы».
+// ListTopRated — «лучшие» (rank_top250 и/или rank_tmdb_top250) в порядке чарта, для фильмов (series=false)
+// или сериалов (series=true) — подборки «Лучшие фильмы»/«Лучшие сериалы».
 func (r *Repo) ListTopRated(ctx context.Context, series bool) ([]Film, error) {
 	rows, err := r.conn.QueryContext(ctx, `
 		SELECT `+filmCols+`
@@ -756,10 +646,8 @@ func (r *Repo) ListTopRated(ctx context.Context, series bool) ([]Film, error) {
 	return films, rows.Err()
 }
 
-// ListPopularKind возвращает «популярные» записи (IMDb rank_popular и/или
-// TMDB rank_tmdb_popular) для фильмов (series=false) или сериалов
-// (series=true), в порядке чарта — для подборок «Популярные фильмы/
-// сериалы».
+// ListPopularKind — «популярные» (rank_popular и/или rank_tmdb_popular) в порядке чарта, для фильмов (series=false)
+// или сериалов (series=true) — подборки «Популярные фильмы/сериалы».
 func (r *Repo) ListPopularKind(ctx context.Context, series bool) ([]Film, error) {
 	rows, err := r.conn.QueryContext(ctx, `
 		SELECT `+filmCols+`
@@ -788,14 +676,9 @@ func (r *Repo) ListPopularKind(ctx context.Context, series bool) ([]Film, error)
 	return films, rows.Err()
 }
 
-// FilmsNeedingRatingRefresh возвращает до limit «популярных» фильмов
-// (чарты IMDb rank_popular и/или TMDB rank_tmdb_popular) с самым старым
-// (или отсутствующим) временем обновления рейтинга — кандидаты для
-// фоновой джобы обновления рейтингов. Не обновлявшиеся никогда идут
-// первыми; порядок детерминирован по imdb_id.
-// Вместе с id возвращаются поля для сверки кандидата TMDB: названия
-// (RU/EN), год, режиссёр и актёры. Записи без tmdb_id включаются — джоба
-// ищет их по названию с проверкой совпадения.
+// FilmsNeedingRatingRefresh возвращает до limit «популярных» фильмов с самым старым (или отсутствующим)
+// временем обновления рейтинга — кандидаты для фоновой джобы обновления рейтингов (никогда не обновлявшиеся — первыми,
+// порядок детерминирован по imdb_id). Записи без tmdb_id включаются: джоба ищет их по названию с проверкой совпадения.
 func (r *Repo) FilmsNeedingRatingRefresh(ctx context.Context, limit int) ([]Film, error) {
 	rows, err := r.conn.QueryContext(ctx, `
 		SELECT imdb_id, COALESCE(tmdb_id, ''), COALESCE(title, ''), COALESCE(title_ru, ''),
@@ -827,10 +710,9 @@ func (r *Repo) FilmsNeedingRatingRefresh(ctx context.Context, limit int) ([]Film
 	return films, rows.Err()
 }
 
-// UpdateRating обновляет рейтинг TMDB (и дату выпуска, если пришла),
-// привязывает найденный tmdb_id и помечает rating_updated_at, чтобы джоба
-// не переспрашивала слишком часто. Рейтинг 0 и пустой tmdb_id не затирают
-// уже сохранённые.
+// UpdateRating обновляет рейтинг TMDB (и дату выпуска, если пришла), привязывает tmdb_id
+// и помечает rating_updated_at, чтобы джоба не переспрашивала слишком часто.
+// Рейтинг 0 и пустой tmdb_id не затирают уже сохранённые.
 func (r *Repo) UpdateRating(ctx context.Context, imdbID string, ratingTmdb float64, votesTmdb int64, releaseDate, tmdbID string) error {
 	_, err := r.conn.ExecContext(ctx, `
 		UPDATE films SET
@@ -845,10 +727,9 @@ func (r *Repo) UpdateRating(ctx context.Context, imdbID string, ratingTmdb float
 	return err
 }
 
-// FilmsMissingData возвращает до limit записей с пустыми полями, которые
-// можно заполнить из TMDB (kind/title_ru/plot_ru/genres/poster/rating_tmdb/
-// tmdb_id). Используется одноразовым инструментом бэкфилла (cmd/backfill),
-// отдельно от фоновой джобы. Порядок — по времени создания (старые сначала).
+// FilmsMissingData возвращает до limit записей с пустыми полями, заполняемыми из TMDB
+// (kind/title_ru/plot_ru/genres/poster/rating_tmdb/tmdb_id) — для инструмента бэкфилла cmd/backfill, отдельно от джобы.
+// Порядок — по времени создания (старые сначала).
 func (r *Repo) FilmsMissingData(ctx context.Context, limit int) ([]Film, error) {
 	rows, err := r.conn.QueryContext(ctx, `
 		SELECT imdb_id, COALESCE(tmdb_id, ''), COALESCE(title, ''), COALESCE(title_ru, ''),
@@ -887,8 +768,7 @@ func (r *Repo) FilmsMissingData(ctx context.Context, limit int) ([]Film, error) 
 	return films, rows.Err()
 }
 
-// FilmsMissingDataCount возвращает число записей с пустыми полями
-// (для оценки объёма бэкфилла).
+// FilmsMissingDataCount возвращает число записей с пустыми полями (оценка объёма бэкфилла).
 func (r *Repo) FilmsMissingDataCount(ctx context.Context) (int, error) {
 	var n int
 	err := r.conn.QueryRowContext(ctx, `
@@ -905,9 +785,8 @@ func (r *Repo) FilmsMissingDataCount(ctx context.Context) (int, error) {
 	return n, err
 }
 
-// FilmsMissingFull возвращает до limit записей с пустыми полями в полном
-// наборе колонок (для админ-страницы редактирования данных). Порядок —
-// по времени создания (старые сначала).
+// FilmsMissingFull возвращает до limit записей с пустыми полями в полном наборе колонок (для админ-страницы).
+// Порядок — по времени создания (старые сначала).
 func (r *Repo) FilmsMissingFull(ctx context.Context, limit int) ([]Film, error) {
 	rows, err := r.conn.QueryContext(ctx, `
 		SELECT `+filmCols+`
@@ -939,8 +818,7 @@ func (r *Repo) FilmsMissingFull(ctx context.Context, limit int) ([]Film, error) 
 	return films, rows.Err()
 }
 
-// FilmsTMDBNotFound возвращает до limit записей, помеченных как «не
-// найдено совпадение на TMDB» (отдельная таблица на админ-странице).
+// FilmsTMDBNotFound возвращает до limit записей, помеченных «не найдено на TMDB».
 // Полный набор колонок — для показа и ручного снятия отметки.
 func (r *Repo) FilmsTMDBNotFound(ctx context.Context, limit int) ([]Film, error) {
 	rows, err := r.conn.QueryContext(ctx, `
@@ -966,9 +844,8 @@ func (r *Repo) FilmsTMDBNotFound(ctx context.Context, limit int) ([]Film, error)
 	return films, rows.Err()
 }
 
-// SetTMDBNotFound ставит/снимает отметку «не найдено совпадение на TMDB».
-// true — запись исключается из списков «пустых полей» (показывается
-// отдельной таблицей), false — возвращается в общий список.
+// SetTMDBNotFound ставит/снимает отметку «не найдено совпадение на TMDB»: true — запись исключается
+// из списков «пустых полей» (показывается отдельной таблицей), false — возвращается в общий список.
 func (r *Repo) SetTMDBNotFound(ctx context.Context, id string, notFound bool) error {
 	_, err := r.conn.ExecContext(ctx, `
 		UPDATE films SET tmdb_not_found = $2, updated_at = now() WHERE imdb_id = $1
@@ -976,10 +853,8 @@ func (r *Repo) SetTMDBNotFound(ctx context.Context, id string, notFound bool) er
 	return err
 }
 
-// UpdateFilmAdmin перезаписывает редактируемые поля фильма значениями,
-// присланными с админ-страницы (пустые строки → NULL, списки — JSON).
-// Это админское редактирование: значения задаются явно, а не «заполнить
-// если пусто».
+// UpdateFilmAdmin перезаписывает редактируемые поля значениями с админ-страницы (пустые строки → NULL, списки — JSON).
+// Это админское редактирование: значения задаются явно, а не «заполнить если пусто».
 func (r *Repo) UpdateFilmAdmin(ctx context.Context, id string, d Film) error {
 	_, err := r.conn.ExecContext(ctx, `
 		UPDATE films SET
@@ -1000,10 +875,8 @@ func (r *Repo) UpdateFilmAdmin(ctx context.Context, id string, d Film) error {
 	return err
 }
 
-// UpdateFilmData заполняет недостающие поля фильма данными из TMDB, не
-// затирая уже заполненные: kind, названия, описания, жанры, постер,
-// tmdb_id, рейтинг/голоса TMDB, дату выпуска, длительность, режиссёра,
-// актёров. Рейтинг и голоса обновляются всегда (если пришли ненулевые);
+// UpdateFilmData заполняет недостающие поля фильма из TMDB, не затирая заполненные (kind, названия, описания,
+// жанры, постер, tmdb_id, длительность, режиссёр, актёры). Рейтинг и голоса пишутся всегда, если ненулевые;
 // дата выпуска уточняется (фолбэк "YYYY-01-01" заменяется точной датой).
 func (r *Repo) UpdateFilmData(ctx context.Context, id string, d Film) error {
 	_, err := r.conn.ExecContext(ctx, `
@@ -1080,8 +953,7 @@ func scanFilm(s scanner) (Film, error) {
 	return f, nil
 }
 
-// scanFilmLite — сканирование лёгкого набора колонок (filmColsLite):
-// без описаний plot/plot_ru. Остальные поля заполняются как в scanFilm.
+// scanFilmLite — сканирование лёгкого набора колонок (filmColsLite): без описаний plot/plot_ru, остальное как в scanFilm.
 func scanFilmLite(s scanner) (Film, error) {
 	var (
 		f                Film
@@ -1130,7 +1002,6 @@ func genresJSON(genres []string) string {
 	return string(b)
 }
 
-// parseGenres разбирает JSON-строку жанров в список.
 func parseGenres(s string) []string {
 	if s == "" || s == "[]" {
 		return nil
@@ -1157,7 +1028,6 @@ func nullInt(v int) sql.NullInt64 {
 	return sql.NullInt64{Int64: int64(v), Valid: true}
 }
 
-// nullInt64 возвращает NULL для нулевого значения (для BIGINT).
 func nullInt64(v int64) sql.NullInt64 {
 	if v == 0 {
 		return sql.NullInt64{}
@@ -1165,7 +1035,6 @@ func nullInt64(v int64) sql.NullInt64 {
 	return sql.NullInt64{Int64: v, Valid: true}
 }
 
-// nullStr возвращает nil для пустой строки (NULL в БД).
 func nullStr(s string) any {
 	if s == "" {
 		return nil

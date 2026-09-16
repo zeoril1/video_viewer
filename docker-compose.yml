@@ -8,6 +8,11 @@
 # Внутренние сервисы НЕ публикуют порты наружу (доступны только в сети
 # compose); наружу выставляются только gateway:8080 и торрент-порт 42069/udp.
 #
+# Доступ из локальной сети — сразу по http://<IP-хоста>:8080 (порт
+# опубликован на всех интерфейсах). Доступ из интернета — необязательный
+# профиль public (сервис caddy ниже): HTTPS-прокси на 80/443, поднимается
+# командой `docker compose --profile public up -d`.
+#
 # Логирование:
 #   docker compose up -d --build --progress plain   # подробный вывод сборки (все команды)
 #   docker compose logs -f                          # живые логи всех сервисов
@@ -108,6 +113,17 @@ services:
     environment:
       # Для резолва магнет-ссылки по id (/api/stream/{id} без ?magnet=).
       CATALOG_URL: ${CATALOG_URL:-http://catalog:8081}
+      # Дисковый спул скачанных кусков (вместо RAM): временный каталог, файлы
+      # создаются по одному на серию/файл торрента (место выделяется только
+      # под то, что качается) и удаляются после просмотра. Пустая
+      # STREAM_DATA_DIR отключает спул.
+      STREAM_DATA_DIR: ${STREAM_DATA_DIR:-/app/cache}
+      # Ключи TMDB — для раскладки файлов сериалов по сезонам TMDB (у трекеров
+      # своя нарезка сезонов, сборники нумеруют серии сквозняком).
+      TMDB_API_KEY: ${TMDB_API_KEY:-}
+      TMDB_ACCESS_TOKEN: ${TMDB_ACCESS_TOKEN:-}
+    volumes:
+      - stream-cache:/app/cache   # временные данные стриминга (спул)
     command: ["/app/app", "-addr", ":8082", "-port", "42069"]
     ports:
       - "42069:42069/udp"  # BitTorrent uTP/DHT (для входящих пиров)
@@ -151,6 +167,43 @@ services:
       retries: 15
       start_period: 10s
 
+  # --- Сервис IPTV (плейлисты M3U/Xtream, каналы, EPG, live-HLS) ---
+  # Плейлисты добавляются в админке (кнопка «IPTV»), креды провайдера
+  # остаются на сервере: клиент получает только id канала и HLS с нас.
+  iptv:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: iptv
+        # ffmpeg нужен для перепаковки MPEG-TS каналов в HLS (HLS-каналы
+        # проксируются без него).
+        WITH_FFMPEG: "1"
+    image: video-viewer-iptv:latest
+    container_name: video-viewer-iptv
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgres://video_viewer:video_viewer@db:5432/video_viewer?sslmode=disable}
+      # Каталог временных HLS-сессий ffmpeg (том ниже).
+      IPTV_DATA_DIR: ${IPTV_DATA_DIR:-/app/cache}
+    volumes:
+      - iptv-cache:/app/cache
+    command: ["/app/app", "-addr", ":8084", "-max-sessions", "${IPTV_MAX_SESSIONS:-8}", "-session-idle", "${IPTV_SESSION_IDLE:-90s}", "-sync-interval", "${IPTV_SYNC_INTERVAL:-6h}", "-epg-interval", "${IPTV_EPG_INTERVAL:-3h}"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8084/api/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 10s
+
   # --- API-шлюз (публичная точка входа: web + прокси /api/*) ---
   gateway:
     build:
@@ -173,10 +226,14 @@ services:
         condition: service_healthy
       auth:
         condition: service_healthy
+      iptv:
+        condition: service_healthy
     environment:
+      TRUSTED_PROXY: ${TRUSTED_PROXY:-caddy}
       CATALOG_URL: ${CATALOG_URL:-http://catalog:8081}
       STREAM_URL: ${STREAM_URL:-http://stream:8082}
       AUTH_URL: ${AUTH_URL:-http://auth:8083}
+      IPTV_URL: ${IPTV_URL:-http://iptv:8084}
     ports:
       - "8080:8080"        # веб-интерфейс / API (единственный публичный HTTP-порт)
     volumes:
@@ -187,6 +244,46 @@ services:
       timeout: 5s
       retries: 15
       start_period: 10s
+
+  # --- Публичный доступ из интернета (НЕОБЯЗАТЕЛЬНЫЙ профиль public) ---
+  # Caddy терминирует HTTPS (сертификат Let's Encrypt получает сам) и
+  # проксирует всё на gateway. Нужен, когда вы пробрасываете порты
+  # 80/443 на роутере: наружу отдаётся только он, шлюз остаётся для
+  # локальной сети по 8080.
+  #   docker compose --profile public up -d
+  #   .env → PUBLIC_DOMAIN=vv-home.duckdns.org (домен, указывающий на ваш IP)
+  # Проброс на роутере: 80→80 и 443→443 этого хоста.
+  caddy:
+    image: caddy:2-alpine
+    container_name: video-viewer-caddy
+    restart: unless-stopped
+    profiles: ["public"]
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    depends_on:
+      gateway:
+        condition: service_healthy
+    environment:
+      # Домен для сертификата; пусто → localhost (самоподписанный, для проверки).
+      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:-localhost}
+    ports:
+      - "80:80"            # HTTP: ACME-проверка Let's Encrypt + редирект на HTTPS
+      - "443:443"          # HTTPS: публичный вход в веб-интерфейс из интернета
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro  # конфиг — правится без пересборки
+      - caddy-data:/data                     # сертификаты (не терять при пересоздании)
+      - caddy-config:/config
+    healthcheck:
+      # Проверяем по admin-API Caddy (localhost:2019): он есть всегда, а
+      # «сайт» зависит от PUBLIC_DOMAIN (http-порт отвечает редиректом).
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:2019/config/ >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
 
   # --- Jackett — поиск раздач на трекерах с антиботом/приватных (RuTracker):
   # сам хранит доступы, решает капчу при настройке и обходит Cloudflare. ---
@@ -219,3 +316,14 @@ services:
 
 volumes:
   pgdata:
+  # Временные данные стриминга (дисковый спул stream-сервиса);
+  # контейнер удаляет файлы спула после просмотра сам.
+  stream-cache:
+  # Временные HLS-сессии ffmpeg сервиса IPTV (плейлист и сегменты канала);
+  # сессия гасится после бездействия, каталог удаляется.
+  iptv-cache:
+  # Caddy (профиль public): сертификаты Let's Encrypt и его конфиг —
+  # не пересоздавать при обновлении контейнера, иначе легко упереться
+  # в лимиты Let's Encrypt на выпуск сертификатов.
+  caddy-data:
+  caddy-config:

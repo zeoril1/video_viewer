@@ -1,7 +1,4 @@
-// Package tmdb — клиент The Movie Database (TMDB). Свободный API-ключ
-// без жёстких суточных лимитов (мягкий потолок ~40 req/s). Заменяет
-// Кинопоиск (токен с ограничениями) для «популярных», «топ-250» и
-// внешнего поиска.
+// Package tmdb — клиент The Movie Database (TMDB); мягкий потолок ~40 req/s.
 package tmdb
 
 import (
@@ -11,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -27,12 +25,11 @@ type Client struct {
 	accessToken string
 	baseURL     string
 	http        *http.Client
+	// seasonsCache — кэш структуры сезонов сериалов (меняется редко).
+	seasonsCache *seasonsCache
 }
 
-// NewClient создаёт клиент TMDB. Доступны два способа авторизации
-// (оба из env): accessToken — «API Read Access Token» (рекомендуемый,
-// идёт в Authorization: Bearer), apiKey — «API Key» (v3, запасной).
-// Если accessToken задан — используется он, иначе apiKey.
+// NewClient создаёт клиент TMDB; accessToken (Bearer) приоритетнее apiKey.
 func NewClient(apiKey, accessToken, baseURL string) *Client {
 	if baseURL == "" {
 		baseURL = DefaultBaseURL
@@ -42,6 +39,9 @@ func NewClient(apiKey, accessToken, baseURL string) *Client {
 		accessToken: strings.TrimSpace(accessToken),
 		baseURL:     strings.TrimRight(baseURL, "/"),
 		http:        &http.Client{Timeout: 30 * time.Second},
+		seasonsCache: &seasonsCache{
+			m: map[int64]seasonEntry{},
+		},
 	}
 }
 
@@ -65,32 +65,28 @@ func (k ChartKind) String() string {
 
 // Film — фильм из TMDB (внутреннее представление).
 type Film struct {
-	// TMDBID — идентификатор фильма на TMDB.
 	TMDBID int64
-	// IMDBID — IMDb-ссылка (из /movie/{id}/external_ids; может быть пустой).
+	// IMDBID может быть пустым (из external_ids).
 	IMDBID string
-	// Title — оригинальное название.
-	Title string
-	// TitleRU — русское название (title при language=ru-RU).
+	// Title — оригинальное название, TitleRU — русское (language=ru-RU).
+	Title   string
 	TitleRU string
-	// Kind — нормализованный тип (feature/tvSeries/...).
+	// Kind — feature/tvSeries/...
 	Kind string
 	Year int
-	// ReleaseDate — дата выпуска "YYYY-MM-DD" (может быть пустой).
+	// ReleaseDate "YYYY-MM-DD"; может быть пустой.
 	ReleaseDate string
-	// Rating — рейтинг TMDB (vote_average), Votes — число голосов.
+	// Rating — vote_average, Votes — число голосов.
 	Rating float64
 	Votes  int64
-	// MovieLength — длительность фильма в минутах (0 — неизвестно; для
-	// сериалов — 0).
+	// MovieLength — минуты (0 — неизвестно; у сериалов всегда 0).
 	MovieLength int
 	// OverviewRU — русское описание.
 	OverviewRU string
-	// Genres — жанры (английские имена, в стиле жанров IMDb).
-	Genres []string
-	// PosterURL — постер.
+	// Genres — английские имена (в стиле жанров IMDb).
+	Genres    []string
 	PosterURL string
-	// Rank — позиция в чарте (1-based; 0 для обычного поиска).
+	// Rank — позиция в чарте (1-based; 0 — обычный поиск).
 	Rank int
 }
 
@@ -111,28 +107,80 @@ type page struct {
 	} `json:"results"`
 }
 
-// Search ищет фильмы на TMDB по запросу q и возвращает до limit
-// результатов (с IMDb-ссылками для дедупликации каталога).
+// Search ищет на TMDB фильмы И сериалы (/search/multi) и возвращает до limit
+// результатов с IMDb-ссылками (нужны для дедупликации); люди отбрасываются.
 func (c *Client) Search(ctx context.Context, q string, limit int) ([]Film, error) {
 	qv := url.Values{}
 	qv.Set("query", q)
 	qv.Set("language", "ru-RU")
 	qv.Set("page", "1")
-	p, err := c.getPage(ctx, "/search/movie", qv)
+	body, err := c.get(ctx, "/search/multi", qv)
 	if err != nil {
 		return nil, err
 	}
-	items := p.Results
+	var p struct {
+		Results []multiResult `json:"results"`
+	}
+	if err := json.Unmarshal(body, &p); err != nil {
+		return nil, fmt.Errorf("tmdb: parse search multi: %w", err)
+	}
+	items := make([]multiResult, 0, len(p.Results))
+	for _, r := range p.Results {
+		if (r.MediaType != "movie" && r.MediaType != "tv") || r.ID == 0 {
+			continue
+		}
+		items = append(items, r)
+	}
 	if len(items) > limit {
 		items = items[:limit]
 	}
-	return c.toFilms(ctx, items, 0)
+	imdbs := c.externalIDs(ctx, items)
+	films := make([]Film, 0, len(items))
+	for i, r := range items {
+		if r.MediaType == "tv" {
+			films = append(films, filmFrom(r.ID, imdbs[i], r.OriginalName, r.Name, r.Overview,
+				r.FirstAirDate, r.GenreIDs, r.VoteAverage, r.VoteCount, r.PosterPath, "tvSeries"))
+			continue
+		}
+		films = append(films, filmFrom(r.ID, imdbs[i], r.OriginalTitle, r.Title, r.Overview,
+			r.ReleaseDate, r.GenreIDs, r.VoteAverage, r.VoteCount, r.PosterPath, "feature"))
+	}
+	return films, nil
 }
 
-// SearchLite ищет фильмы по названию ОДНИМ запросом (без дозаполнения
-// IMDb-ссылок через external_ids — то есть без лишних запросов на
-// кандидата). Используется фоновой джобой обновления рейтингов для
-// сверки кандидатов по названию/году, где IMDb-ссылки не нужны.
+// externalIDs тянет IMDb-ссылки для смешанного списка (по запросу на запись, ≤6 сразу).
+func (c *Client) externalIDs(ctx context.Context, items []multiResult) []string {
+	out := make([]string, len(items))
+	type ext struct {
+		i  int
+		id string
+	}
+	ch := make(chan ext, len(items))
+	sem := make(chan struct{}, 6)
+	var wg sync.WaitGroup
+	for i, r := range items {
+		wg.Add(1)
+		go func(i int, media string, tmdbID int64) {
+			defer wg.Done()
+			sem <- struct{}{}
+			id, err := c.externalIDMedia(ctx, media, tmdbID)
+			<-sem
+			if err != nil {
+				id = "" // нет ссылки — не критично
+			}
+			ch <- ext{i: i, id: id}
+		}(i, r.MediaType, r.ID)
+	}
+	wg.Wait()
+	close(ch)
+	for e := range ch {
+		out[e.i] = e.id
+	}
+	return out
+}
+
+// SearchLite ищет фильмы ОДНИМ запросом, без external_ids на кандидата —
+// для сверки по названию/году в фоновой джобе рейтингов.
 func (c *Client) SearchLite(ctx context.Context, q string, limit int) ([]Film, error) {
 	qv := url.Values{}
 	qv.Set("query", q)
@@ -196,6 +244,23 @@ type tvResult struct {
 	PosterPath   string  `json:"poster_path"`
 }
 
+// multiResult — элемент /search/multi: у фильмов title/release_date, у сериалов name/first_air_date.
+type multiResult struct {
+	ID            int64   `json:"id"`
+	MediaType     string  `json:"media_type"` // movie | tv | person
+	Title         string  `json:"title"`
+	OriginalTitle string  `json:"original_title"`
+	Name          string  `json:"name"`
+	OriginalName  string  `json:"original_name"`
+	Overview      string  `json:"overview"`
+	ReleaseDate   string  `json:"release_date"`
+	FirstAirDate  string  `json:"first_air_date"`
+	GenreIDs      []int   `json:"genre_ids"`
+	VoteAverage   float64 `json:"vote_average"`
+	VoteCount     int64   `json:"vote_count"`
+	PosterPath    string  `json:"poster_path"`
+}
+
 type tvPage struct {
 	Page       int        `json:"page"`
 	TotalPages int        `json:"total_pages"`
@@ -243,8 +308,7 @@ func (c *Client) tvChart(ctx context.Context, path string, target int) ([]Film, 
 	return films, nil
 }
 
-// tvToFilms преобразует результаты /tv/* в Film (kind=tvSeries), дозаполняя
-// IMDb-ссылки через /tv/{id}/external_ids.
+// tvToFilms преобразует результаты /tv/* в Film (kind=tvSeries) с IMDb-ссылками.
 func (c *Client) tvToFilms(ctx context.Context, results []tvResult, startRank int) ([]Film, error) {
 	type ext struct {
 		i   int
@@ -277,30 +341,8 @@ func (c *Client) tvToFilms(ctx context.Context, results []tvResult, startRank in
 
 	films := make([]Film, 0, len(results))
 	for i, r := range results {
-		year := 0
-		if len(r.FirstAirDate) >= 4 {
-			year = atoi(r.FirstAirDate[:4])
-		}
-		genres := make([]string, 0, len(r.GenreIDs))
-		for _, id := range r.GenreIDs {
-			if g := genreName(id); g != "" {
-				genres = append(genres, g)
-			}
-		}
-		f := Film{
-			TMDBID:      r.ID,
-			IMDBID:      extIDs[i],
-			Title:       strings.TrimSpace(r.OriginalName),
-			TitleRU:     strings.TrimSpace(r.Name),
-			Kind:        "tvSeries",
-			Year:        year,
-			ReleaseDate: strings.TrimSpace(r.FirstAirDate),
-			Rating:      r.VoteAverage,
-			Votes:       r.VoteCount,
-			OverviewRU:  strings.TrimSpace(r.Overview),
-			Genres:      genres,
-			PosterURL:   posterURL(r.PosterPath),
-		}
+		f := filmFrom(r.ID, extIDs[i], r.OriginalName, r.Name, r.Overview,
+			r.FirstAirDate, r.GenreIDs, r.VoteAverage, r.VoteCount, r.PosterPath, "tvSeries")
 		if startRank > 0 {
 			f.Rank = startRank + i
 		}
@@ -346,8 +388,7 @@ func (c *Client) chart(ctx context.Context, path string, target int) ([]Film, er
 	return films, nil
 }
 
-// toFilms преобразует результаты TMDB в Film, дозаполняя IMDb-ссылки
-// через /movie/{id}/external_ids (startRank — начальная позиция чарта).
+// toFilms преобразует результаты TMDB в Film; startRank — начальная позиция чарта.
 func (c *Client) toFilms(ctx context.Context, results []struct {
 	ID            int64   `json:"id"`
 	Title         string  `json:"title"`
@@ -359,8 +400,7 @@ func (c *Client) toFilms(ctx context.Context, results []struct {
 	VoteCount     int64   `json:"vote_count"`
 	PosterPath    string  `json:"poster_path"`
 }, startRank int) ([]Film, error) {
-	// Параллельно запрашиваем IMDb-ссылки (external_ids) — по одному
-	// запросу на фильм, с ограничением параллельности.
+	// Параллельно тянем external_ids — по запросу на фильм, ≤6 сразу.
 	type ext struct {
 		i   int
 		id  string
@@ -386,37 +426,15 @@ func (c *Client) toFilms(ctx context.Context, results []struct {
 	for e := range ch {
 		extIDs[e.i] = e.id
 		if e.err != nil {
-			// Нет ссылки — не критично; запись останется без IMDb-дубля.
+			// нет ссылки — не критично
 			extIDs[e.i] = ""
 		}
 	}
 
 	films := make([]Film, 0, len(results))
 	for i, r := range results {
-		year := 0
-		if len(r.ReleaseDate) >= 4 {
-			year = atoi(r.ReleaseDate[:4])
-		}
-		genres := make([]string, 0, len(r.GenreIDs))
-		for _, id := range r.GenreIDs {
-			if g := genreName(id); g != "" {
-				genres = append(genres, g)
-			}
-		}
-		f := Film{
-			TMDBID:      r.ID,
-			IMDBID:      extIDs[i],
-			Title:       strings.TrimSpace(r.OriginalTitle),
-			TitleRU:     strings.TrimSpace(r.Title),
-			Kind:        "feature",
-			Year:        year,
-			ReleaseDate: strings.TrimSpace(r.ReleaseDate),
-			Rating:      r.VoteAverage,
-			Votes:       r.VoteCount,
-			OverviewRU:  strings.TrimSpace(r.Overview),
-			Genres:      genres,
-			PosterURL:   posterURL(r.PosterPath),
-		}
+		f := filmFrom(r.ID, extIDs[i], r.OriginalTitle, r.Title, r.Overview,
+			r.ReleaseDate, r.GenreIDs, r.VoteAverage, r.VoteCount, r.PosterPath, "feature")
 		if startRank > 0 {
 			f.Rank = startRank + i
 		}
@@ -425,8 +443,167 @@ func (c *Client) toFilms(ctx context.Context, results []struct {
 	return films, nil
 }
 
-// externalIDMedia возвращает IMDb-ссылку TMDB (пустая — если нет) для
-// фильма (/movie) или сериала (/tv).
+// filmFrom собирает Film из полей TMDB (год из даты, жанры из genre_ids) — общая часть.
+func filmFrom(tmdbID int64, imdbID, origTitle, titleRU, overview, date string, genreIDs []int, rating float64, votes int64, poster, kind string) Film {
+	year := 0
+	if len(date) >= 4 {
+		year = atoi(date[:4])
+	}
+	genres := make([]string, 0, len(genreIDs))
+	for _, id := range genreIDs {
+		if g := genreName(id); g != "" {
+			genres = append(genres, g)
+		}
+	}
+	return Film{
+		TMDBID:      tmdbID,
+		IMDBID:      imdbID,
+		Title:       strings.TrimSpace(origTitle),
+		TitleRU:     strings.TrimSpace(titleRU),
+		Kind:        kind,
+		Year:        year,
+		ReleaseDate: strings.TrimSpace(date),
+		Rating:      rating,
+		Votes:       votes,
+		OverviewRU:  strings.TrimSpace(overview),
+		Genres:      genres,
+		PosterURL:   posterURL(poster),
+	}
+}
+
+// SeasonsCount возвращает число сезонов сериала (/tv/{id}). Нужно поиску
+// источников: трекеры держат сезон отдельной раздачей, и без этого числа
+// запрос к трекеру выходит один общий, со случайными сезонами в выдаче.
+func (c *Client) SeasonsCount(ctx context.Context, tmdbID int64) (int, error) {
+	qv := url.Values{}
+	qv.Set("language", "ru-RU")
+	body, err := c.get(ctx, fmt.Sprintf("/tv/%d", tmdbID), qv)
+	if err != nil {
+		return 0, err
+	}
+	var d struct {
+		NumberOfSeasons int `json:"number_of_seasons"`
+	}
+	if err := json.Unmarshal(body, &d); err != nil {
+		return 0, fmt.Errorf("tmdb: parse tv %d: %w", tmdbID, err)
+	}
+	return d.NumberOfSeasons, nil
+}
+
+// SeasonInfo — сезон TMDB: номер, число серий и год старта (спецматериалы — сезон 0).
+type SeasonInfo struct {
+	Number   int `json:"season_number"`
+	Episodes int `json:"episode_count"`
+	Year     int `json:"-"`
+}
+
+// SeasonStructure возвращает структуру сезонов сериала (число серий и год).
+// Нужна для раскладки раздач: нарезка трекеров дробнее официальной, а
+// сборники нумеруют серии СКВОЗНЯКОМ («001 seriya») — без этой структуры
+// такие файлы по сезонам не разложить.
+func (c *Client) SeasonStructure(ctx context.Context, tmdbID int64) ([]SeasonInfo, error) {
+	qv := url.Values{}
+	qv.Set("language", "ru-RU")
+	body, err := c.get(ctx, fmt.Sprintf("/tv/%d", tmdbID), qv)
+	if err != nil {
+		return nil, err
+	}
+	var d struct {
+		Seasons []struct {
+			Number   int    `json:"season_number"`
+			Episodes int    `json:"episode_count"`
+			AirDate  string `json:"air_date"`
+		} `json:"seasons"`
+	}
+	if err := json.Unmarshal(body, &d); err != nil {
+		return nil, fmt.Errorf("tmdb: parse tv seasons %d: %w", tmdbID, err)
+	}
+	out := make([]SeasonInfo, 0, len(d.Seasons))
+	for _, s := range d.Seasons {
+		if s.Number <= 0 || s.Episodes <= 0 {
+			continue
+		}
+		year := 0
+		if len(s.AirDate) >= 4 {
+			year = atoi(s.AirDate[:4])
+		}
+		out = append(out, SeasonInfo{Number: s.Number, Episodes: s.Episodes, Year: year})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Number < out[j].Number })
+	return out, nil
+}
+
+// SeasonAt переводит сквозной номер серии (сборники: «001 seriya») в сезон и
+// серию по структуре TMDB; (0, 0) — если номер вне диапазона/структура пуста.
+func SeasonAt(structure []SeasonInfo, abs int) (season, episode int) {
+	if abs <= 0 {
+		return 0, 0
+	}
+	n := 0
+	for _, s := range structure {
+		n += s.Episodes
+		if abs <= n {
+			return s.Number, abs - (n - s.Episodes)
+		}
+	}
+	return 0, 0
+}
+
+// SeasonByYear возвращает сезон TMDB по году выпуска: «сезоны» трекеров
+// дробнее официальных (трекерный S14 (2023) — это TMDB-сезон 10), поэтому
+// год надёжнее номера. 0 — если год неизвестен или подходящего сезона нет.
+func SeasonByYear(structure []SeasonInfo, year int) int {
+	if year <= 0 {
+		return 0
+	}
+	for _, s := range structure {
+		if s.Year == year {
+			return s.Number
+		}
+	}
+	// Года нет точного — берём ближайший сезон НЕ ПОЗЖЕ года.
+	best := 0
+	for _, s := range structure {
+		if s.Year > 0 && s.Year <= year && s.Number > best {
+			best = s.Number
+		}
+	}
+	return best
+}
+
+// Structure возвращает структуру сезонов (кэш на час: спрашивается на каждый
+// разбор раздач, а меняется редко). nil — вызывающий работает без сопоставления.
+func (c *Client) Structure(ctx context.Context, tmdbID int64) []SeasonInfo {
+	if c == nil || tmdbID <= 0 || c.seasonsCache == nil {
+		return nil
+	}
+	c.seasonsCache.mu.Lock()
+	if e, ok := c.seasonsCache.m[tmdbID]; ok && time.Since(e.at) < time.Hour {
+		c.seasonsCache.mu.Unlock()
+		return e.list
+	}
+	c.seasonsCache.mu.Unlock()
+	list, err := c.SeasonStructure(ctx, tmdbID)
+	if err != nil || len(list) == 0 {
+		return nil
+	}
+	c.seasonsCache.mu.Lock()
+	c.seasonsCache.m[tmdbID] = seasonEntry{list: list, at: time.Now()}
+	c.seasonsCache.mu.Unlock()
+	return list
+}
+
+type seasonEntry struct {
+	list []SeasonInfo
+	at   time.Time
+}
+
+type seasonsCache struct {
+	mu sync.Mutex
+	m  map[int64]seasonEntry
+}
+
+// externalIDMedia возвращает IMDb-ссылку TMDB (пустая — если нет).
 func (c *Client) externalIDMedia(ctx context.Context, media string, tmdbID int64) (string, error) {
 	body, err := c.get(ctx, fmt.Sprintf("/%s/%d/external_ids", media, tmdbID), url.Values{})
 	if err != nil {
@@ -441,9 +618,8 @@ func (c *Client) externalIDMedia(ctx context.Context, media string, tmdbID int64
 	return strings.TrimSpace(r.IMDBID), nil
 }
 
-// movieDetail — ответ деталей фильма TMDB (/movie/{id} или результат /find).
-// У /find нет жанров и длительности в полной форме (только genre_ids),
-// поэтому поля GenreIDs/Genres/Runtime заполняются по наличию.
+// movieDetail — детали фильма TMDB; у /find нет жанров и длительности, поэтому
+// поля GenreIDs/Genres/Runtime заполняются по наличию.
 type movieDetail struct {
 	ID            int64  `json:"id"`
 	Title         string `json:"title"`
@@ -476,9 +652,7 @@ type tvDetail struct {
 	PosterPath  string  `json:"poster_path"`
 }
 
-// ByID возвращает фильм TMDB по его ID (детали, включая свежий рейтинг
-// и дату выпуска). Только для фильмов (/movie). Используется фоновой
-// джобой обновления рейтингов.
+// ByID возвращает фильм TMDB по ID (детали) — только фильмы (/movie).
 func (c *Client) ByID(ctx context.Context, tmdbID int64) (Film, error) {
 	qv := url.Values{}
 	qv.Set("language", "ru-RU")
@@ -495,10 +669,8 @@ func (c *Client) ByID(ctx context.Context, tmdbID int64) (Film, error) {
 	return f, nil
 }
 
-// ByIDKind возвращает фильм или сериал TMDB по id, выбирая эндпоинт по
-// типу: kind "tvSeries"/"tvMiniSeries" → /tv/{id}, иначе /movie/{id}.
-// Нужно, чтобы для сериалов с привязанным tmdb_id не дёргать /movie —
-// это вернуло бы ДРУГОЙ фильм с тем же числовым id.
+// ByIDKind выбирает эндпоинт по типу: tvSeries/tvMiniSeries → /tv/{id}.
+// Для сериала /movie вернул бы ДРУГОЙ фильм с тем же числовым id.
 func (c *Client) ByIDKind(ctx context.Context, tmdbID int64, kind string) (Film, error) {
 	if kind == "tvSeries" || kind == "tvMiniSeries" {
 		qv := url.Values{}
@@ -518,9 +690,8 @@ func (c *Client) ByIDKind(ctx context.Context, tmdbID int64, kind string) (Film,
 	return c.ByID(ctx, tmdbID)
 }
 
-// FindByIMDB находит фильм (или ТВ-сериал) TMDB по IMDb-ссылке
-// (external_source=imdb_id). Сначала ищет в movie_results, затем — в
-// tv_results (для сериалов/мини-сериалов). Резерв для записей без tmdb_id.
+// FindByIMDB находит фильм или сериал TMDB по IMDb-ссылке (movie_results,
+// затем tv_results) — резерв для записей без tmdb_id.
 func (c *Client) FindByIMDB(ctx context.Context, imdbID string) (Film, error) {
 	qv := url.Values{}
 	qv.Set("external_source", "imdb_id")
@@ -592,9 +763,7 @@ func tvToFilm(d tvDetail) Film {
 	}
 }
 
-// detailGenres собирает жанры фильма/сериала: по genre_ids (если есть),
-// иначе по массиву genres. Имена приводятся к английскому виду (в стиле
-// жанров IMDb) через genreName.
+// detailGenres собирает жанры: по genre_ids, иначе по genres; имена — как в IMDb.
 func detailGenres(ids []int, genres []struct {
 	ID int `json:"id"`
 }) []string {
@@ -612,8 +781,7 @@ func detailGenres(ids []int, genres []struct {
 	return out
 }
 
-// Overview возвращает описание (overview) фильма или сериала TMDB на
-// указанном языке. Используется для заполнения английского описания.
+// Overview возвращает описание фильма или сериала на указанном языке.
 func (c *Client) Overview(ctx context.Context, tmdbID int64, kind, lang string) string {
 	path := fmt.Sprintf("/movie/%d", tmdbID)
 	if kind == "tvSeries" || kind == "tvMiniSeries" {
@@ -634,10 +802,8 @@ func (c *Client) Overview(ctx context.Context, tmdbID int64, kind, lang string) 
 	return strings.TrimSpace(d.Overview)
 }
 
-// Credits возвращает режиссёра (первый с job "Director") и до 6 актёров
-// фильма или сериала TMDB. Используется для сверки при поиске по названию,
-// чтобы убедиться, что найден именно нужный фильм, и для заполнения
-// режиссёра/актёров. kind — "tvSeries"/"tvMiniSeries" для сериалов.
+// Credits возвращает режиссёра (первый с job "Director") и до 6 актёров:
+// используется для сверки при поиске по названию и заполнения карточки.
 func (c *Client) Credits(ctx context.Context, tmdbID int64, kind string) (director string, actors []string, err error) {
 	path := fmt.Sprintf("/movie/%d/credits", tmdbID)
 	if kind == "tvSeries" || kind == "tvMiniSeries" {
@@ -735,8 +901,8 @@ func (c *Client) get(ctx context.Context, path string, q url.Values) ([]byte, er
 	return nil, lastErr
 }
 
-// genreName возвращает английское имя жанра TMDB (в стиле жанров IMDb,
-// чтобы совпадать со словарём фронтенда). "" — жанр неизвестен.
+// genreName возвращает английское имя жанра TMDB (как в IMDb, для словаря
+// фронтенда); "" — жанр неизвестен.
 func genreName(id int) string {
 	switch id {
 	case 28:
@@ -813,8 +979,7 @@ func atoi(s string) int {
 	return n
 }
 
-// bearerToken возвращает токен для Authorization: Bearer — приоритет у
-// Read Access Token, запасной вариант — API Key.
+// bearerToken — токен для Authorization: Bearer (Read Access Token, иначе API Key).
 func (c *Client) bearerToken() string {
 	if c.accessToken != "" {
 		return c.accessToken

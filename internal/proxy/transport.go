@@ -5,10 +5,9 @@ import (
 	"net/http"
 )
 
-// RoundTripper возвращает http.RoundTripper, маршрутизирующий запросы
-// через пул прокси с автоматическим failover: при ошибке подключения
-// прокси помечается нерабочим, и запрос повторяется через следующий
-// (до maxAttempts попыток). Если рабочих прокси нет — прямое соединение.
+// RoundTripper — RoundTripper через пул прокси с failover: при ошибке подключения
+// прокси помечается нерабочим и запрос повторяется через следующий (до maxAttempts);
+// если рабочих прокси нет — прямое соединение.
 func (p *Pool) RoundTripper(maxAttempts int) http.RoundTripper {
 	if maxAttempts <= 0 {
 		maxAttempts = 3
@@ -37,8 +36,7 @@ func (rt *failoverRT) RoundTrip(req *http.Request) (*http.Response, error) {
 		if addr == "" {
 			return rt.pool.direct.RoundTrip(req)
 		}
-		// Клонируем запрос: http.Transport не гарантирует неизменность
-		// req при повторных вызовах RoundTrip.
+		// Клонируем: http.Transport не гарантирует неизменность req при повторе RoundTrip.
 		req2 := req.Clone(req.Context())
 		resp, err := rt.pool.transportFor(addr).RoundTrip(req2)
 		if err != nil {

@@ -18,18 +18,14 @@ import (
 )
 
 const (
-	// defaultReadahead — сколько данных торрент-клиент качает вперёд
-	// при чтении, чтобы плеер не буферизовался.
+	// defaultReadahead — сколько данных качать вперёд при чтении, чтобы плеер не буферизовался.
 	defaultReadahead = 64 << 20 // 64 MiB
 
-	// metadataTimeout — максимум времени на получение метаданных (info)
-	// торрента. Если пиры недоступны, запрос завершится ошибкой 504,
-	// а не будет висеть бесконечно.
+	// metadataTimeout — максимум на метаданные торрента: нет пиров → 504, а не вечное ожидание.
 	metadataTimeout = 60 * time.Second
 )
 
-// videoExts — расширения файлов, которые может воспроизводить браузерный
-// плеер. Используется для выбора файла в многофайловых торрентах.
+// videoExts — расширения, которые может играть браузерный плеер (выбор файла в многофайловых торрентах).
 var videoExts = map[string]bool{
 	".mp4":  true,
 	".m4v":  true,
@@ -46,22 +42,20 @@ var videoExts = map[string]bool{
 	".ogv":  true,
 }
 
-// handleStream открывает торрент по записи каталога и отдаёт содержимое
-// выбранного видеофайла как поток с поддержкой HTTP Range-запросов.
-func handleStream(mgr *torrents.Manager, item catalog.Item) http.HandlerFunc {
+// handleStream открывает торрент по записи каталога и отдаёт выбранный видеофайл с
+// поддержкой Range; readahead — сколько байт качать вперёд (0 — по умолчанию).
+func handleStream(mgr *torrents.Manager, item catalog.Item, readahead int64) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		t, release, err := mgr.Acquire(item)
 		if err != nil {
 			http.Error(w, "unable to open torrent: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-		// Освобождаем торрент, когда читатель закрыт (клиент отключился
-		// или завершил просмотр) — память скачанных данных освободится.
+		// Читатель закрыт (клиент отключился или досмотрел) — освобождаем торрент.
 		defer release()
 
 		log.Printf("stream: open %s", item.ID)
-		// Ждём метаданные (info), чтобы узнать состав файлов. При
-		// недоступных пирах не висим вечно, а отдаём 504.
+		// Ждём метаданные (info); при недоступных пирах не висим вечно, а отдаём 504.
 		select {
 		case <-t.GotInfo():
 			log.Printf("stream: %s метаданные получены, файлов: %d", item.ID, len(t.Files()))
@@ -71,8 +65,7 @@ func handleStream(mgr *torrents.Manager, item catalog.Item) http.HandlerFunc {
 			return
 		}
 
-		// Необязательный параметр file= — индекс конкретного файла (серии)
-		// в торренте (для сериалов). Без него — самый крупный видеофайл.
+		// file= — индекс конкретного файла (серии) в торренте; без него — самый крупный видеофайл.
 		file, err := selectVideoFile(t, fileParam(r))
 		if err != nil {
 			log.Printf("stream: %s нет видеофайла: %v", item.ID, err)
@@ -82,13 +75,30 @@ func handleStream(mgr *torrents.Manager, item catalog.Item) http.HandlerFunc {
 		size := file.Length()
 		log.Printf("stream: %s файл %s (%d байт)", item.ID, file.DisplayPath(), size)
 
+		// Помечаем серию востребованной, чтобы из сезон-пака не качался весь торрент
+		// (остальным файлам — DoNotDownload; рефкаунт — для параллельных зрителей).
+		releaseFile := func() {}
+		for i, f := range t.Files() {
+			if f == file {
+				releaseFile = mgr.WantFile(item, i)
+				break
+			}
+		}
+		defer releaseFile()
+
 		reader := file.NewReader()
 		defer reader.Close()
 		reader.SetContext(r.Context()) // прерываем чтение при отключении клиента
-		reader.SetReadahead(defaultReadahead)
 
-		// Правильный Content-Type по расширению файла: в URL стрима нет
-		// расширения, поэтому без него браузер не поймёт формат видео.
+		// Readahead — не буфер в RAM: при спуле данные ложатся на диск, поэтому окно
+		// можно делать большим (~минута воспроизведения) без роста памяти.
+		ra := readahead
+		if ra <= 0 {
+			ra = defaultReadahead
+		}
+		reader.SetReadahead(ra)
+
+		// В URL стрима нет расширения — ставим Content-Type по расширению файла.
 		if ct := mime.TypeByExtension(strings.ToLower(path.Ext(file.DisplayPath()))); ct != "" {
 			w.Header().Set("Content-Type", ct)
 		}
@@ -134,8 +144,7 @@ func fileParam(r *http.Request) int {
 	return -1
 }
 
-// selectVideoFile выбирает файл для стриминга: по индексу file (серия
-// сериала), если он валиден, иначе — самый крупный видеофайл.
+// selectVideoFile: валидный file (серия сериала) → этот файл, иначе — самый крупный видеофайл.
 func selectVideoFile(t *torrent.Torrent, file int) (*torrent.File, error) {
 	files := t.Files()
 	if file >= 0 && file < len(files) && isVideo(files[file]) {
@@ -144,8 +153,7 @@ func selectVideoFile(t *torrent.Torrent, file int) (*torrent.File, error) {
 	return pickVideoFile(t)
 }
 
-// pickVideoFile выбирает файл для стриминга. Приоритет — самый крупный
-// файл с видео-расширением; если таких нет, берётся самый большой файл.
+// pickVideoFile: приоритет — крупнейший видеофайл, если таких нет — просто крупнейший.
 func pickVideoFile(t *torrent.Torrent) (*torrent.File, error) {
 	files := t.Files()
 	if len(files) == 0 {
@@ -167,14 +175,11 @@ func pickVideoFile(t *torrent.Torrent) (*torrent.File, error) {
 	return largestFile, nil
 }
 
-// isVideo сообщает, является ли файл видео по расширению.
 func isVideo(f *torrent.File) bool {
 	return videoExts[strings.ToLower(path.Ext(f.DisplayPath()))]
 }
 
-// parseRange разбирает заголовок вида "bytes=start-end" и возвращает
-// границы диапазона в рамках [0, size-1]. Поддерживается и суффиксная
-// форма "bytes=-N" (последние N байт).
+// parseRange разбирает "bytes=start-end" (в т.ч. суффиксную "bytes=-N") в рамках [0, size-1].
 func parseRange(rng string, size int64) (start, end int64, ok bool) {
 	rng = strings.TrimPrefix(rng, "bytes=")
 	parts := strings.SplitN(rng, "-", 2)

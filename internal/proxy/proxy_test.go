@@ -46,9 +46,8 @@ func TestNormalize(t *testing.T) {
 	}
 }
 
-// TestStaticRoundRobin — статические прокси ходят по кругу (round-robin);
-// после удаления (MarkBroken) пул пуст и Next возвращает пустую строку
-// (тогда запросы идут напрямую).
+// TestStaticRoundRobin — прокси ходят по кругу; после MarkBroken обоих Next
+// возвращает "" (запросы идут напрямую).
 func TestStaticRoundRobin(t *testing.T) {
 	p := NewPool(Config{Static: []string{"s1:3128", "s2:8080"}, Timeout: time.Second})
 	if got := p.Next(); got != "s1:3128" {
@@ -68,8 +67,7 @@ func TestStaticRoundRobin(t *testing.T) {
 	}
 }
 
-// TestFailover проверяет, что при сбое первого прокси (закрытый порт)
-// запрос переключается на следующий рабочий, а сломанный удаляется.
+// TestFailover — при сбое первого прокси запрос идёт через следующий, сломанный удаляется.
 func TestFailover(t *testing.T) {
 	// Рабочий «прокси» — HTTP-сервер, отвечающий на любой запрос.
 	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

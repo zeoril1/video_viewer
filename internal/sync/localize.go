@@ -10,16 +10,11 @@ import (
 	"github.com/zeoril1/video_viewer/internal/imdb"
 )
 
-// Localizer фоново заполняет в БД русские название и описание фильмов
-// каталога:
+// Localizer фоново заполняет в БД русские название и описание фильмов каталога:
+//  1. названия — пакетно через Wikidata Query Service (SPARQL): быстро и не упирается в rate-limit поштучного API;
+//  2. описания — из статей русской Википедии (по сохранённым заголовкам), вежливо, с учётом rate-limit.
 //
-//  1. названия — пакетно через Wikidata Query Service (SPARQL), это быстро
-//     и не упирается в rate-limit поштучного API;
-//  2. описания — из статей русской Википедии (по сохранённым заголовкам),
-//     вежливо, с учётом rate-limit.
-//
-// Все результаты сохраняются в PostgreSQL — БД остаётся источником
-// истины для обоих языков.
+// Все результаты сохраняются в PostgreSQL — БД остаётся источником истины для обоих языков.
 type Localizer struct {
 	db          *db.Repo
 	imdb        *imdb.Client
@@ -46,8 +41,7 @@ func NewLocalizer(db *db.Repo, im *imdb.Client, titleBatch, plotBatch, plotWorke
 	return &Localizer{db: db, imdb: im, titleBatch: titleBatch, plotBatch: plotBatch, plotWorkers: plotWorkers, interval: interval}
 }
 
-// Run запускает локализацию сразу при старте и далее каждые interval.
-// Блокирующий; остановить можно отменой ctx.
+// Run запускает локализацию сразу при старте и далее каждые interval; блокирующий, остановка — отменой ctx.
 func (l *Localizer) Run(ctx context.Context) {
 	l.LocalizeOnce(ctx)
 
@@ -69,8 +63,7 @@ func (l *Localizer) LocalizeOnce(ctx context.Context) {
 	l.localizePlots(ctx)
 }
 
-// localizeTitles пакетно получает русские названия для всех фильмов,
-// у которых их нет, и сохраняет в БД.
+// localizeTitles пакетно получает русские названия для фильмов, у которых их нет, и сохраняет в БД.
 func (l *Localizer) localizeTitles(ctx context.Context) {
 	for {
 		ids, err := l.db.FilmsMissingTitleRU(ctx, l.titleBatch)
@@ -109,8 +102,7 @@ func (l *Localizer) localizeTitles(ctx context.Context) {
 	}
 }
 
-// localizePlots загружает русские описания из статей ru-wiki (по
-// сохранённым заголовкам), вежливо ограничивая параллельность.
+// localizePlots загружает русские описания из статей ru-wiki (по сохранённым заголовкам), ограничивая параллельность.
 func (l *Localizer) localizePlots(ctx context.Context) {
 	for {
 		films, err := l.db.FilmsWithRuWikiNoPlot(ctx, l.plotBatch)

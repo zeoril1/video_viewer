@@ -16,15 +16,11 @@ const (
 	wikipediaRUAPI = "https://ru.wikipedia.org/w/api.php"
 )
 
-// GetByID возвращает фильм по IMDb ID с обогащёнными данными
-// на двух языках (английском и русском): название, описание, жанры,
-// рейтинг, число голосов.
-//
+// GetByID возвращает фильм по IMDb ID с данными на двух языках.
 // Порядок источников:
-//  1. официальная страница IMDb (JSON-LD) — английские данные;
-//  2. suggestion API IMDb — базовые данные (когда IMDb блокирует);
-//  3. Wikidata → Wikipedia — русское название, а также английское и
-//     русское описания (если статьи есть).
+//  1. страница IMDb (JSON-LD) — английские данные;
+//  2. suggestion API IMDb — база, когда IMDb блокирует;
+//  3. Wikidata → Wikipedia — русское название и описания.
 func (c *Client) GetByID(ctx context.Context, id string) (Film, error) {
 	id = normalizeID(id)
 	if !strings.HasPrefix(id, "tt") {
@@ -33,7 +29,6 @@ func (c *Client) GetByID(ctx context.Context, id string) (Film, error) {
 
 	f := Film{IMDBID: id}
 
-	// 1) Английские данные: официальная страница IMDb либо suggestion API.
 	if ld, err := c.titleJSONLD(ctx, id); err == nil {
 		f = ld
 	} else {
@@ -44,28 +39,14 @@ func (c *Client) GetByID(ctx context.Context, id string) (Film, error) {
 		f.Title, f.Year, f.PosterURL = base.Title, base.Year, base.PosterURL
 	}
 
-	// 2) Русские название и описание (Wikidata → Википедия).
+	// Русские название и описание (Wikidata → Википедия).
 	c.localize(ctx, &f)
 
-	return f, nil
-}
-
-// Localize заполняет русские название и описание фильма по IMDb ID
-// (через Wikidata → русскую Википедию), а также английское описание,
-// если оно пустое. Используется для фонового пополнения каталога.
-// Возвращает ошибку, если русских данных нет.
-func (c *Client) Localize(ctx context.Context, id string) (Film, error) {
-	f := Film{IMDBID: normalizeID(id)}
-	c.localize(ctx, &f)
-	if f.TitleRU == "" && f.PlotRU == "" && f.Plot == "" {
-		return Film{}, errors.New("imdb: no localization for " + f.IMDBID)
-	}
 	return f, nil
 }
 
 // localize заполняет русские название и описание, а также английское
-// описание, если оно ещё пустое. При отсутствии данных поля остаются
-// пустыми (функция ничего не ломает).
+// описание, если оно пустое; при отсутствии данных поля остаются пустыми.
 func (c *Client) localize(ctx context.Context, f *Film) {
 	qid, err := c.wikidataItem(ctx, f.IMDBID)
 	if err != nil {
@@ -115,8 +96,7 @@ func (c *Client) wikidataItem(ctx context.Context, imdbID string) (string, error
 	return sr.Query.Search[0].Title, nil
 }
 
-// wikidataMeta возвращает русскую метку (название) и заголовки статей
-// в английской и русской Википедиях.
+// wikidataMeta возвращает русскую метку и заголовки статей en/ru-вики.
 func (c *Client) wikidataMeta(ctx context.Context, qid string) (ruTitle, enWiki, ruWiki string, err error) {
 	u := wikidataAPI + "?action=wbgetentities&props=sitelinks|labels&sitefilter=enwiki|ruwiki&languages=ru&format=json&ids=" +
 		qid

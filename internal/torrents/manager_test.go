@@ -16,8 +16,7 @@ func silenceLogs(t *testing.T) {
 	t.Cleanup(func() { log.SetOutput(old) })
 }
 
-// testMagnet — валидная магнет-ссылка для тестов (пиры не нужны: нам
-// важно поведение менеджера, а не реальное скачивание).
+// testMagnet — валидная магнет-ссылка (пиры не нужны: проверяем менеджер, а не скачивание).
 const testMagnet = "magnet:?xt=urn:btih:097fd9047fa928346e94ed5c1cb07b9531c15f90&dn=test"
 
 func newTestManager(t *testing.T) *Manager {
@@ -30,9 +29,8 @@ func newTestManager(t *testing.T) *Manager {
 	return mgr
 }
 
-// TestAcquireAfterDropCreatesNewTorrent — сценарий из задачи: поток
-// (торрент) был выгружен из памяти, при возобновлении просмотра должен
-// создаваться НОВЫЙ поток, а не возвращаться закрытый старый торрент.
+// TestAcquireAfterDropCreatesNewTorrent — после выгрузки возобновление просмотра
+// должно создавать НОВЫЙ торрент, а не отдавать закрытый старый.
 func TestAcquireAfterDropCreatesNewTorrent(t *testing.T) {
 	silenceLogs(t)
 	mgr := newTestManager(t)
@@ -78,11 +76,9 @@ func TestAcquireAfterDropCreatesNewTorrent(t *testing.T) {
 	}
 }
 
-// TestAcquireNeverReturnsDroppedTorrent — гонка: таймер выгрузки может
-// сработать ровно в момент возобновления. Acquire обязан вернуть ЖИВОЙ
-// торрент (присутствующий в open сразу после вызова), а не закрытый.
-// Раньше поиск торрента и инкремент счётчика читателей были РАЗНЫМИ
-// секциями блокировки — между ними могла произойти выгрузка.
+// TestAcquireNeverReturnsDroppedTorrent — гонка: таймер выгрузки может сработать
+// ровно в момент возобновления, но Acquire обязан вернуть ЖИВОЙ торрент. Раньше
+// поиск и инкремент читателей были разными секциями блокировки.
 func TestAcquireNeverReturnsDroppedTorrent(t *testing.T) {
 	silenceLogs(t)
 	mgr := newTestManager(t)
@@ -113,8 +109,7 @@ func TestAcquireNeverReturnsDroppedTorrent(t *testing.T) {
 			t.Fatalf("iter %d: Acquire: %v", i, err)
 		}
 
-		// Инвариант: вернувшийся торрент обязан быть живым, т.е. лежать
-		// в open сразу после Acquire (иначе это закрытый торрент).
+		// Инвариант: торрент из Acquire обязан лежать в open (иначе он закрыт).
 		mgr.mu.Lock()
 		live := mgr.open[hash]
 		mgr.mu.Unlock()

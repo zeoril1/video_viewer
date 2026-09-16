@@ -16,27 +16,38 @@ var (
 	srcSingleRe = regexp.MustCompile(`(?i)(одноголос|авторск|\bavo\b|\bsvo\b|single\s*voice)`)
 	srcOrigRe   = regexp.MustCompile(`(?i)(оригинальн|\boriginal\b|\bost\b)`)
 	srcSubsRe   = regexp.MustCompile(`(?i)(субтитр|\bsub\b|\bsubs\b)`)
-	// Известные студии озвучки в заголовках раздач — чтобы раздачи с именем
-	// студии (а не только со словом «многоголосый»/«одноголосый») попадали
-	// в правильный перевод. Многоголосая закадровая: Сыендук, Кураж-Бамбей,
-	// Jaskier, LostFilm, NewStudio, Novamedia, TVShows, BaibaKo, Амедиа и т.п.
-	srcStudioMultiRe = regexp.MustCompile(`(?i)(сыендук|сиендук|syenduk|кураж[ -]бамбей|kurazh|jaskier|lostfilm|newstudio|novamedia|tvshows|baibako|amedia|кипарис)`)
-	// Авторский одноголосый: Кубик в Кубе, Гоблин, Доценко, Сербин,
-	// Визгунов, Котов (Александр Котов — частый авторский перевод в
-	// раздачах MegaPeer/RuTracker: «| А | Котов |», «Продубляж, Котов»).
-	// \b не используем: в Go regexp граница слова — ASCII, кириллицу
-	// (Котов) она не видит.
+	// Известные студии озвучки в заголовках раздач — чтобы такие раздачи
+	// (без слов «многоголосый/одноголосый») попали в свой перевод.
+	srcStudioMultiRe = regexp.MustCompile(`(?i)(сыендук|сиендук|syenduk|кураж[ -]бамбей|kurazh|jaskier|lostfilm|newstudio|novamedia|tvshows|baibako|amedia|gears\s?media|кипарис)`)
+	// Авторский одноголосый (Кубик в Кубе, Гоблин, Доценко, Сербин,
+	// Визгунов, Котов). \b не используем: в Go граница слова ASCII и
+	// кириллицу («Котов») не видит.
 	srcStudioSingleRe = regexp.MustCompile(`(?i)(кубик в кубе|кубик в куб|гоблин|доценко|doxa|serbin|визгунов|котов)`)
 	// Сезон из заголовка раздачи. Группы: 1 — диапазон сезонов "S1-9"
-	// (полный сборник → сезон 0), 2 — одиночный "S8"/"S8E5"/"[S8]" (после
-	// номера допустимы e/пробел/.,_,-,\],),/конец строки), 3 — «сезон N»,
-	// 4 — "season N".
+	// (полный сборник → сезон 0), 2 — одиночный "S8"/"S8E5"/"[S8]",
+	// 3 — «сезон N», 4 — "season N".
 	srcSeasonRe = regexp.MustCompile(`(?i)(?:[sS](\d{1,2})\s*[-–]\s*[sS]?\d{1,2}|[sS](\d{1,2})(?:[eE]\d+|\s|[._\,\-\)\]]|$)|сезон\s*(\d+)|season\s*(\d+))`)
+	// Диапазон сезонов («S1-14», «S01-02», «S1-3E1-71», «S01-02x01-41»).
+	// Группы: 1 — первый сезон, 2 — последний. Одиночный сезон и диапазон
+	// серий («S1E1-18») НЕ совпадают: после номера обязателен «-»/«–».
+	srcSeasonRangeRe = regexp.MustCompile(`(?i)[sS](\d{1,2})\s*[-–]\s*[sS]?(\d{1,2})`)
+	// Год выпуска в заголовке раздачи: «(2010)», «.2013.», «2010-2023»
+	// (берётся первый найденный).
+	srcYearRe = regexp.MustCompile(`(?:^|[^0-9])((?:19|20)\d{2})(?:[^0-9]|$)`)
 )
 
+// NamesVoiceStudio сообщает, что в заголовке раздачи названа студия
+// озвучки/перевода (LostFilm, TVShows, Novamedia, Jaskier, Amedia…) или
+// авторский переводчик. Нужно при отборе раздач БЕЗ сидов: именно они часто
+// единственный источник озвучки сезона; по этому же признаку отсекается
+// мусор широкого запроса (чужие фильмы с тем же названием).
+func NamesVoiceStudio(title string) bool {
+	return srcStudioMultiRe.MatchString(title) || srcStudioSingleRe.MatchString(title)
+}
+
 // ParseTitle извлекает (качество, озвучку, сезон) из заголовка раздачи.
-// Используется и в on-demand поиске источников, и в фоновом поиске
-// магнетов, чтобы метаданные в таблице sources заполнялись одинаково.
+// Используется и в on-demand, и в фоновом поиске — чтобы метаданные
+// в таблице sources заполнялись одинаково.
 func ParseTitle(title string) (quality, audio string, season int) {
 	low := strings.ToLower(title)
 	if m := srcResRe.FindString(low); m != "" {
@@ -54,8 +65,8 @@ func ParseTitle(title string) (quality, audio string, season int) {
 	if m := srcSeasonRe.FindStringSubmatch(low); m != nil {
 		switch {
 		case m[1] != "":
-			// Диапазон "S1-9" — раздача со ВСЕМИ сезонами (полный сборник).
-			// Такие раздачи не относятся к конкретному сезону — 0.
+			// Диапазон "S1-9" — раздача со ВСЕМИ сезонами: конкретного сезона
+			// нет, поэтому 0.
 			season = 0
 		case m[2] != "":
 			season = atoiOr(m[2], 0)
@@ -80,7 +91,7 @@ func ParseTitle(title string) (quality, audio string, season int) {
 		audio = "subs"
 	}
 	// Словами перевод не распознан — пробуем буквенные коды в теговых полях
-	// («| D, P, A |», «| D |»): на многих трекерах озвучка указана только так.
+	// (на многих трекерах озвучка указана только так).
 	if audio == "" {
 		audio = parseAudioCodes(title)
 	}
@@ -89,20 +100,18 @@ func ParseTitle(title string) (quality, audio string, season int) {
 
 // Коды озвучек в теговых полях раздач MegaPeer/RuTracker/NoNaMe: после «|»
 // идут одиночные буквы D/P/A (иногда кириллические А/Р) — дубляж /
-// профессиональная многоголосная / авторская одноголосная, разделённые
-// запятыми или пробелами («| D, P, A |», «| D |», «| D, Р |», «| А |»).
-// D/L — вторичны: D=дубляж, L=любительский (одноголосый).
-// Разбираем ТОЛЬКО кодовые поля (поле целиком — набор одиночных кодовых
-// букв): иначе одиночная «A» в английском названии («A Quiet Place») была
-// бы принята за авторскую озвучку, а «Dolby Vision» — за «D».
+// профессиональная многоголосая / авторская одноголосная («| D, P, A |»).
+// D/L вторичны: D=дубляж, L=любительский. Разбираем ТОЛЬКО кодовые поля
+// (поле целиком — набор одиночных букв): иначе одиночная «A» в английском
+// названии («A Quiet Place») была бы принята за авторскую озвучку.
 const (
 	audioCodeDub    = 1 << iota // D/Д — дубляж
 	audioCodeMulti              // P/Р — профессиональный многоголосый
 	audioCodeSingle             // A/А, L/Л — авторский/любительский одноголосый
 )
 
-// parseAudioCodes ищет в названии раздачи теговые поля с кодами озвучек и
-// возвращает канонический ключ перевода (dub/multi/single) или "".
+// parseAudioCodes ищет теговые поля с кодами озвучек и возвращает
+// канонический ключ перевода (dub/multi/single) или "".
 func parseAudioCodes(title string) string {
 	var seen int
 	fields := strings.Split(title, "|")
@@ -152,13 +161,49 @@ func audioCodesMask(field string) int {
 	return mask
 }
 
-// IsFullCollection — является ли заголовок раздачи «полным сборником» всех
-// сезонов: содержит диапазон сезонов (S1-9, «сезоны 1-5» и т.п.). Такие
-// раздачи не относятся к конкретному сезону — ParseTitle даёт им сезон 0,
+// IsFullCollection — заголовок описывает «полный сборник» всех сезонов
+// (диапазон сезонов: S1-9 и т.п.). ParseTitle даёт таким раздачам сезон 0,
 // и его НЕЛЬЗЯ переопределять подсказкой искомого сезона (seasonHint).
 func IsFullCollection(title string) bool {
 	m := srcSeasonRe.FindStringSubmatch(strings.ToLower(title))
 	return m != nil && m[1] != ""
+}
+
+// SeasonRange возвращает диапазон сезонов из заголовка («S1-14» → 1,14;
+// для одиночного сезона и заголовков без диапазона — нули).
+func SeasonRange(title string) (from, to int) {
+	m := srcSeasonRangeRe.FindStringSubmatch(title)
+	if m == nil {
+		return 0, 0
+	}
+	from = atoiOr(m[1], 0)
+	to = atoiOr(m[2], 0)
+	if from <= 0 || to <= from {
+		return 0, 0
+	}
+	return from, to
+}
+
+// TitleYear возвращает год выпуска раздачи из заголовка (0 — не найден).
+// Нужен для сопоставления сезонов трекера с TMDB: дробные трекерные сезоны
+// идут теми же годами, поэтому год надёжнее номера.
+func TitleYear(title string) int {
+	m := srcYearRe.FindStringSubmatch(title)
+	if m == nil {
+		return 0
+	}
+	return atoiOr(m[1], 0)
+}
+
+// TitleSeason возвращает номер сезона, если в заголовке он ОДИН (0 — сезон
+// не указан или указан диапазон: «S1-14» — сборник, а не сезон).
+func TitleSeason(title string) int {
+	if from, _ := SeasonRange(title); from > 0 {
+		return 0
+	}
+	quality, _, season := ParseTitle(title)
+	_ = quality
+	return season
 }
 
 func atoiOr(s string, def int) int {

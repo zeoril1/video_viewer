@@ -42,8 +42,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions (user_id);
 `
 
-// ensureAuthSchema создаёт таблицы пользователей и сессий, применяет
-// миграции (роль) и чистит истёкшие сессии при старте.
+// ensureAuthSchema создаёт таблицы пользователей и сессий, применяет миграции (роль) и чистит истёкшие сессии при старте.
 func (r *Repo) ensureAuthSchema(ctx context.Context) error {
 	if _, err := r.conn.ExecContext(ctx, authSchema); err != nil {
 		return err
@@ -83,23 +82,7 @@ func (r *Repo) GetUserByUsername(ctx context.Context, username string) (User, st
 	return u, ph, true, nil
 }
 
-// GetUserByID возвращает пользователя по id.
-func (r *Repo) GetUserByID(ctx context.Context, id int64) (User, bool, error) {
-	var u User
-	err := r.conn.QueryRowContext(ctx,
-		`SELECT id, username, role, created_at FROM users WHERE id = $1`, id,
-	).Scan(&u.ID, &u.Username, &u.Role, &u.Created)
-	if errors.Is(err, sql.ErrNoRows) {
-		return User{}, false, nil
-	}
-	if err != nil {
-		return User{}, false, err
-	}
-	return u, true, nil
-}
-
-// CreateSession создаёт сессию пользователя с временем жизни ttl
-// и возвращает случайный токен (хранится в httpOnly-куке).
+// CreateSession создаёт сессию пользователя с временем жизни ttl и возвращает случайный токен (хранится в httpOnly-куке).
 func (r *Repo) CreateSession(ctx context.Context, userID int64, ttl time.Duration) (string, error) {
 	token, err := randomToken(32)
 	if err != nil {
@@ -138,8 +121,7 @@ func (r *Repo) DeleteSession(ctx context.Context, token string) error {
 	return err
 }
 
-// SetUserRole устанавливает роль пользователя ("user" или "admin").
-// Используется для выдачи админ-доступа (например, dev-пользователю).
+// SetUserRole устанавливает роль пользователя ("user" или "admin"). Используется для выдачи админ-доступа.
 func (r *Repo) SetUserRole(ctx context.Context, userID int64, role string) error {
 	_, err := r.conn.ExecContext(ctx,
 		`UPDATE users SET role = $2 WHERE id = $1`, userID, role)
@@ -155,13 +137,12 @@ func randomToken(n int) (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-// pbkdf2Iter — число итераций PBKDF2 при хешировании пароля. 600k —
-// современная рекомендация OWASP для PBKDF2-SHA256. Формат хеша хранит
-// число итераций, поэтому старые хеши (120k) продолжают проверяться.
+// pbkdf2Iter — число итераций PBKDF2 при хешировании пароля (600k — рекомендация OWASP для PBKDF2-SHA256).
+// Число итераций хранится в самом хеше, поэтому старые хеши (120k) продолжают проверяться.
 const pbkdf2Iter = 600_000
 
-// HashPassword хеширует пароль PBKDF2 (crypto/pbkdf2 из stdlib Go 1.24+)
-// со случайной солью. Формат: "pbkdf2$<iter>$<salt_hex>$<hash_hex>".
+// HashPassword хеширует пароль PBKDF2 (crypto/pbkdf2 из stdlib Go 1.24+) со случайной солью.
+// Формат: "pbkdf2$<iter>$<salt_hex>$<hash_hex>".
 func HashPassword(password string) (string, error) {
 	salt := make([]byte, 16)
 	if _, err := rand.Read(salt); err != nil {
@@ -199,10 +180,8 @@ func VerifyPassword(password, stored string) bool {
 	return subtle.ConstantTimeCompare(got, want) == 1
 }
 
-// SeedDevUser создаёт разработческого пользователя (логин/пароль берутся
-// из env DEV_USER/DEV_PASSWORD), если его ещё нет. Существующего
-// пользователя и его пароль НЕ трогает. Если хотя бы одно из значений
-// пусто — пользователь не создаётся (в проде dev-доступ не нужен).
+// SeedDevUser создаёт dev-пользователя (логин/пароль из env DEV_USER/DEV_PASSWORD), если его ещё нет;
+// существующего пользователя и его пароль НЕ трогает. Если хотя бы одно из значений пусто — не создаётся.
 func (r *Repo) SeedDevUser(ctx context.Context, login, password string) error {
 	login = strings.TrimSpace(login)
 	if login == "" || password == "" {
@@ -213,7 +192,6 @@ func (r *Repo) SeedDevUser(ctx context.Context, login, password string) error {
 		return err
 	}
 	if exists {
-		// Существующего dev-пользователя делаем админом (доступ к админке).
 		if u.Role != "admin" {
 			if err := r.SetUserRole(ctx, u.ID, "admin"); err != nil {
 				return err
@@ -230,7 +208,6 @@ func (r *Repo) SeedDevUser(ctx context.Context, login, password string) error {
 	if err != nil {
 		return err
 	}
-	// Dev-пользователь получает роль админа — доступ к админ-странице.
 	if err := r.SetUserRole(ctx, userID, "admin"); err != nil {
 		return err
 	}

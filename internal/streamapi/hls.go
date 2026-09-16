@@ -19,11 +19,8 @@ import (
 	"time"
 )
 
-// audioTrack — информация о звуковой дорожке из ffprobe.
-// Ordinal — ПОРЯДКОВЫЙ номер среди аудио-потоков (0 = первый); он же
-// используется как track в /hls.m3u8 (для -map 0:a:N). Index — глобальный
-// индекс потока в файле (информационно; маппить по нему нельзя — у MKV
-// глобальный индекс 0 часто является видео).
+// audioTrack — звуковая дорожка из ffprobe (Ordinal — номер среди аудио,
+// он же track в /hls.m3u8; маппить по Index нельзя: у MKV индекс 0 — видео).
 type audioTrack struct {
 	Index    int    `json:"index"`
 	Ordinal  int    `json:"ordinal"`
@@ -32,11 +29,8 @@ type audioTrack struct {
 	Title    string `json:"title"`
 }
 
-// subtitleTrack — информация о субтитр-дорожке из ffprobe. Ordinal —
-// порядковый номер среди субтитр-потоков (0 = первый); он же используется
-// как subs в /hls.m3u8 (для -map 0:s:N). В HLS уходит только ОДИН
-// выбранный субтитр (ffmpeg 6.1: WebVTT-муксер пишет один поток на
-// плейлист), поэтому выбор субтитра перезапускает ffmpeg-сессию.
+// subtitleTrack — субтитр-дорожка из ffprobe (Ordinal — subs в /hls.m3u8).
+// ffmpeg 6.1 пишет в HLS только ОДИН субтитр, поэтому его выбор перезапускает сессию.
 type subtitleTrack struct {
 	Index    int    `json:"index"`
 	Ordinal  int    `json:"ordinal"`
@@ -45,9 +39,7 @@ type subtitleTrack struct {
 	Title    string `json:"title"`
 }
 
-// hlsSession — запущенный ffmpeg, транскодирующий торрент в HLS
-// (видео копируется как есть или перекодируется под выбранное качество,
-// звук перекодируется в AAC).
+// hlsSession — запущенный ffmpeg-процесс HLS (видео копируется или перекодируется, звук — в AAC).
 type hlsSession struct {
 	id       string
 	magnet   string
@@ -62,25 +54,23 @@ type hlsSession struct {
 	lastUsed time.Time
 	segments int // счётчик отданных сегментов (для диагностики)
 
-	// subsLabel — человекочитаемое имя выбранной субтитр-дорожки
-	// (title/язык) для подстановки в master-плейлист (#EXT-X-MEDIA NAME).
+	// subsLabel — имя субтитр-дорожки для master-плейлиста (#EXT-X-MEDIA NAME).
 	subsLabel string
 
-	// exited/exitErr фиксируются горутиной-наблюдателем, когда ffmpeg
-	// завершился. Позволяют servePlaylist быстро вернуть ошибку вместо
-	// долгого ожидания плейлиста, если ffmpeg упал (нет пиров и т.п.).
+	// exited/exitErr фиксирует горутина-наблюдатель: servePlaylist отдаёт
+	// ошибку сразу, не ожидая плейлист от упавшего ffmpeg (нет пиров и т.п.).
 	exited  bool
 	exitErr error
 }
 
-// maxProbeCache — максимум записей в кэше ffprobe (ключ = id|magnet|file).
-// Кэш ограничен, чтобы не расти бесконечно за долгую сессию.
+// maxProbeCache — лимит записей кэша ffprobe (ключ = id|magnet|file), иначе кэш растёт бесконечно.
 const maxProbeCache = 256
 
-// hlsManager управляет ffmpeg-сессиями HLS.
 type hlsManager struct {
 	mu         sync.Mutex
 	sessions   map[string]*hlsSession
+	launches   map[string]uint64
+	nextLaunch uint64
 	selfBase   string
 	dataDir    string
 	probeCache map[string]probeResult
@@ -96,14 +86,12 @@ type probeResult struct {
 	VideoCodec string
 	// VideoHeight — вертикальное разрешение видео (0 — не определено).
 	VideoHeight int
-	// VideoStart — start_time видео-потока (сек). У некоторых рипов (MKV)
-	// видео-дорожка стартует позже аудио (напр. 0.94с) — из-за этого при
-	// старте HLS-потока первые секунды идёт только звук. Поток для таких
-	// файлов начинаем с начала видео (-ss VideoStart + noaccurate_seek).
+	// VideoStart — start_time видео (сек): у части MKV видео стартует позже
+	// аудио (напр. 0.94с) — тогда поток начинаем с начала видео, иначе первые
+	// секунды идёт только звук (см. ensure: -ss VideoStart + noaccurate_seek).
 	VideoStart float64
-	// Partial — true для ЛЁГКОГО результата videoStartProbe (только
-	// VideoStart). Такой результат НЕ отдаётся как полная проба /tracks:
-	// tracks() по нему делает полное ffprobe, иначе duration/дорожки были бы 0.
+	// Partial — лёгкий результат videoStartProbe (только VideoStart): tracks()
+	// по нему делает полное ffprobe, иначе duration/дорожки были бы 0.
 	Partial bool
 }
 
@@ -114,15 +102,15 @@ func newHLSManager(selfBase string) *hlsManager {
 	}
 	return &hlsManager{
 		sessions:   make(map[string]*hlsSession),
+		launches:   make(map[string]uint64),
 		selfBase:   selfBase,
 		dataDir:    dir,
 		probeCache: make(map[string]probeResult),
 	}
 }
 
-// inputURL — URL внутреннего эндпоинта с сырым файлом видео,
-// из которого ffmpeg читает (с поддержкой Range для перемотки).
-// file — индекс конкретного файла (серии) в торренте, -1 — авто.
+// inputURL — URL внутреннего эндпоинта с сырым файлом (ffmpeg читает его с Range);
+// file — индекс серии в торренте, -1 — авто.
 func (m *hlsManager) inputURL(id, magnet string, file int) string {
 	v := url.Values{}
 	v.Set("magnet", magnet)
@@ -132,10 +120,8 @@ func (m *hlsManager) inputURL(id, magnet string, file int) string {
 	return m.selfBase + "/api/stream/" + url.PathEscape(id) + "?" + v.Encode()
 }
 
-// ffprobeNum — число из вывода ffprobe. Обычно ffprobe отдаёт числа как
-// JSON-числа, но для некоторых контейнеров start_time приходит строкой
-// ("N/A" или "0.000000"). Принимаем оба варианта; при строке "N/A"/пустой
-// Val остаётся 0.
+// ffprobeNum — число из ffprobe: часть контейнеров отдаёт start_time строкой
+// ("N/A" или "0.000000") — принимаем оба варианта ("N/A"/пусто → 0).
 type ffprobeNum struct {
 	Val float64
 }
@@ -159,14 +145,12 @@ func (n *ffprobeNum) UnmarshalJSON(b []byte) error {
 	return json.Unmarshal(b, &n.Val)
 }
 
-// tracks возвращает звуковые дорожки и длительность файла торрента (ffprobe).
-// Результат кэшируется на время сессии; file — индекс файла (серии),
-// -1 — авто (самый крупный видеофайл).
+// tracks возвращает дорожки/субтитры/длительность файла торрента (ffprobe,
+// кэш на сессию); file — индекс серии, -1 — авто (крупнейший видеофайл).
 func (m *hlsManager) tracks(ctx context.Context, id, magnet string, file int) (probeResult, error) {
 	key := fmt.Sprintf("%s|%s|file%d", id, magnet, file)
 	m.mu.Lock()
-	// Частичный результат videoStartProbe (только VideoStart) не годится
-	// как полная проба — по нему делаем полное ffprobe.
+	// Partial-результат videoStartProbe не годится как полная проба — зондируем целиком.
 	if pr, ok := m.probeCache[key]; ok && !pr.Partial {
 		m.mu.Unlock()
 		log.Printf("tracks %s: из кэша (file=%d, дорожек=%d, video=%s/%dp)", id, file, len(pr.Tracks), pr.VideoCodec, pr.VideoHeight)
@@ -236,9 +220,7 @@ func (m *hlsManager) tracks(ctx context.Context, id, magnet string, file int) (p
 				Title:    s.Tags.Title,
 			})
 		case "subtitle":
-			// Только ТЕКСТОВЫЕ субтитры, которые ffmpeg умеет конвертировать
-			// в WebVTT для HLS. Растровые (PGS/DVDSUB и т.п.) не конвертируются
-			// — их не показываем в селекторе, чтобы не предлагать нерабочее.
+			// Только текст: растровые (PGS/DVDSUB) в WebVTT не конвертируются.
 			if isTextSubtitleCodec(s.Codec) {
 				subtitles = append(subtitles, subtitleTrack{
 					Index:    s.Index,
@@ -253,9 +235,7 @@ func (m *hlsManager) tracks(ctx context.Context, id, magnet string, file int) (p
 	duration, _ := strconv.ParseFloat(parsed.Format.Duration, 64)
 	pr := probeResult{Tracks: tracks, Subtitles: subtitles, Duration: duration, VideoCodec: videoCodec, VideoHeight: videoHeight, VideoStart: videoStart}
 	m.mu.Lock()
-	// Кэш ограничен: без эвикции он рос бы бесконечно (ключ содержит
-	// полную строку магнита). При достижении лимита вытесняем самые
-	// старые записи.
+	// Эвикция: без неё кэш рос бы бесконечно (ключ — полная строка магнита).
 	if len(m.probeCache) >= maxProbeCache {
 		for _, k := range m.probeOrder {
 			if len(m.probeCache) < maxProbeCache {
@@ -275,10 +255,8 @@ func (m *hlsManager) tracks(ctx context.Context, id, magnet string, file int) (p
 	return pr, nil
 }
 
-// isTextSubtitleCodec возвращает true для текстовых субтитр-кодеков, которые
-// ffmpeg конвертирует в WebVTT для HLS (выбор в селекторе субтитров).
-// Растровые форматы (hdmv_pgs_subtitle/dvd_subtitle и т.п.) в WebVTT не
-// конвертируются — их не предлагаем.
+// isTextSubtitleCodec — кодеки, которые ffmpeg конвертирует в WebVTT; растровые
+// (hdmv_pgs_subtitle/dvd_subtitle и т.п.) не поддерживаются.
 func isTextSubtitleCodec(c string) bool {
 	switch c {
 	case "subrip", "srt", "ass", "ssa", "mov_text", "webvtt", "text", "subviewer", "subviewer1", "jacosub", "mpl2", "microdvd", "sami", "stl", "scc":
@@ -287,8 +265,7 @@ func isTextSubtitleCodec(c string) bool {
 	return false
 }
 
-// subtitleLabel — человекочитаемое имя субтитр-дорожки для master-плейлиста
-// (#EXT-X-MEDIA NAME): title, иначе язык, иначе «Субтитры N».
+// subtitleLabel — имя для master-плейлиста: title, иначе язык, иначе «Субтитры N».
 func subtitleLabel(t subtitleTrack) string {
 	if t.Title != "" {
 		return t.Title
@@ -299,16 +276,12 @@ func subtitleLabel(t subtitleTrack) string {
 	return fmt.Sprintf("Субтитры %d", t.Ordinal+1)
 }
 
-// probeKey — ключ кэша ffprobe для (id, magnet, file).
 func probeKey(id, magnet string, file int) string {
 	return fmt.Sprintf("%s|%s|file%d", id, magnet, file)
 }
 
-// videoStartProbe возвращает start_time видео-потока (сек) для
-// (id,magnet,file) — из кэша ffprobe или лёгким зондированием видео-потока
-// (с коротким таймаутом). ok=false, если определить не удалось (нет
-// пиров/данных). Нужно для adelay: у некоторых рипов видео-дорожка стартует
-// позже аудио, из-за чего при старте HLS-потока звук отстаёт от картинки.
+// videoStartProbe — start_time видео (сек) из кэша или лёгким ffprobe (короткий
+// таймаут); ok=false, если нет данных. Нужен, т.к. у части рипов видео стартует позже аудио.
 func (m *hlsManager) videoStartProbe(ctx context.Context, id, magnet string, file int) (float64, bool) {
 	key := probeKey(id, magnet, file)
 	m.mu.Lock()
@@ -336,18 +309,15 @@ func (m *hlsManager) videoStartProbe(ctx context.Context, id, magnet string, fil
 		return 0, false
 	}
 
-	// Кэшируем (не затираем более полный результат от tracks()).
+	// Кэшируем: имеющуюся запись дополняем, не затирая Partial-флаг полной пробы.
 	m.mu.Lock()
 	if pr, ok := m.probeCache[key]; ok {
-		// Уже есть запись (полная проба /tracks или другой videoStartProbe) —
-		// дописываем VideoStart, не затирая Partial-флаг полной записи.
 		if pr.VideoStart == 0 {
 			pr.VideoStart = vs
 			m.probeCache[key] = pr
 		}
 	} else {
-		// Нет полной пробы — сохраняем ЛЁГКИЙ результат (Partial), чтобы
-		// tracks() не отдал его как полную пробу (duration/tracks будут 0).
+		// Лёгкий результат (Partial): tracks() не примет его за полную пробу.
 		m.probeCache[key] = probeResult{VideoStart: vs, Partial: true}
 		m.probeOrder = append(m.probeOrder, key)
 	}
@@ -355,15 +325,19 @@ func (m *hlsManager) videoStartProbe(ctx context.Context, id, magnet string, fil
 	return vs, true
 }
 
-// ensure запускает ffmpeg для (id, magnet, file, track, subs, start, quality)
-// и возвращает сессию. На фильм держится одна сессия: при изменении
-// серии/дорожки/субтитров/перемотке/качестве предыдущая останавливается
-// и стартует новая. subs — выбранная субтитр-дорожка (-1 — без субтитров;
-// в HLS уходит один субтитр — ffmpeg 6.1 пишет один WebVTT-поток на плейлист).
-func (m *hlsManager) ensure(ctx context.Context, id, magnet string, file, track, subs int, start float64, quality string) (*hlsSession, error) {
+// ensure держит один ffmpeg на фильм и сессию просмотра: смена дорожки/серии/
+// позиции перезапускает только процесс этого зрителя (без токена — старые клиенты).
+func (m *hlsManager) ensure(ctx context.Context, id, magnet string, file, track, subs int, start float64, quality string, playback ...string) (*hlsSession, error) {
+	key := hlsSessionKey(id, playback...)
 	m.mu.Lock()
-	if s, ok := m.sessions[id]; ok {
-		if s.magnet == magnet && s.file == file && s.track == track && s.subs == subs && s.start == start && s.quality == quality {
+	generation := m.beginLaunchLocked(key)
+	defer m.finishLaunch(key, generation)
+	if ctx.Err() != nil {
+		m.mu.Unlock()
+		return nil, ctx.Err()
+	}
+	if s, ok := m.sessions[key]; ok {
+		if s.magnet == magnet && s.file == file && s.track == track && s.subs == subs && s.start == start && s.quality == quality && !(s.exited && s.exitErr != nil) {
 			s.lastUsed = time.Now()
 			m.mu.Unlock()
 			return s, nil
@@ -371,17 +345,14 @@ func (m *hlsManager) ensure(ctx context.Context, id, magnet string, file, track,
 		// Параметры изменились (серия/дорожка/субтитры/перемотка/качество) — перезапуск.
 		log.Printf("hls: ensure %s: перезапуск (file=%d track=%d subs=%d start=%.0f quality=%s)", id, file, track, subs, start, quality)
 		s.stop()
-		delete(m.sessions, id)
+		delete(m.sessions, key)
 	}
-	// Освобождаем лок ПЕРЕД пробой: videoStartProbe внутри берёт m.mu сам,
-	// а Go-мьютексы нереентерабельны — вызов при удержанном локе = мертвяк
-	// (вешал все HLS-запросы для свежего потока start=0).
+	// Лок снимаем ПЕРЕД пробой: videoStartProbe берёт m.mu сам, а мьютексы
+	// в Go нереентерабельны (иначе вешались все HLS-запросы при start=0).
 	m.mu.Unlock()
 
-	// Проверяем выбранный субтитр по кэшу ffprobe (фронтенд всегда шлёт
-	// ordinals из /tracks, но защищаемся от невалидного subs — иначе
-	// -map 0:s:N не найдёт поток и ffmpeg упадёт). Если пробы ещё нет —
-	// доверяем параметру (loadTracks всегда зондирует перед playHls).
+	// Проверяем subs по кэшу ffprobe: невалидный номер уронит ffmpeg
+	// (-map 0:s:N не найдёт поток). Нет пробы — доверяем параметру.
 	subsLabel := ""
 	if subs >= 0 {
 		key := probeKey(id, magnet, file)
@@ -398,9 +369,7 @@ func (m *hlsManager) ensure(ctx context.Context, id, magnet string, file, track,
 		}
 	}
 
-	// Сдвиг видео-дорожки (adelay) нужен для свежего потока с начала файла.
-	// Зондируем ВНЕ лока: ffprobe может идти секунды, а лок блокировал бы
-	// остальные HLS-запросы.
+	// Зондируем ВНЕ лока: ffprobe может идти секунды и заблокировал бы HLS.
 	vstart := 0.0
 	if start <= 0 {
 		if vs, ok := m.videoStartProbe(ctx, id, magnet, file); ok {
@@ -414,13 +383,9 @@ func (m *hlsManager) ensure(ctx context.Context, id, magnet string, file, track,
 	}
 	playlist := filepath.Join(dir, "playlist.m3u8")
 	segPattern := filepath.Join(dir, "seg_%05d.m4s")
-	// Позиция старта потока. Для явной перемотки (start>0) — сама start.
-	// Для свежего потока (start=0), если видео-дорожка в исходнике стартует
-	// ПОЗЖЕ аудио (напр. 0.94с), стартуем с начала видео: иначе первые 0.94с
-	// идёт только звук, и звук «отстаёт» от картинки. Запуск с начала видео
-	// (-ss VideoStart + noaccurate_seek) ставит видео и звук на одну точку —
-	// A/V согласованы с первого кадра (adelay НЕ годится: он сдвигает звук
-	// навсегда, создавая постоянный рассинхрон).
+	// Позиция старта: при перемотке — start; для свежего потока — начало видео,
+	// если оно в исходнике стартует позже звука (adelay не годится: сдвинул бы
+	// звук навсегда; -ss + noaccurate_seek ставит A/V в одну точку).
 	seekStart := start
 	if start <= 0 && vstart > 0.1 {
 		seekStart = vstart
@@ -428,16 +393,11 @@ func (m *hlsManager) ensure(ctx context.Context, id, magnet string, file, track,
 	}
 	args := []string{"-hide_banner", "-loglevel", "error", "-y"}
 	if seekStart > 0 {
-		// Перемотка: начинаем ffmpeg с позиции seekStart (быстрый input-seek
-		// по HTTP-стриму с поддержкой Range).
+		// Быстрый input-seek по HTTP-стриму (Range).
 		args = append(args, "-ss", strconv.FormatFloat(seekStart, 'f', -1, 64))
-		// ВАЖНО (рассинхрон звука): когда видео КОПИРУЕТСЯ как есть
-		// (-c:v copy, качество source), точный seek (accurate_seek по
-		// умолчанию) стартует видео с ближайшего ключевого кадра, а звук —
-		// ровно с позиции seekStart. Из-за этого звук отстаёт от видео на
-		// длину группы кадров. -noaccurate_seek стартует и видео, и звук
-		// с одного ключевого кадра — A/V в синхроне. При ПЕРЕКОДИРОВАНИИ
-		// видео (2160/1080/720/480) точный seek работает корректно.
+		// ВАЖНО: при -c:v copy точный seek берёт видео с ключевого кадра, а звук —
+		// ровно с seekStart (звук отстаёт на GOP). noaccurate_seek синхронизирует
+		// A/V; при перекодировании видео точный seek корректен.
 		if qualityHeight(quality) == 0 {
 			args = append(args, "-noaccurate_seek")
 		}
@@ -446,36 +406,23 @@ func (m *hlsManager) ensure(ctx context.Context, id, magnet string, file, track,
 		"-i", m.inputURL(id, magnet, file),
 		"-map", "0:v:0",
 	)
-	// Аудио-дорожка: track — это ПОРЯДКОВЫЙ номер аудио-потока (0 = первый),
-	// как в /tracks (поле ordinal). -map 0:a:N выбирает N-й аудио-поток файла
-	// НЕЗАВИСИМО от его глобального индекса: у MKV видео обычно индекс 0, а
-	// аудио 1..N, поэтому маппинг по глобальному индексу (0:0 = видео) давал
-	// в HLS два видео-потока без аудио → bufferAppendError у hls.js.
-	// track=-1 — аудио в файле нет (по /tracks) — не маппим её вовсе.
+	// track — ПОРЯДКОВЫЙ номер аудио-потока (ordinal в /tracks): -map 0:a:N не
+	// зависит от глобального индекса, а маппинг по индексу (у MKV 0 — видео)
+	// давал два видео-потока без звука → bufferAppendError у hls.js.
+	// track=-1 — аудио нет, не маппим.
 	if track >= 0 {
 		args = append(args, "-map", fmt.Sprintf("0:a:%d", track))
 	}
-	// Субтитры: выбранный текстовый субтитр (subs — ordinal среди
-	// субтитр-потоков) конвертируем в WebVTT и включаем в HLS. Чтобы
-	// hls.js показал дорожку субтитров, нужен master-плейлист с
-	// #EXT-X-MEDIA:TYPE=SUBTITLES: задаём var_stream_map с s:0 и
-	// sgroup:subtitle и -master_pl_name (ffmpeg сгенерирует master.m3u8
-	// и отдельный WebVTT-плейлист playlist_vtt.m3u8 + playlistN.vtt).
-	// Без выбранного субтитра команда остаётся прежней (один плейлист).
+	// Субтитр (ordinal) → WebVTT: hls.js покажет дорожку только из master-плейлиста,
+	// поэтому задаём var_stream_map s:0,sgroup:subtitle и -master_pl_name.
 	hasSubs := subs >= 0
 	if hasSubs {
 		args = append(args, "-map", fmt.Sprintf("0:s:%d", subs))
 	}
 	if h := qualityHeight(quality); h > 0 {
-		// Серверное понижение качества: перекодируем видео в H.264 с
-		// ограничением высоты (не выше исходной — min()). Позволяет
-		// смотреть 4K/1080p на слабом канале, выбрав меньшее качество.
-		//
-		// Важно для HDR/10-бит: без принудительного формата ffmpeg сохраняет
-		// глубину исходника (yuv420p10le → Hi10P), а браузеры через MSE такой
-		// H.264 не декодируют (bufferAppendError). Поэтому всегда выдаём
-		// 8-битный yuv420p и применяем тонамаппинг HDR→SDR (hable/Filmic),
-		// чтобы HDR-рипы не выглядели выцветшими и реально игрались.
+		// Понижение качества (H.264, высота ≤ исходной). Важно для HDR/10-бит: без
+		// -pix_fmt yuv420p ffmpeg сохранит глубину исходника, и MSE такой поток не
+		// декодирует; тонамаппинг нужен, чтобы HDR-рипы не выглядели выцветшими.
 		args = append(args,
 			"-vf", fmt.Sprintf("scale=-2:'min(%d,ih)',tonemap=hable", h),
 			"-pix_fmt", "yuv420p",
@@ -489,17 +436,13 @@ func (m *hlsManager) ensure(ctx context.Context, id, magnet string, file, track,
 		"-f", "hls",
 		"-hls_time", "6",
 		"-hls_list_size", "0",
-		// fMP4-сегменты: hls.js/MSE поддерживают HEVC (H.265) во fMP4,
-		// в отличие от MPEG-TS — иначе для HEVC-рипов был бы фолбэк на
-		// сырой поток с невоспроизводимым звуком (AC3/DTS).
+		// fMP4: hls.js/MSE играет HEVC только во fMP4 (в MPEG-TS — нет).
 		"-hls_segment_type", "fmp4",
 		"-hls_flags", "independent_segments",
 		"-hls_segment_filename", segPattern,
 	)
 	if hasSubs {
-		// Субтитр в WebVTT + master-плейлист с SUBTITLES-рендерингом.
-		// sgroup объединяет видеовариант с субтитром; v:0,a:0 (или v:0 без
-		// звука) — основной вариант, s:0 — единственный субтитр.
+		// WebVTT + master-плейлист: sgroup связывает видеовариант с субтитром.
 		args = append(args, "-c:s", "webvtt")
 		vsm := "v:0,s:0,sgroup:subtitle"
 		if track >= 0 {
@@ -517,24 +460,13 @@ func (m *hlsManager) ensure(ctx context.Context, id, magnet string, file, track,
 		return nil, err
 	}
 	s := &hlsSession{id: id, magnet: magnet, file: file, track: track, subs: subs, subsLabel: subsLabel, start: start, quality: quality, dir: dir, playlist: playlist, cmd: cmd, lastUsed: time.Now()}
-	m.mu.Lock()
-	// Во время зондирования/старта могла появиться сессия с теми же
-	// параметрами (параллельный запрос) — используем её, лишний ffmpeg
-	// убиваем; если параметры другие — останавливаем старую и заменяем.
-	if existing, ok := m.sessions[id]; ok {
-		if existing.magnet == magnet && existing.file == file && existing.track == track && existing.subs == subs && existing.start == start && existing.quality == quality {
-			m.mu.Unlock()
-			_ = cmd.Process.Kill()
-			_ = os.RemoveAll(dir)
-			existing.lastUsed = time.Now()
-			return existing, nil
-		}
-		existing.stop()
+	if !m.publishSession(ctx, key, generation, s) {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		_ = os.RemoveAll(dir)
+		return nil, context.Canceled
 	}
-	m.sessions[id] = s
-	m.mu.Unlock()
-	// Наблюдаем за ffmpeg: фиксируем завершение процесса. Единственный,
-	// кто вызывает cmd.Wait() — эта горутина (stop() только Kill).
+
 	go func() {
 		werr := cmd.Wait()
 		m.mu.Lock()
@@ -547,9 +479,7 @@ func (m *hlsManager) ensure(ctx context.Context, id, magnet string, file, track,
 	return s, nil
 }
 
-// stop завершает ffmpeg (Kill) и удаляет временные файлы. Reaping
-// процесса выполняет горутина-наблюдатель (см. ensure), поэтому здесь
-// не вызываем Process.Wait.
+// stop убивает ffmpeg и удаляет временные файлы (Wait делает горутина-наблюдатель).
 func (s *hlsSession) stop() {
 	if s.cmd != nil && s.cmd.Process != nil {
 		_ = s.cmd.Process.Kill()
@@ -557,10 +487,10 @@ func (s *hlsSession) stop() {
 	_ = os.RemoveAll(s.dir)
 }
 
-// stopSessions останавливает ffmpeg-сессию фильма, освобождая память и
-// завершая чтение торрента.
+// stopSessions останавливает ffmpeg-сессию фильма (освобождает память и чтение торрента).
 func (m *hlsManager) stopSessions(id string) {
 	m.mu.Lock()
+	delete(m.launches, id)
 	if s, ok := m.sessions[id]; ok {
 		s.stop()
 		delete(m.sessions, id)
@@ -571,10 +501,10 @@ func (m *hlsManager) stopSessions(id string) {
 	m.mu.Unlock()
 }
 
-// stopAll останавливает все ffmpeg-сессии (вызывается при завершении
-// сервера, чтобы не оставлять осиротевшие ffmpeg-процессы).
+// stopAll останавливает все сессии при завершении сервера (чтобы не осталось осиротевших ffmpeg).
 func (m *hlsManager) stopAll() {
 	m.mu.Lock()
+	clear(m.launches)
 	for k, s := range m.sessions {
 		s.stop()
 		delete(m.sessions, k)
@@ -582,8 +512,7 @@ func (m *hlsManager) stopAll() {
 	m.mu.Unlock()
 }
 
-// qualityHeight возвращает высоту кадра для выбранного качества
-// (0 — исходное качество, без транскодинга).
+// qualityHeight — высота кадра для качества (0 — исходное, без транскодинга).
 func qualityHeight(q string) int {
 	switch strings.TrimSpace(q) {
 	case "2160":
@@ -605,15 +534,12 @@ func (m *hlsManager) status() int {
 	return len(m.sessions)
 }
 
-// cleanup периодически останавливает давно не использованные сессии,
-// чтобы ffmpeg не висел и не держал торрент в памяти после просмотра.
+// cleanup периодически останавливает давно не использованные сессии.
 func (m *hlsManager) cleanup() {
 	for {
 		time.Sleep(30 * time.Second)
 		cutoff := time.Now().Add(-90 * time.Second)
-		// Собираем устаревшие сессии под блокировкой, а останавливаем их
-		// (Kill + RemoveAll) уже без неё: RemoveAll может быть медленным
-		// и не должен блокировать ensure/playlist/segments.
+		// Останавливаем без лока: RemoveAll может быть медленным и заблокировал бы HLS.
 		var stale []*hlsSession
 		m.mu.Lock()
 		for k, s := range m.sessions {
@@ -648,9 +574,8 @@ func subsParam(r *http.Request) int {
 	return s
 }
 
-// handleTracks — GET /api/films/{id}/tracks?magnet=...
-// Возвращает звуковые дорожки, субтитры, длительность, а также кодек/высоту
-// видео (для автофолбэка на H.264, если браузер не поддерживает HEVC).
+// handleTracks — GET /api/films/{id}/tracks: дорожки, субтитры, длительность,
+// кодек/высота видео (для фолбэка на H.264, если браузер не играет HEVC).
 func handleTracks(hls *hlsManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
@@ -661,10 +586,8 @@ func handleTracks(hls *hlsManager) http.HandlerFunc {
 		}
 		pr, err := hls.tracks(r.Context(), id, magnet, fileParam(r))
 		if err != nil {
-			// Данные торрента недоступны (нет пиров/кусков — ffprobe не может
-			// прочитать начало файла и упирается в таймаут). Возвращаем ЯВНУЮ
-			// ошибку (504), чтобы фронтенд показал сообщение, а не молча
-			// скрывал селектор дорожек, как если бы в файле не было звука.
+			// Нет пиров/данных: отдаём 504, чтобы фронтенд показал ошибку, а не
+			// скрыл селектор дорожек (будто в файле нет звука).
 			log.Printf("tracks: %s: %v", id, err)
 			http.Error(w, "tracks unavailable (no peers?): "+err.Error(), http.StatusGatewayTimeout)
 			return
@@ -682,14 +605,9 @@ func handleTracks(hls *hlsManager) http.HandlerFunc {
 	}
 }
 
-// servePlaylist — GET /api/films/{id}/hls.m3u8?magnet=...&track=N&subs=S&start=SS&quality=Q.
-// start — позиция в секундах (перемотка: ffmpeg стартует с неё);
-// quality — source|2160|1080|720|480 (серверное понижение качества);
-// subs — выбранная субтитр-дорожка (-1/отсутствует — без субтитров).
-// Запускает/возвращает HLS-плейлист ffmpeg: с субтитрами — MASTER-плейлист
-// (#EXT-X-MEDIA TYPE=SUBTITLES + ссылки на media/субтитр-плейлисты), без —
-// обычный media-плейлист (как раньше). Если ffmpeg ещё не создал плейлист
-// (ждёт метаданные/первый сегмент), ожидает его появления.
+// servePlaylist — GET /api/films/{id}/hls.m3u8?magnet&track&subs&start&quality
+// (start — перемотка в сек; quality — source|2160|1080|720|480; subs — -1 без субтитров).
+// Запускает ffmpeg и ждёт появления плейлиста (с субтитрами — master-плейлиста).
 func (m *hlsManager) servePlaylist(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	magnet := strings.TrimSpace(r.URL.Query().Get("magnet"))
@@ -705,21 +623,17 @@ func (m *hlsManager) servePlaylist(w http.ResponseWriter, r *http.Request) {
 	if quality == "" {
 		quality = "source"
 	}
-	s, err := m.ensure(r.Context(), id, magnet, file, track, subs, start, quality)
+	s, err := m.ensure(r.Context(), id, magnet, file, track, subs, start, quality, r.URL.Query().Get("session"))
 	if err != nil {
 		http.Error(w, "hls start failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// Файл, появления которого ждём: при субтитрах — master-плейлист
-	// (создаётся ffmpeg после первого сегмента вместе с media-плейлистом),
-	// иначе — media-плейлист.
+	// С субтитрами ждём master-плейлист (ffmpeg создаёт его после первого сегмента).
 	waitFor := s.playlist
 	if s.subs >= 0 {
 		waitFor = filepath.Join(s.dir, "master.m3u8")
 	}
-	// Ждём появления плейлиста. Окно 100с — с запасом под медленный старт
-	// торрента (пиры, метаданные, первые куски). Если ffmpeg упал раньше
-	// появления плейлиста — возвращаем ошибку сразу, не ждём таймаут.
+	// Окно 100с — запас под медленный старт торрента; упавший ffmpeg отдаёт ошибку сразу.
 	t0 := time.Now()
 	deadline := t0.Add(100 * time.Second)
 	for {
@@ -753,8 +667,7 @@ func (m *hlsManager) servePlaylist(w http.ResponseWriter, r *http.Request) {
 	m.serveMediaPlaylistFrom(w, r, s)
 }
 
-// playlistURLParams — общие query-параметры для URL плейлистов/сегментов
-// (magnet/track/file), по которым сервер находит сессию.
+// playlistURLParams — общие query-параметры URL плейлистов/сегментов (magnet/track/file).
 func playlistURLParams(id, magnet string, track, file int) (enc, common string) {
 	enc = url.QueryEscape(magnet)
 	common = "?magnet=" + enc + "&track=" + strconv.Itoa(track)
@@ -764,15 +677,12 @@ func playlistURLParams(id, magnet string, track, file int) (enc, common string) 
 	return enc, common
 }
 
-// segmentBaseURL — префикс URL эндпоинта сегментов (без имени сегмента).
 func segmentBaseURL(id string, common string) string {
 	return "/api/films/" + url.PathEscape(id) + "/hls/segments/$1" + common
 }
 
-// serveMaster отдаёт master-плейлист сессии с субтитрами, переписывая
-// относительные ссылки в абсолютные URL наших эндпоинтов и подставляя
-// реальное имя выбранной субтитр-дорожки (ffmpeg 6.1 пишет дефолтное
-// NAME="subtitle_0" и DEFAULT=YES — переименовываем и выключаем авто-включение).
+// serveMaster отдаёт master-плейлист, подменяя ссылки на наши URL и имя
+// субтитр-дорожки (ffmpeg 6.1 пишет NAME="subtitle_0" и DEFAULT=YES).
 func (m *hlsManager) serveMaster(w http.ResponseWriter, r *http.Request, s *hlsSession) {
 	id := r.PathValue("id")
 	data, err := os.ReadFile(filepath.Join(s.dir, "master.m3u8"))
@@ -781,6 +691,9 @@ func (m *hlsManager) serveMaster(w http.ResponseWriter, r *http.Request, s *hlsS
 		return
 	}
 	_, common := playlistURLParams(id, s.magnet, s.track, s.file)
+	if session := r.URL.Query().Get("session"); session != "" {
+		common += "&session=" + url.QueryEscape(session)
+	}
 	// media-плейлист: /hls/pl.m3u8 (он же playlist.m3u8 в каталоге сессии).
 	mediaURL := "/api/films/" + url.PathEscape(id) + "/hls/pl.m3u8" + common
 	// субтитр-плейлист: /hls/subs/0.m3u8 (единственный WebVTT-рендеринг).
@@ -789,9 +702,8 @@ func (m *hlsManager) serveMaster(w http.ResponseWriter, r *http.Request, s *hlsS
 	body := string(data)
 	body = strings.ReplaceAll(body, `URI="playlist_vtt.m3u8"`, `URI="`+subURL+`"`)
 	body = regexp.MustCompile(`(?m)^playlist\.m3u8$`).ReplaceAllString(body, mediaURL)
-	// ffmpeg 6.1 не поддерживает sname — даёт NAME="subtitle_N"; заменяем на
-	// реальное имя дорожки. DEFAULT=YES → NO, чтобы hls.js не включал
-	// субтитры автоматически (пользователь выбирает сам).
+	// ffmpeg 6.1 не умеет sname → NAME="subtitle_N"; DEFAULT=YES снимаем,
+	// чтобы hls.js не включал субтитры сам.
 	if s.subsLabel != "" {
 		body = regexp.MustCompile(`NAME="subtitle_\d+"`).ReplaceAllString(body, `NAME="`+s.subsLabel+`"`)
 	}
@@ -800,9 +712,7 @@ func (m *hlsManager) serveMaster(w http.ResponseWriter, r *http.Request, s *hlsS
 	_, _ = io.WriteString(w, body)
 }
 
-// findSession возвращает сессию фильма с совпадающими параметрами
-// источника/дорожки/серии (как serveSegment). subOK=true, если у сессии
-// субтитры включены (субтитр-плейлист существует).
+// findSession ищет сессию фильма с теми же источником/дорожкой/серией.
 func (m *hlsManager) findSession(id, magnet string, track, file int) (*hlsSession, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -817,9 +727,8 @@ func (m *hlsManager) findSession(id, magnet string, track, file int) (*hlsSessio
 	return s, true
 }
 
-// serveMediaPlaylist — GET /api/films/{id}/hls/pl.m3u8?magnet=...&track=N&file=M.
-// Отдаёт media-плейлист (video+audio) сессии со ссылками на сегменты,
-// переписанными в абсолютные URL. Вызывается hls.js из master-плейлиста.
+// serveMediaPlaylist — GET /api/films/{id}/hls/pl.m3u8: media-плейлист сессии
+// (hls.js запрашивает его из master-плейлиста).
 func (m *hlsManager) serveMediaPlaylist(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	magnet := strings.TrimSpace(r.URL.Query().Get("magnet"))
@@ -829,7 +738,7 @@ func (m *hlsManager) serveMediaPlaylist(w http.ResponseWriter, r *http.Request) 
 	}
 	track := trackParam(r)
 	file := fileParam(r)
-	s, ok := m.findSession(id, magnet, track, file)
+	s, ok := m.findSession(hlsSessionKey(id, r.URL.Query().Get("session")), magnet, track, file)
 	if !ok {
 		http.NotFound(w, r)
 		return
@@ -837,7 +746,6 @@ func (m *hlsManager) serveMediaPlaylist(w http.ResponseWriter, r *http.Request) 
 	m.serveMediaPlaylistFrom(w, r, s)
 }
 
-// serveMediaPlaylistFrom отдаёт media-плейлист из каталога сессии.
 func (m *hlsManager) serveMediaPlaylistFrom(w http.ResponseWriter, r *http.Request, s *hlsSession) {
 	id := r.PathValue("id")
 	data, err := os.ReadFile(s.playlist)
@@ -845,20 +753,20 @@ func (m *hlsManager) serveMediaPlaylistFrom(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "read playlist: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// Переписываем относительные имена сегментов в абсолютные URL
-	// эндпоинта сегментов (иначе hls.js резолвит их не туда). Помимо
-	// magnet и track передаём file (серию), чтобы сервер мог отличить
-	// сегменты разных сессий при переключении источника/дорожки/серии.
+	// Имена сегментов → абсолютные URL; file в параметрах, чтобы не спутать
+	// сегменты сессий при переключении источника/дорожки/серии.
 	_, common := playlistURLParams(id, s.magnet, s.track, s.file)
+	if session := r.URL.Query().Get("session"); session != "" {
+		common += "&session=" + url.QueryEscape(session)
+	}
 	re := regexp.MustCompile(`(init\.mp4|seg_\d+\.(?:m4s|ts))`)
 	body := re.ReplaceAllString(string(data), segmentBaseURL(id, common))
 	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
 	_, _ = io.WriteString(w, body)
 }
 
-// serveSubPlaylist — GET /api/films/{id}/hls/subs/{idx}.m3u8?magnet=...&track=N.
-// Отдаёт WebVTT-плейлист выбранной субтитр-дорожки сессии (playlist_vtt.m3u8)
-// со ссылками на .vtt-сегменты, переписанными в абсолютные URL.
+// serveSubPlaylist — GET /api/films/{id}/hls/subs/{idx}.m3u8: WebVTT-плейлист
+// субтитр-дорожки со ссылками на .vtt-сегменты.
 func (m *hlsManager) serveSubPlaylist(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	magnet := strings.TrimSpace(r.URL.Query().Get("magnet"))
@@ -868,7 +776,7 @@ func (m *hlsManager) serveSubPlaylist(w http.ResponseWriter, r *http.Request) {
 	}
 	track := trackParam(r)
 	file := fileParam(r)
-	s, ok := m.findSession(id, magnet, track, file)
+	s, ok := m.findSession(hlsSessionKey(id, r.URL.Query().Get("session")), magnet, track, file)
 	if !ok || s.subs < 0 {
 		http.NotFound(w, r)
 		return
@@ -879,14 +787,16 @@ func (m *hlsManager) serveSubPlaylist(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, common := playlistURLParams(id, s.magnet, s.track, s.file)
+	if session := r.URL.Query().Get("session"); session != "" {
+		common += "&session=" + url.QueryEscape(session)
+	}
 	re := regexp.MustCompile(`(playlist\d+\.vtt)`)
 	body := re.ReplaceAllString(string(data), segmentBaseURL(id, common))
 	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
 	_, _ = io.WriteString(w, body)
 }
 
-// serveSegment — GET /api/films/{id}/hls/segments/{name}?magnet=...&track=N.
-// Отдаёт сегмент .ts сгенерированного HLS.
+// serveSegment — GET /api/films/{id}/hls/segments/{name}: сегмент HLS.
 func (m *hlsManager) serveSegment(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	name := r.PathValue("name")
@@ -898,12 +808,10 @@ func (m *hlsManager) serveSegment(w http.ResponseWriter, r *http.Request) {
 	track := trackParam(r)
 	file := fileParam(r)
 	m.mu.Lock()
-	s, ok := m.sessions[id]
+	s, ok := m.sessions[hlsSessionKey(id, r.URL.Query().Get("session"))]
 	if ok {
-		// Сессия ключуется по id фильма, но параметры источника/дорожки/
-		// серии должны совпадать с запрошенными: после переключения
-		// источника/дорожки «хвостовые» запросы сегментов от старого
-		// плейлиста не должны отдавать сегменты новой сессии.
+		// Параметры обязаны совпадать: «хвостовые» запросы старого плейлиста
+		// не должны получить сегменты новой сессии.
 		if s.magnet != magnet || s.track != track || (file >= 0 && s.file != file) {
 			ok = false
 		} else {
@@ -925,8 +833,7 @@ func (m *hlsManager) serveSegment(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	// fMP4: сегменты .m4s, init-сегмент .mp4; старые .ts тоже отдаём.
-	// Субтитры: .vtt-сегменты WebVTT-плейлиста.
+	// fMP4 (.m4s/.mp4), субтитры .vtt, старые .ts — тоже отдаём.
 	switch {
 	case strings.HasSuffix(name, ".m4s"):
 		w.Header().Set("Content-Type", "video/iso.segment")
@@ -940,8 +847,7 @@ func (m *hlsManager) serveSegment(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, filepath.Join(s.dir, name))
 }
 
-// ffmpegLogWriter буферизует stderr ffmpeg и пишет в лог приложения
-// целыми строками (ffmpeg пишет частями — иначе строки лога рвались бы).
+// ffmpegLogWriter пишет stderr ffmpeg в лог целыми строками (ffmpeg шлёт куски).
 type ffmpegLogWriter struct {
 	mu  sync.Mutex
 	buf []byte
@@ -963,4 +869,40 @@ func (w *ffmpegLogWriter) Write(p []byte) (int, error) {
 		}
 	}
 	return len(p), nil
+}
+
+func hlsSessionKey(id string, playback ...string) string {
+	if len(playback) == 0 || playback[0] == "" {
+		return id
+	}
+	return id + "\x00" + playback[0]
+}
+
+// Поколения запуска не дают старому запросу заменить новый (резерв — под m.mu).
+func (m *hlsManager) beginLaunchLocked(key string) uint64 {
+	m.nextLaunch++
+	if m.launches == nil {
+		m.launches = make(map[string]uint64)
+	}
+	m.launches[key] = m.nextLaunch
+	return m.nextLaunch
+}
+func (m *hlsManager) finishLaunch(key string, generation uint64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.launches[key] == generation {
+		delete(m.launches, key)
+	}
+}
+func (m *hlsManager) publishSession(ctx context.Context, key string, generation uint64, s *hlsSession) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if ctx.Err() != nil || m.launches[key] != generation {
+		return false
+	}
+	if previous := m.sessions[key]; previous != nil {
+		previous.stop()
+	}
+	m.sessions[key] = s
+	return true
 }

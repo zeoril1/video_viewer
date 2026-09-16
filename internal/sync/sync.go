@@ -13,8 +13,7 @@ import (
 // DefaultInterval — периодичность синхронизации по умолчанию.
 const DefaultInterval = 24 * time.Hour
 
-// Syncer периодически загружает чарты IMDb («топ-250» и «популярные»)
-// и сохраняет новые фильмы в БД.
+// Syncer периодически загружает чарты IMDb («топ-250» и «популярные») и сохраняет новые фильмы в БД.
 type Syncer struct {
 	db       *db.Repo
 	imdb     *imdb.Client
@@ -29,8 +28,7 @@ func New(db *db.Repo, im *imdb.Client, interval time.Duration) *Syncer {
 	return &Syncer{db: db, imdb: im, interval: interval}
 }
 
-// SyncOnce выполняет один цикл синхронизации: оба чарта, с резервом
-// на отсутствие источника для какого-либо из них.
+// SyncOnce выполняет один цикл синхронизации: оба чарта, с резервом на отсутствие источника для какого-либо из них.
 func (s *Syncer) SyncOnce(ctx context.Context) {
 	charts := []imdb.ChartKind{imdb.ChartTop250, imdb.ChartPopular}
 	log.Printf("sync: старт цикла (%d чартов)", len(charts))
@@ -65,8 +63,7 @@ func (s *Syncer) SyncOnce(ctx context.Context) {
 	}
 }
 
-// Run запускает синхронизацию сразу при старте и далее каждые interval.
-// Блокирующий; остановить можно через отмену ctx.
+// Run запускает синхронизацию сразу при старте и далее каждые interval; остановка — отменой ctx.
 func (s *Syncer) Run(ctx context.Context) {
 	s.SyncOnce(ctx)
 

@@ -3,20 +3,20 @@ package db
 import (
 	"context"
 	"database/sql"
+	"encoding/base32"
+	"encoding/hex"
 	"fmt"
-	"regexp"
+	"net/url"
 	"strings"
 	"time"
 )
 
-// Source — сохранённая магнет-ссылка с метаданными раздачи. Таблица
-// sources хранит результаты поиска на трекерах: по одному фильму может
-// быть несколько записей (разные озвучки/качество/сезоны).
+// Source — сохранённая магнет-ссылка с метаданными раздачи: по одному фильму может быть
+// несколько записей (разные озвучки/качество/сезоны).
 //
-// Ключ записи — info_hash (хеш содержимого), а не полная строка магнита:
-// у одного релиза (одинаковый xt=urn:btih:...) трекер отдаёт магниты с
-// разными сессионными токенами в трекерах, и сравнение по строке магнита
-// плодило бы дубли при каждом поиске.
+// Ключ записи — info_hash (хеш содержимого), а не полная строка магнита: у одного релиза
+// (одинаковый xt=urn:btih:...) трекер отдаёт магниты с разными сессионными токенами, и сравнение
+// по строке магнита плодило бы дубли при каждом поиске.
 type Source struct {
 	ID        int64
 	FilmID    string // imdb_id / kp<id> фильма
@@ -55,8 +55,7 @@ CREATE TABLE IF NOT EXISTS sources (
 CREATE INDEX IF NOT EXISTS idx_sources_film ON sources (film_id);
 `
 
-// ensureSourcesSchema создаёт таблицу источников и применяет миграции
-// (переход с ключа по magnet на ключ по info_hash).
+// ensureSourcesSchema создаёт таблицу источников и применяет миграции (переход с ключа по magnet на ключ по info_hash).
 func (r *Repo) ensureSourcesSchema(ctx context.Context) error {
 	if _, err := r.conn.ExecContext(ctx, sourcesSchema); err != nil {
 		return err
@@ -73,20 +72,41 @@ func (r *Repo) ensureSourcesSchema(ctx context.Context) error {
 		return err
 	}
 	// Для старых строк заполняем info_hash из магнита.
-	if _, err := r.conn.ExecContext(ctx, `
-		UPDATE sources
-		SET info_hash = lower(substring(magnet from 'xt=urn:btih:([0-9a-fA-F]{40})'))
-		WHERE info_hash = ''
-	`); err != nil {
+	rows, err := r.conn.QueryContext(ctx, "SELECT id, magnet FROM sources WHERE info_hash = ''")
+	if err != nil {
 		return err
 	}
+	type entry struct {
+		id   int64
+		hash string
+	}
+	var entries []entry
+	for rows.Next() {
+		var id int64
+		var magnet string
+		if err := rows.Scan(&id, &magnet); err != nil {
+			rows.Close()
+			return err
+		}
+		entries = append(entries, entry{id, magnetInfoHash(magnet)})
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if _, err := r.conn.ExecContext(ctx, "UPDATE sources SET info_hash = $1 WHERE id = $2", e.hash, e.id); err != nil {
+			return err
+		}
+	}
+
 	// Строки без валидного info_hash нельзя дедуплицировать — удаляем.
 	if _, err := r.conn.ExecContext(ctx, `DELETE FROM sources WHERE info_hash = ''`); err != nil {
 		return err
 	}
 	// Дедупликация по (film_id, info_hash): оставляем строку с меньшим id
-	// (у одного релиза раньше могло быть несколько строк с разными
-	// трекерами в магните).
+	// (у одного релиза раньше могло быть несколько строк с разными трекерами в магните).
 	if _, err := r.conn.ExecContext(ctx, `
 		DELETE FROM sources a USING sources b
 		WHERE a.id > b.id AND a.film_id = b.film_id AND a.info_hash = b.info_hash
@@ -104,26 +124,41 @@ func (r *Repo) ensureSourcesSchema(ctx context.Context) error {
 	return nil
 }
 
-// btihRe — вытаскивает info hash из магнита (xt=urn:btih:<40 hex>).
-var btihRe = regexp.MustCompile(`(?i)xt=urn:btih:([0-9a-f]{40})`)
-
-// magnetInfoHash возвращает info hash магнита (нижний регистр) или "".
+// magnetInfoHash нормализует info_hash из магнита (hex, base32, URL-encoded v1).
 func magnetInfoHash(magnet string) string {
-	if m := btihRe.FindStringSubmatch(magnet); m != nil {
-		return strings.ToLower(m[1])
+	u, err := url.Parse(magnet)
+	if err != nil || u.Scheme != "magnet" {
+		return ""
+	}
+	for _, xt := range u.Query()["xt"] {
+		if !strings.HasPrefix(strings.ToLower(xt), "urn:btih:") {
+			continue
+		}
+		raw := xt[len("urn:btih:"):]
+		var data []byte
+		switch len(raw) {
+		case 40:
+			data, err = hex.DecodeString(raw)
+		case 32:
+			data, err = base32.StdEncoding.DecodeString(strings.ToUpper(raw))
+		default:
+			continue
+		}
+		if err == nil && len(data) == 20 {
+			return hex.EncodeToString(data)
+		}
 	}
 	return ""
 }
 
-// SaveSources сохраняет свежую выдачу источников фильма. Ключ записи —
-// info_hash: новые релизы вставляются, существующие обновляются ТОЛЬКО
-// если изменились метаданные (размер/сиды/качество/озвучка/сезон/
-// провайдер), а источники, которых больше нет в выдаче, удаляются.
-// Полная строка магнита и checked_at освежаются при каждом появлении
-// релиза (трекеры в магните — сессионные токены). Возвращает число
-// добавленных/обновлённых/удалённых записей. Если выдача пустая — все
-// сохранённые источники фильма удаляются.
-func (r *Repo) SaveSources(ctx context.Context, filmID string, srcs []Source) (added, updated, removed int, err error) {
+// SaveSources сохраняет свежую выдачу источников фильма. Ключ записи — info_hash: новые релизы
+// вставляются, существующие обновляются ТОЛЬКО если изменились метаданные (размер/сиды/качество/
+// озвучка/сезон/провайдер), а источники, которых больше нет в выдаче, удаляются. Полная строка
+// магнита и checked_at освежаются при каждом появлении релиза (трекеры в магните — сессионные токены).
+// Возвращает число добавленных/обновлённых/удалённых записей. Если выдача пустая — все сохранённые
+// источники фильма удаляются.
+// preserveExisting=true — применить частичную выдачу без чистки старых строк.
+func (r *Repo) SaveSources(ctx context.Context, filmID string, srcs []Source, preserveExisting ...bool) (added, updated, removed int, err error) {
 	tx, err := r.conn.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, 0, 0, err
@@ -196,6 +231,12 @@ func (r *Repo) SaveSources(ctx context.Context, filmID string, srcs []Source) (a
 	}
 
 	// Удаляем источники фильма, которых больше нет в свежей выдаче.
+	if len(preserveExisting) > 0 && preserveExisting[0] {
+		if err := tx.Commit(); err != nil {
+			return 0, 0, 0, err
+		}
+		return added, updated, 0, nil
+	}
 	if len(hashes) > 0 {
 		placeholders := make([]string, len(hashes))
 		args := make([]any, 0, len(hashes)+1)

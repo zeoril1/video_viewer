@@ -1,5 +1,4 @@
-// Периодическая синхронизация чартов TMDB с БД (заменяет чарты
-// Кинопоиска, API которого под токеном с ограничениями).
+// Периодическая синхронизация чартов TMDB с БД (заменяет чарты Кинопоиска, API которого под токеном с ограничениями).
 package sync
 
 import (
@@ -11,8 +10,7 @@ import (
 	"github.com/zeoril1/video_viewer/internal/tmdb"
 )
 
-// TMDBChartSyncer периодически загружает чарты TMDB («топ-250» и
-// «популярные») и сохраняет их в БД, объединяя с IMDb-каталогом без дублей.
+// TMDBChartSyncer периодически загружает чарты TMDB («топ-250» и «популярные») и сохраняет их в БД, без дублей с IMDb.
 type TMDBChartSyncer struct {
 	db       *db.Repo
 	tm       *tmdb.Client
@@ -27,16 +25,14 @@ func NewTMDBChart(db *db.Repo, tm *tmdb.Client, interval time.Duration) *TMDBCha
 	return &TMDBChartSyncer{db: db, tm: tm, interval: interval}
 }
 
-// chartJob — один чарт TMDB для синхронизации: top_rated/popular и
-// тип контента (фильмы/сериалы). Чарты фильмов и сериалов хранят ранги
-// в одних колонках, но чистятся по своему типу (см. db.ClearTMDBRank).
+// chartJob — один чарт TMDB для синхронизации: top_rated/popular и тип контента (фильмы/сериалы).
+// Ранги фильмов и сериалов лежат в одних колонках, но чистятся по своему типу (см. db.ClearTMDBRank).
 type chartJob struct {
 	kind   tmdb.ChartKind
 	series bool
 }
 
-// SyncOnce выполняет один цикл синхронизации: чарты фильмов (top_rated и
-// popular через /movie/*) и сериалов (через /tv/*).
+// SyncOnce выполняет один цикл синхронизации: чарты фильмов (top_rated и popular через /movie/*) и сериалов (через /tv/*).
 func (s *TMDBChartSyncer) SyncOnce(ctx context.Context) {
 	charts := []chartJob{
 		{kind: tmdb.ChartTopRated},
@@ -79,8 +75,8 @@ func (s *TMDBChartSyncer) SyncOnce(ctx context.Context) {
 			log.Printf("sync tmdb %s %s: %v", res.job.kind, mediaName(res.job.series), res.err)
 			continue
 		}
-		// Сбрасываем старые позиции — сошедшие с чарта записи не должны
-		// сохранять устаревшие ранги (только своего типа контента).
+		// Сбрасываем старые позиции (только своего типа контента): сошедшие с чарта записи
+		// не должны сохранять устаревшие ранги.
 		if err := s.db.ClearTMDBRank(ctx, res.job.kind, res.job.series); err != nil {
 			log.Printf("sync tmdb %s %s: clear ranks: %v", res.job.kind, mediaName(res.job.series), err)
 		}

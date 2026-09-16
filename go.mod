@@ -1,6 +1,6 @@
 module github.com/zeoril1/video_viewer
 
-go 1.25.0
+go 1.27.1
 
 // ВЕС МОДУЛЕЙ (2026-08-28): размер распакованной папки модуля в кэше Go
 // (go env GOMODCACHE), включая тесты/документацию.

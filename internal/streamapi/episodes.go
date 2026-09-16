@@ -13,30 +13,31 @@ import (
 	"time"
 
 	"github.com/zeoril1/video_viewer/internal/catalog"
+	"github.com/zeoril1/video_viewer/internal/tmdb"
 	"github.com/zeoril1/video_viewer/internal/torrents"
 )
 
-// torrentFile — видеофайл торрента с определённым сезоном/серией.
-// Используется для выбора серии в сериалах.
+// torrentFile — видеофайл торрента с сезоном/серией (для селектора серий сериала).
 type torrentFile struct {
-	Index   int    `json:"index"`   // позиция файла в торренте (для ?file=)
-	Name    string `json:"name"`    // имя файла
-	Size    int64  `json:"size"`    // размер в байтах
+	Index   int    `json:"index"` // позиция файла в торренте (для ?file=)
+	Name    string `json:"name"`
+	Size    int64  `json:"size"`
 	Season  int    `json:"season"`  // сезон (0 — не определён)
 	Episode int    `json:"episode"` // серия (0 — не определена)
 }
 
 // Регулярки для определения сезона/серии из имени файла.
 var (
-	epSxxExxRe = regexp.MustCompile(`(?i)[sS](\d{1,2})[eE](\d{1,3})`)
+	// Разделитель между сезоном и серией бывает любой: «s01e05», «S14.E01»,
+	// «S02 E10», «S3-E2» — иначе файлы вида «Realnye.pacany.S14.E01.mkv»
+	// оставались без сезона и все попадали в первый сезон.
+	epSxxExxRe = regexp.MustCompile(`(?i)[sS](\d{1,2})[\s._-]*[eE](\d{1,3})`)
 	epSeasonRe = regexp.MustCompile(`(?i)(?:сезон|season)\s*(\d{1,2})`)
 	epNumRe    = regexp.MustCompile(`(?i)(?:серия|эпизод|episode|\bep\b|\be\b)\s*\.?\s*(\d{1,3})`)
 	epTrailRe  = regexp.MustCompile(`(?:^|[^0-9])(\d{1,3})\s*$`)
 )
 
-// episodeOf извлекает (сезон, серия) из имени видеофайла.
-// Сначала ищет явный паттерн SxxExx, затем «сезон N» + номер серии,
-// затем номер в конце имени (напр. "... - 03.mkv").
+// episodeOf извлекает (сезон, серию) из имени файла: явный SxxExx → «сезон N» + номер → номер в конце имени.
 func episodeOf(name string) (season, ep int) {
 	base := strings.TrimSuffix(filepath.Base(name), path.Ext(name))
 	if m := epSxxExxRe.FindStringSubmatch(base); m != nil {
@@ -60,16 +61,21 @@ func atoiOr(s string, def int) int {
 	return def
 }
 
-// handleTorrentFiles — GET /api/films/{id}/files?magnet=...
-// Открывает торрент и возвращает список видеофайлов с определёнными
-// сезоном/серией — фронтенд показывает селектор серий сериала.
-func handleTorrentFiles(mgr *torrents.Manager) http.HandlerFunc {
+// handleTorrentFiles — GET /api/films/{id}/files?magnet=...: видеофайлы торрента
+// с сезонами/сериями (селектор серий). title/tmdb позволяют разложить файлы по
+// сезонам TMDB — у трекеров своя нарезка сезонов, а сборники нумеруют сквозняком.
+func handleTorrentFiles(mgr *torrents.Manager, tmdbClient *tmdb.Client) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		magnet := strings.TrimSpace(r.URL.Query().Get("magnet"))
 		if magnet == "" {
 			http.Error(w, "missing magnet", http.StatusBadRequest)
 			return
+		}
+		relTitle := strings.TrimSpace(r.URL.Query().Get("title"))
+		var structure []tmdb.SeasonInfo
+		if tmdbID := int64(atoiOr(r.URL.Query().Get("tmdb"), 0)); tmdbID > 0 && tmdbClient != nil {
+			structure = tmdbClient.Structure(r.Context(), tmdbID)
 		}
 
 		t, release, err := mgr.Acquire(catalog.Item{ID: id, Magnet: magnet})
@@ -86,17 +92,16 @@ func handleTorrentFiles(mgr *torrents.Manager) http.HandlerFunc {
 			http.Error(w, "timeout waiting for torrent metadata (no peers?)", http.StatusGatewayTimeout)
 			return
 		}
+		// Открыт только для списка серий: пока серия не выбрана, ничего не качаем
+		// (по умолчанию anacrolix хочет все файлы торрента).
+		mgr.ApplyDownloadPriorities(catalog.Item{ID: id, Magnet: magnet})
 
 		files := make([]torrentFile, 0, len(t.Files()))
-		hasExplicitSeason := false
 		for i, f := range t.Files() {
 			if !isVideo(f) {
 				continue
 			}
 			season, ep := episodeOf(f.DisplayPath())
-			if season > 0 {
-				hasExplicitSeason = true
-			}
 			files = append(files, torrentFile{
 				Index:   i,
 				Name:    filepath.Base(f.DisplayPath()),
@@ -105,52 +110,33 @@ func handleTorrentFiles(mgr *torrents.Manager) http.HandlerFunc {
 				Episode: ep,
 			})
 		}
-
 		if len(files) == 0 {
 			http.Error(w, "no video files in torrent", http.StatusNotFound)
 			return
 		}
 
-		// Сезон не указан ни у одного файла — считаем весь торрент одним
-		// сезоном (1), а серии нумеруем по порядку.
-		if !hasExplicitSeason {
-			for i := range files {
-				files[i].Season = 1
-			}
-		}
-		// У файлов без номера серии — нумеруем по порядку внутри сезона.
-		ordinal := map[int]int{}
-		needRenumber := false
-		for i := range files {
-			if files[i].Season <= 0 {
-				files[i].Season = 1
-			}
-			if files[i].Episode <= 0 {
-				needRenumber = true
-			}
-		}
+		// Сортируем по распознанным сезону/серии, а не по порядку файлов в торренте:
+		// он бывает произвольным (в паке «S01-02x01-41» первым идёт s01e17), а сквозная
+		// нумерация должна идти по эпизодам. Затем — раскладка по сезонам TMDB.
 		sort.SliceStable(files, func(a, b int) bool {
 			if files[a].Season != files[b].Season {
 				return files[a].Season < files[b].Season
 			}
+			if files[a].Episode != files[b].Episode {
+				return files[a].Episode < files[b].Episode
+			}
 			return files[a].Index < files[b].Index
 		})
-		if needRenumber {
-			for i := range files {
-				ordinal[files[i].Season]++
-				files[i].Episode = ordinal[files[i].Season]
+		files = applySeasonMapping(files, relTitle, structure)
+		sort.SliceStable(files, func(a, b int) bool {
+			if files[a].Season != files[b].Season {
+				return files[a].Season < files[b].Season
 			}
-		} else {
-			sort.SliceStable(files, func(a, b int) bool {
-				if files[a].Season != files[b].Season {
-					return files[a].Season < files[b].Season
-				}
-				if files[a].Episode != files[b].Episode {
-					return files[a].Episode < files[b].Episode
-				}
-				return files[a].Index < files[b].Index
-			})
-		}
+			if files[a].Episode != files[b].Episode {
+				return files[a].Episode < files[b].Episode
+			}
+			return files[a].Index < files[b].Index
+		})
 
 		// Сводка распознавания — видно, почему селектор серий пуст/частичен.
 		seasonsSet := map[int]bool{}

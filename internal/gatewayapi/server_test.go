@@ -4,8 +4,32 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 )
+
+// Статика фронтенда отдаётся с Cache-Control: no-cache — иначе браузер
+// (и WebView Android-приставки) кэширует app.js эвристически по
+// Last-Modified и продолжает работать на старой версии после обновления.
+func TestStaticFilesNoCache(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "app.js"), []byte("// test"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h := NewServer(Config{WebDir: dir})
+
+	req := httptest.NewRequest(http.MethodGet, "/app.js", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /app.js -> %d, want 200", rec.Code)
+	}
+	if cc := rec.Header().Get("Cache-Control"); cc != "no-cache" {
+		t.Errorf("Cache-Control = %q, want no-cache", cc)
+	}
+}
 
 // /api/debug/mem НЕ должен проксироваться наружу: маршрут закрыт, запрос
 // уходит на FileServer (404), а stream-сервис не вызывается.
@@ -67,7 +91,7 @@ func TestHealthAllOK(t *testing.T) {
 	}))
 	defer okSrv.Close()
 
-	cfg := Config{WebDir: t.TempDir(), CatalogURL: okSrv.URL, StreamURL: okSrv.URL, AuthURL: okSrv.URL}
+	cfg := Config{WebDir: t.TempDir(), CatalogURL: okSrv.URL, StreamURL: okSrv.URL, AuthURL: okSrv.URL, IPTVURL: okSrv.URL}
 	h := NewServer(cfg)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
@@ -89,7 +113,7 @@ func TestHealthAggregatesStatuses(t *testing.T) {
 	}))
 	defer errSrv.Close()
 
-	cfg := Config{WebDir: t.TempDir(), CatalogURL: okSrv.URL, StreamURL: errSrv.URL, AuthURL: ""}
+	cfg := Config{WebDir: t.TempDir(), CatalogURL: okSrv.URL, StreamURL: errSrv.URL, AuthURL: "", IPTVURL: okSrv.URL}
 	h := NewServer(cfg)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)

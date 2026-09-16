@@ -10,8 +10,7 @@ import (
 	"github.com/zeoril1/video_viewer/internal/db"
 )
 
-// historyHandler — история просмотра текущего пользователя (требует БД
-// и авторизации: без БД — 503, без валидной сессии — 401).
+// historyHandler — история просмотра пользователя (без БД — 503, без сессии — 401).
 type historyHandler struct {
 	repo *db.Repo
 }
@@ -20,14 +19,14 @@ type historyHandler struct {
 const historyLimit = 50
 
 // requireUser — текущий пользователь из куки; пишет ошибку и возвращает
-// ok=false, если БД отсутствует или пользователь не авторизован.
+// ok=false, если БД нет или пользователь не авторизован.
 func (h *historyHandler) requireUser(w http.ResponseWriter, r *http.Request) (db.User, bool) {
 	if h.repo == nil {
 		http.Error(w, "auth disabled (no database)", http.StatusServiceUnavailable)
 		return db.User{}, false
 	}
-	// CSRF: мутирующие запросы (save/remove/clear) должны приходить с того
-	// же origin; GET-список пропускается.
+	// CSRF: мутирующие запросы (save/remove/clear) — с того же origin;
+	// GET-список пропускается.
 	if r.Method != http.MethodGet && !sameOrigin(r) {
 		http.Error(w, "forbidden: cross-origin request", http.StatusForbidden)
 		return db.User{}, false

@@ -8,15 +8,14 @@ import (
 )
 
 // Serve запускает HTTP-сервер на addr и блокируется до отмены ctx
-// (SIGINT/SIGTERM), после чего корректно завершает сервер (graceful
-// shutdown) и вызывает cleanup (остановка фоновых ресурсов сервиса).
+// (SIGINT/SIGTERM), после чего корректно завершает сервер и вызывает cleanup.
 func Serve(ctx context.Context, addr string, handler http.Handler, cleanup func()) {
 	server := &http.Server{
 		Addr:              addr,
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
-		// IdleTimeout — только для простаивающих keep-alive соединений;
-		// на долгие стримы (Range/HLS) не влияет.
+		// IdleTimeout — простаивающие keep-alive соединения; на долгие стримы
+		// (Range/HLS) не влияет.
 		IdleTimeout: 120 * time.Second,
 	}
 	go func() {

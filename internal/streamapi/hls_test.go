@@ -10,8 +10,7 @@ import (
 	"testing"
 )
 
-// isTextSubtitleCodec: текстовые кодеки (ffmpeg конвертирует в WebVTT)
-// включаются, растровые — нет.
+// isTextSubtitleCodec: текстовые кодеки включаются, растровые — нет.
 func TestIsTextSubtitleCodec(t *testing.T) {
 	text := []string{"subrip", "srt", "ass", "ssa", "mov_text", "webvtt", "text"}
 	for _, c := range text {
@@ -40,9 +39,8 @@ func TestSubtitleLabel(t *testing.T) {
 	}
 }
 
-// newFakeHlsSession создаёт hlsManager с временной сессией, каталог которой
-// содержит плейлисты в том виде, что их генерирует ffmpeg 6.1 для HLS
-// с субтитрами (-var_stream_map "v:0,a:0,s:0,sgroup:subtitle" -master_pl_name).
+// newFakeHlsSession — hlsManager с сессией, чьи плейлисты повторяют вывод
+// ffmpeg 6.1 для HLS с субтитрами (-var_stream_map/-master_pl_name).
 func newFakeHlsSession(t *testing.T, subs int, subsLabel string) *hlsManager {
 	t.Helper()
 	dir := t.TempDir()
@@ -83,8 +81,7 @@ func newFakeHlsSession(t *testing.T, subs int, subsLabel string) *hlsManager {
 	return m
 }
 
-// serveMaster переписывает master-плейлист: реальное имя субтитров,
-// DEFAULT=NO, абсолютные URL media- и субтитр-плейлистов.
+// serveMaster: реальное имя субтитров, DEFAULT=NO, абсолютные URL плейлистов.
 func TestServeMasterRewrite(t *testing.T) {
 	m := newFakeHlsSession(t, 0, "Русские")
 	req := httptest.NewRequest(http.MethodGet, "/api/films/tt123/hls.m3u8?magnet=m&track=1&file=2", nil)
@@ -108,8 +105,7 @@ func TestServeMasterRewrite(t *testing.T) {
 	}
 }
 
-// serveMediaPlaylistFrom переписывает media-плейлист (init/seg) в абсолютные
-// URL сегментов.
+// serveMediaPlaylistFrom: init/seg переписываются в абсолютные URL сегментов.
 func TestServeMediaPlaylistRewrite(t *testing.T) {
 	m := newFakeHlsSession(t, 0, "Русские")
 	req := httptest.NewRequest(http.MethodGet, "/api/films/tt123/hls/pl.m3u8?magnet=m&track=1&file=2", nil)
@@ -128,8 +124,7 @@ func TestServeMediaPlaylistRewrite(t *testing.T) {
 	}
 }
 
-// serveSubPlaylist переписывает WebVTT-плейлист субтитров (.vtt) в
-// абсолютные URL сегментов.
+// serveSubPlaylist: .vtt переписываются в абсолютные URL сегментов.
 func TestServeSubPlaylistRewrite(t *testing.T) {
 	m := newFakeHlsSession(t, 0, "Русские")
 	req := httptest.NewRequest(http.MethodGet,

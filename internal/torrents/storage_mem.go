@@ -10,16 +10,14 @@ import (
 	"github.com/anacrolix/torrent/storage"
 )
 
-// memoryStorage хранит все куски торрента в оперативной памяти —
-// данные никогда не записываются на диск.
-//
-// Это ключевая часть требования «на сервере файлы не хранятся»:
-// торрент качается в RAM и сразу отдаётся плееру через HTTP.
+// memoryStorage хранит все куски торрента в оперативной памяти — данные никогда не
+// пишутся на диск (хранилище по умолчанию, когда Config.SpoolDir пуст). Это прежняя
+// часть требования «на сервере файлы не хранятся»: то же самое даёт временный спул
+// на диске (storage_spool.go), который удаляется после просмотра.
 type memoryStorage struct{}
 
-// OpenTorrent создаёт in-memory представление всех кусков торрента.
-// Буферы кусков аллоцируются лениво (при первой записи), чтобы память
-// росла только по мере реального скачивания, а не на весь объём сразу.
+// OpenTorrent создаёт in-memory представление кусков; буферы аллоцируются лениво
+// (при первой записи), поэтому память растёт по мере скачивания.
 func (memoryStorage) OpenTorrent(_ context.Context, info *metainfo.Info, _ metainfo.Hash) (storage.TorrentImpl, error) {
 	pieces := make([]*memoryPiece, info.NumPieces())
 	for i := range pieces {
@@ -27,8 +25,8 @@ func (memoryStorage) OpenTorrent(_ context.Context, info *metainfo.Info, _ metai
 	}
 	mt := &memoryTorrent{pieces: pieces}
 
-	// TorrentImpl в v1.61 — структура с полями-функциями. Клиент всегда
-	// вызывает PieceWithHash, поэтому реализуем оба поля одним способом.
+	// TorrentImpl в v1.61 — структура с полями-функциями; клиент всегда зовёт
+	// PieceWithHash, поэтому оба поля делаем одним способом.
 	piece := func(p metainfo.Piece) storage.PieceImpl {
 		return mt.pieces[p.Index()]
 	}
@@ -45,8 +43,7 @@ type memoryTorrent struct {
 	pieces []*memoryPiece
 }
 
-// Close освобождает ссылки на куски, чтобы GC мог сразу вернуть память
-// после выгрузки торрента.
+// Close освобождает ссылки на куски, чтобы GC сразу вернул память после выгрузки.
 func (t *memoryTorrent) Close() error {
 	for i := range t.pieces {
 		t.pieces[i] = nil
@@ -61,7 +58,6 @@ type memoryPiece struct {
 	complete bool
 }
 
-// ensure выделяет буфер куска при первой записи.
 func (p *memoryPiece) ensure() {
 	if p.data == nil {
 		p.data = make([]byte, p.length)

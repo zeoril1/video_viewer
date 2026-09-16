@@ -8,19 +8,14 @@ import (
 	"strings"
 )
 
-// seasonQID — элемент Wikidata «телевизионный сезон» (значение P31),
-// которым помечены сезоны сериалов, перечисленные через P527.
+// seasonQID — элемент Wikidata «телевизионный сезон» (значение P31).
 const seasonQID = "Q3464665"
 
-// Seasons возвращает число сезонов телесериала по IMDb ID.
-// Источник — Wikidata Query Service (SPARQL): у сериалов сезоны
-// перечислены свойством P527 («состоит из»), у каждого сезона тип
-// P31 = Q3464665 («телевизионный сезон»). Возвращает 0, если число
-// определить не удалось (не сериал либо нет данных в Wikidata).
+// Seasons возвращает число сезонов телесериала по IMDb ID (Wikidata: сезоны
+// перечислены в P527, у каждого сезона P31 = Q3464665); 0 — не определить.
 func (c *Client) Seasons(ctx context.Context, imdbID string) (int, error) {
 	id := normalizeID(imdbID)
-	// IMDb ID состоит из "tt" + цифр — экранируем от спецсимволов,
-	// чтобы строка не сломала SPARQL-литерал.
+	// Проверяем символы, чтобы id не сломал SPARQL-литерал.
 	for _, r := range id {
 		if !strings.ContainsRune("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ", r) {
 			return 0, fmt.Errorf("imdb: invalid title id %q", id)

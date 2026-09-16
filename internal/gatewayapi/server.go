@@ -1,12 +1,12 @@
 // Package gatewayapi — API-шлюз (микросервис gateway): раздаёт статику
-// фронтенда (web/) и проксирует /api/* на внутренние микросервисы
-// (catalog, stream, auth) по префиксам маршрутов. Также агрегирует
-// /api/health по всем сервисам.
+// фронтенда (web/) и проксирует /api/* на внутренние сервисы по префиксам,
+// а также агрегирует /api/health.
 package gatewayapi
 
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -19,10 +19,12 @@ import (
 
 // Config — адреса внутренних сервисов и каталог статики.
 type Config struct {
-	WebDir     string // каталог статики фронтенда (web/)
-	CatalogURL string // http://catalog:8081
-	StreamURL  string // http://stream:8082
-	AuthURL    string // http://auth:8083
+	TrustedProxy string // доверенный прокси (caddy): хост/IP, иначе пусто
+	WebDir       string // каталог статики фронтенда (web/)
+	CatalogURL   string // http://catalog:8081
+	StreamURL    string // http://stream:8082
+	AuthURL      string // http://auth:8083
+	IPTVURL      string // http://iptv:8084
 }
 
 // NewServer собирает шлюз: reverse-proxy к сервисам + статика + health.
@@ -35,8 +37,7 @@ func NewServer(cfg Config) http.Handler {
 	mux.HandleFunc("GET /api/catalog/meta", proxyTo(cfg.CatalogURL))
 	mux.HandleFunc("GET /api/films/{id}", proxyTo(cfg.CatalogURL))
 	mux.HandleFunc("GET /api/films/{id}/sources", proxyTo(cfg.CatalogURL))
-	// Админ-эндпоинты каталога (список пустых полей, редактирование,
-	// обновление из TMDB, лог). Проверка роли — на стороне catalog.
+	// Админ-эндпоинты каталога: роль проверяет catalog-сервис.
 	mux.HandleFunc("/api/admin/", proxyTo(cfg.CatalogURL))
 
 	// ---- Стриминг (stream-сервис) ----
@@ -48,21 +49,41 @@ func NewServer(cfg Config) http.Handler {
 	mux.HandleFunc("GET /api/films/{id}/hls/subs/", proxyTo(cfg.StreamURL))
 	mux.HandleFunc("GET /api/films/{id}/hls/segments/", proxyTo(cfg.StreamURL))
 	mux.HandleFunc("GET /api/stream/", proxyTo(cfg.StreamURL))
+	// Тёплый кеш: фронтенд зовёт после просмотра >5% длительности.
+	mux.HandleFunc("POST /api/stream/keep", proxyTo(cfg.StreamURL))
 	// /api/debug/* намеренно НЕ проксируется наружу (диагностика памяти и
-	// торрентов доступна только во внутренней сети по портам 8081-8083).
+	// торрентов доступна только во внутренней сети).
 
 	// ---- Авторизация и история (auth-сервис) ----
 	mux.HandleFunc("/api/auth/", proxyTo(cfg.AuthURL))
 	mux.HandleFunc("/api/history", proxyTo(cfg.AuthURL))
 	mux.HandleFunc("/api/history/", proxyTo(cfg.AuthURL))
 
+	// ---- IPTV (iptv-сервис): каналы, EPG, live-HLS ----
+	// Включая админские POST/DELETE: права проверяет iptv по общей куке.
+	mux.HandleFunc("/api/iptv/", proxyTo(cfg.IPTVURL))
+
 	// ---- Здоровье: агрегированный статус всех сервисов ----
 	mux.HandleFunc("GET /api/health", healthHandler(cfg))
 
 	// ---- Статические файлы фронтенда ----
-	mux.Handle("/", http.FileServer(http.Dir(cfg.WebDir)))
+	// no-cache (а не no-store): файл перепроверяется (If-Modified-Since → 304),
+	// но после обновления фронтенда клиент сразу получает новую версию.
+	// Без этого заголовка браузер/WebView кэширует app.js эвристически (по
+	// Last-Modified) и может долго работать на старой версии.
+	mux.Handle("/", noCacheStatic(http.Dir(cfg.WebDir)))
 
-	return httpx.LogMiddleware(mux)
+	return httpx.LogMiddleware(clientAddress(mux, cfg.TrustedProxy))
+}
+
+// noCacheStatic раздаёт статику с запретом эвристического кэширования
+// (клиент перепроверяет файлы и получает 304, пока они не изменены).
+func noCacheStatic(fs http.FileSystem) http.Handler {
+	files := http.FileServer(fs)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache")
+		files.ServeHTTP(w, r)
+	})
 }
 
 // proxyTo возвращает reverse-proxy к целевому сервису (сохраняет путь и
@@ -95,6 +116,7 @@ func healthHandler(cfg Config) http.HandlerFunc {
 			{"catalog", cfg.CatalogURL},
 			{"stream", cfg.StreamURL},
 			{"auth", cfg.AuthURL},
+			{"iptv", cfg.IPTVURL},
 		}
 		client := &http.Client{Timeout: 3 * time.Second}
 		statuses := make(map[string]string, len(checks))
@@ -154,4 +176,29 @@ func healthHandler(cfg Config) http.HandlerFunc {
 			"services": statuses,
 		})
 	}
+}
+
+// clientAddress перезаписывает внутренний заголовок с IP клиента:
+// forwarded-адрес принимается только от явно заданного прокси.
+func clientAddress(next http.Handler, trustedProxy string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ip, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err != nil {
+			ip = r.RemoteAddr
+		}
+		if trustedProxy != "" && strings.HasPrefix(r.URL.Path, "/api/auth/") {
+			addresses, _ := net.LookupIP(trustedProxy)
+			for _, address := range addresses {
+				if address.Equal(net.ParseIP(ip)) {
+					chain := strings.Split(r.Header.Get("X-Forwarded-For"), ",")
+					if forwarded := net.ParseIP(strings.TrimSpace(chain[len(chain)-1])); forwarded != nil {
+						ip = forwarded.String()
+					}
+					break
+				}
+			}
+		}
+		r.Header.Set("X-Video-Viewer-Client-IP", ip)
+		next.ServeHTTP(w, r)
+	})
 }

@@ -1,7 +1,4 @@
-// Package wikidata — данные о фильмах из Wikidata (WDQS SPARQL) без
-// ключей API: длительность, страна, режиссёр, главные роли. Используется
-// для обогащения карточек фильмов вместо Кинопоиска (API которого под
-// токеном с ограничениями).
+// Package wikidata — данные о фильмах из Wikidata (WDQS SPARQL) без ключей API.
 package wikidata
 
 import (
@@ -17,8 +14,8 @@ import (
 	"time"
 )
 
-// wdqsURL — Wikidata Query Service (SPARQL). Отдельный сервис от
-// www.wikidata.org/w/api.php, позволяет получать данные пакетно.
+// wdqsURL — Wikidata Query Service (SPARQL): пакетные запросы,
+// в отличие от www.wikidata.org/w/api.php.
 const wdqsURL = "https://query.wikidata.org/sparql"
 
 const userAgent = "video_viewer/1.0"
@@ -35,15 +32,13 @@ type Enrichment struct {
 	Duration int
 	// Countries — страны производства (русские названия).
 	Countries []string
-	// Director — режиссёр.
-	Director string
+	Director  string
 	// Actors — главные роли (до 6 актёров из P161).
 	Actors []string
 }
 
-// Enrich запрашивает у Wikidata расширенные данные по набору IMDb-ссылок
-// одним SPARQL-запросом. Возвращает карту imdbID → Enrichment (только
-// для записей, найденных в Wikidata).
+// Enrich запрашивает данные по набору IMDb-ссылок одним SPARQL-запросом:
+// карта imdbID → Enrichment (только найденные в Wikidata).
 func Enrich(ctx context.Context, imdbIDs []string) (map[string]Enrichment, error) {
 	ids := make([]string, 0, len(imdbIDs))
 	for _, id := range imdbIDs {
@@ -62,7 +57,7 @@ func Enrich(ctx context.Context, imdbIDs []string) (map[string]Enrichment, error
 	}
 
 	// Один запрос на все id. Возможен декартов обход (item × страна ×
-	// режиссёр × актёр) — агрегируем по imdb в Go и ограничиваем актёров.
+	// режиссёр × актёр) — агрегируем по imdb в Go, актёров ограничиваем.
 	query := `SELECT ?imdb ?dur ?unit ?countryLabel ?directorLabel ?actorLabel WHERE {
   VALUES ?imdb { ` + strings.Join(vals, " ") + ` }
   ?item wdt:P345 ?imdb .
@@ -119,9 +114,8 @@ func Enrich(ctx context.Context, imdbIDs []string) (map[string]Enrichment, error
 	return out, nil
 }
 
-// parseDuration переводит количество P2047 в минуты: с единицей
-// «секунда» — делит на 60; без единицы значение считается минутами
-// (так хранит большинство записей, напр. Whiplash P2047 = 106).
+// parseDuration переводит P2047 в минуты: с единицей «секунда» — деление
+// на 60; без единицы значение уже в минутах (так у большинства записей).
 func parseDuration(value, unit string) (int, error) {
 	f, err := strconv.ParseFloat(value, 64)
 	if err != nil {

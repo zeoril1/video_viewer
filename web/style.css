@@ -1330,3 +1330,13 @@ main {
   background: var(--accent);
 }
 
+
+/* Missing seasons and episodes remain visible. */
+.chip:disabled, .ep-btn:disabled {
+  color: #888;
+  background: #292929;
+  border-color: #444;
+  opacity: .55;
+  cursor: not-allowed;
+  box-shadow: none;
+}

@@ -76,8 +76,7 @@ async function pollLogs() {
       for (const ln of d.lines || []) {
         logLine(ln.kind, '[' + ln.at + '] ' + ln.msg);
         lastSeq = ln.seq;
-        // Завершилось обновление отдельного фильма — обновим таблицы,
-        // чтобы отметки «не найден» и пустые поля отразились сразу.
+        // После обновления фильма сразу обновляем таблицы — отметки «не найден»/пустые поля.
         if (/обновление \S+: (готово|error)/.test(ln.msg)) scheduleReload();
       }
     }
@@ -245,7 +244,6 @@ async function unmarkRow(tr) {
   }
 }
 
-// Перезагрузка обоих списков после завершения обновления (debounce).
 function scheduleReload() {
   if (reloadTimer) clearTimeout(reloadTimer);
   reloadTimer = setTimeout(() => {

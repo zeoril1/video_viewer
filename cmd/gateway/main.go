@@ -1,6 +1,5 @@
-// gateway — API-шлюз: раздаёт статику фронтенда (web/) и проксирует
-// /api/* на внутренние микросервисы (catalog, stream, auth).
-// Это единственная публичная точка входа (порт 8080).
+// gateway — API-шлюз: раздаёт статику фронтенда (web/) и проксирует /api/*
+// на внутренние сервисы; единственная публичная точка входа (порт 8080).
 package main
 
 import (
@@ -24,6 +23,7 @@ func main() {
 		catalogURL = flag.String("catalog-url", envOr("CATALOG_URL", "http://127.0.0.1:8081"), "catalog-service base URL")
 		streamURL  = flag.String("stream-url", envOr("STREAM_URL", "http://127.0.0.1:8082"), "stream-service base URL")
 		authURL    = flag.String("auth-url", envOr("AUTH_URL", "http://127.0.0.1:8083"), "auth-service base URL")
+		iptvURL    = flag.String("iptv-url", envOr("IPTV_URL", "http://127.0.0.1:8084"), "iptv-service base URL")
 	)
 	flag.Parse()
 
@@ -31,14 +31,16 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	log.Printf("config: addr=%s catalog=%s stream=%s auth=%s web=%s",
-		*addr, *catalogURL, *streamURL, *authURL, *webDir)
+	log.Printf("config: addr=%s catalog=%s stream=%s auth=%s iptv=%s web=%s",
+		*addr, *catalogURL, *streamURL, *authURL, *iptvURL, *webDir)
 
 	handler := gatewayapi.NewServer(gatewayapi.Config{
-		WebDir:     *webDir,
-		CatalogURL: *catalogURL,
-		StreamURL:  *streamURL,
-		AuthURL:    *authURL,
+		WebDir:       *webDir,
+		TrustedProxy: os.Getenv("TRUSTED_PROXY"),
+		CatalogURL:   *catalogURL,
+		StreamURL:    *streamURL,
+		AuthURL:      *authURL,
+		IPTVURL:      *iptvURL,
 	})
 
 	httpx.Serve(ctx, *addr, handler, nil)

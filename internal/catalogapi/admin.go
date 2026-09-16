@@ -1,7 +1,5 @@
-// Админ-страница каталога: список записей с пустыми полями, прямое
-// редактирование в браузере, кнопка автоматического обновления данных из
-// TMDB для каждой записи и лог прогресса операций. Доступ — только для
-// пользователей с ролью "admin" (по httpOnly-куке сессии).
+// Админ-страница каталога: записи с пустыми полями, правка в браузере, обновление данных из
+// TMDB и лог прогресса. Доступ — только для роли "admin" (по httpOnly-куке сессии).
 package catalogapi
 
 import (
@@ -18,9 +16,8 @@ import (
 	catalogsync "github.com/zeoril1/video_viewer/internal/sync"
 )
 
-// sessionCookieName — имя httpOnly-куки с токеном сессии (то же, что
-// в auth-сервисе). Сессии хранятся в общей БД, поэтому catalog-сервис
-// может проверять их сам.
+// sessionCookieName — имя httpOnly-куки с токеном сессии (то же, что в auth-сервисе);
+// сессии в общей БД, поэтому catalog-сервис может проверять их сам.
 const sessionCookieName = "video_viewer_session"
 
 // ---- Лог админ-операций (прогресс обновления данных) ----
@@ -28,7 +25,6 @@ const sessionCookieName = "video_viewer_session"
 // adminLogCap — сколько последних строк лога держим в памяти.
 const adminLogCap = 500
 
-// adminLogLine — одна строка админ-лога.
 type adminLogLine struct {
 	Seq  int    `json:"seq"`
 	At   string `json:"at"`
@@ -77,8 +73,7 @@ func (l *adminLogger) since(after int) []adminLogLine {
 
 // ---- Проверка прав ---- //
 
-// currentUser возвращает пользователя по куке сессии (валидную сессию
-// проверяет по общей БД).
+// currentUser возвращает пользователя по куке сессии (валидную сессию проверяет по общей БД).
 func currentUser(cfg Config, r *http.Request) (db.User, bool) {
 	if cfg.DB == nil {
 		return db.User{}, false
@@ -108,14 +103,12 @@ func requireAdmin(cfg Config, w http.ResponseWriter, r *http.Request) (db.User, 
 	return u, true
 }
 
-// writeJSON отдаёт JSON-ответ.
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// handleAdminFilmsMissing — GET /api/admin/films/missing?limit=N.
-// Возвращает записи с пустыми полями (полный набор колонок для правки).
+// handleAdminFilmsMissing — GET /api/admin/films/missing?limit=N: записи с пустыми полями (полный набор колонок для правки).
 func handleAdminFilmsMissing(cfg Config, w http.ResponseWriter, r *http.Request) {
 	if _, ok := requireAdmin(cfg, w, r); !ok {
 		return
@@ -132,9 +125,8 @@ func handleAdminFilmsMissing(cfg Config, w http.ResponseWriter, r *http.Request)
 	writeJSON(w, map[string]any{"items": films, "total": len(films)})
 }
 
-// handleAdminFilmsTMDBNotFound — GET /api/admin/films/notfound?limit=N.
-// Записи, помеченные как «не найдено совпадение на TMDB» (отдельная
-// таблица на админ-странице; из списка «пустых полей» исключены).
+// handleAdminFilmsTMDBNotFound — GET /api/admin/films/notfound?limit=N:
+// записи, помеченные как «не найдено совпадение на TMDB» (отдельная таблица на админ-странице).
 func handleAdminFilmsTMDBNotFound(cfg Config, w http.ResponseWriter, r *http.Request) {
 	if _, ok := requireAdmin(cfg, w, r); !ok {
 		return
@@ -151,9 +143,8 @@ func handleAdminFilmsTMDBNotFound(cfg Config, w http.ResponseWriter, r *http.Req
 	writeJSON(w, map[string]any{"items": films, "total": len(films)})
 }
 
-// handleAdminFilmSetNotFound — POST /api/admin/films/{id}/notfound
-// c телом {"not_found": true|false}: поставить/снять отметку «не найден
-// на TMDB» (админ правит отдельную таблицу).
+// handleAdminFilmSetNotFound — POST /api/admin/films/{id}/notfound c телом {"not_found": true|false}:
+// поставить/снять отметку «не найден на TMDB».
 func handleAdminFilmSetNotFound(cfg Config, w http.ResponseWriter, r *http.Request) {
 	if _, ok := requireAdmin(cfg, w, r); !ok {
 		return
@@ -182,7 +173,7 @@ func handleAdminFilmSetNotFound(cfg Config, w http.ResponseWriter, r *http.Reque
 	writeJSON(w, map[string]any{"ok": true, "id": id})
 }
 
-// Перезаписывает редактируемые поля фильма (админ правит в браузере).
+// handleAdminFilmUpdate — PUT /api/admin/films/{id}: перезапись редактируемых полей фильма (админ правит в браузере).
 func handleAdminFilmUpdate(cfg Config, w http.ResponseWriter, r *http.Request) {
 	if _, ok := requireAdmin(cfg, w, r); !ok {
 		return
@@ -206,8 +197,7 @@ func handleAdminFilmUpdate(cfg Config, w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"ok": true, "id": id})
 }
 
-// handleAdminFilmRefresh — POST /api/admin/films/{id}/refresh.
-// Запускает в фоне автоматическое обновление данных фильма из TMDB;
+// handleAdminFilmRefresh — POST /api/admin/films/{id}/refresh: обновление данных из TMDB в фоне,
 // прогресс пишется в админ-лог (GET /api/admin/logs).
 func handleAdminFilmRefresh(cfg Config, w http.ResponseWriter, r *http.Request) {
 	if _, ok := requireAdmin(cfg, w, r); !ok {
@@ -235,9 +225,8 @@ func handleAdminFilmRefresh(cfg Config, w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, map[string]any{"ok": true, "id": id})
 }
 
-// handleAdminRefreshAll — POST /api/admin/refresh-all.
-// Обновляет в фоне ВСЕ записи с пустыми полями (партиями), прогресс —
-// в админ-лог. Используется тем же инструментом, что и cmd/backfill.
+// handleAdminRefreshAll — POST /api/admin/refresh-all: обновляет в фоне ВСЕ записи с пустыми полями
+// (партиями), затем помеченные «не найдены»; прогресс — в админ-лог. Используется тот же инструмент, что и cmd/backfill.
 func handleAdminRefreshAll(cfg Config, w http.ResponseWriter, r *http.Request) {
 	if _, ok := requireAdmin(cfg, w, r); !ok {
 		return
@@ -252,8 +241,7 @@ func handleAdminRefreshAll(cfg Config, w http.ResponseWriter, r *http.Request) {
 		defer cancel()
 		seen := map[string]bool{}
 		filled, tried := 0, 0
-		// process — обновляет партию записей из TMDB; false, если контекст
-		// отменён (надо завершать).
+		// process — обновляет партию записей из TMDB; false, если контекст отменён (надо завершать).
 		process := func(queue []db.Film) bool {
 			for _, f := range queue {
 				select {
@@ -296,9 +284,7 @@ func handleAdminRefreshAll(cfg Config, w http.ResponseWriter, r *http.Request) {
 			}
 			adminLog.add("info", "массовое обновление: пустых полей — попыток "+strconv.Itoa(tried)+", готово "+strconv.Itoa(filled))
 		}
-		// Фаза 2: помеченные «не найдены на TMDB» — повторная попытка
-		// (при успехе RefreshFilmData снимет отметку, и запись уйдёт
-		// из отдельной таблицы).
+		// Фаза 2: помеченные «не найдены на TMDB» — повторная попытка (при успехе RefreshFilmData снимет отметку).
 		for {
 			films, err := cfg.DB.FilmsTMDBNotFound(ctx, 100)
 			if err != nil {
@@ -326,8 +312,7 @@ func handleAdminRefreshAll(cfg Config, w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"ok": true})
 }
 
-// handleAdminLogs — GET /api/admin/logs?after=<seq>.
-// Возвращает новые строки админ-лога (для опроса страницей).
+// handleAdminLogs — GET /api/admin/logs?after=<seq> — новые строки админ-лога (для опроса страницей).
 func handleAdminLogs(cfg Config, w http.ResponseWriter, r *http.Request) {
 	if _, ok := requireAdmin(cfg, w, r); !ok {
 		return
@@ -364,6 +349,5 @@ func registerAdminRoutes(mux *http.ServeMux, cfg Config) {
 	mux.HandleFunc("GET /api/admin/logs", func(w http.ResponseWriter, r *http.Request) {
 		handleAdminLogs(cfg, w, r)
 	})
-	// Подсказка админу в логах сервиса при старте.
 	log.Printf("admin: маршруты /api/admin/* включены (проверка роли по куке сессии)")
 }

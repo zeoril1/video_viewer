@@ -12,8 +12,7 @@ import (
 )
 
 // MirrorTop250Default — проверенное зеркало IMDb Top 250 (JSON,
-// обновляется каждые несколько часов). Используется как фолбэк,
-// когда официальные страницы IMDb недоступны.
+// обновляется каждые несколько часов) на случай недоступности IMDb.
 const MirrorTop250Default = "https://raw.githubusercontent.com/movie-monk-b0t/top250/master/top250_min.json"
 
 func chartURL(kind ChartKind) string {
@@ -30,9 +29,8 @@ func (c *Client) mirrorURL(kind ChartKind) string {
 	return c.cfg.PopularURL
 }
 
-// FetchChart возвращает список фильмов чарта (топ-250 или популярные).
-// Сначала пробует официальный скрапер IMDb (если разрешён), затем —
-// зеркало JSON (если задано).
+// FetchChart возвращает список фильмов чарта (топ-250 или популярные):
+// сначала скрапер IMDb (если разрешён), затем JSON-зеркало (если задано).
 func (c *Client) FetchChart(ctx context.Context, kind ChartKind) ([]Film, error) {
 	var lastErr error
 
@@ -77,7 +75,7 @@ func (c *Client) scrapeChart(ctx context.Context, kind ChartKind) ([]Film, error
 
 	films := parseChartJSONLD(data)
 	if len(films) == 0 {
-		films = parseChartHTML(data) // фолбэк на грубый HTML-парсинг
+		films = parseChartHTML(data) // грубый фолбэк HTML-парсингом
 	}
 	if len(films) == 0 {
 		return nil, errors.New("no entries parsed from chart page")
@@ -158,7 +156,7 @@ func parseChartJSONLD(data []byte) []Film {
 	return films
 }
 
-// parseChartHTML — грубый фолбэк: попарно собирает ссылки на /title/tt.../
+// parseChartHTML — грубый фолбэк: попарно собирает ссылки /title/tt.../
 // и alt-тексты постеров (в чартах они идут в одном порядке).
 func parseChartHTML(data []byte) []Film {
 	ids := htmlIDRe.FindAllSubmatch(data, -1)
@@ -199,8 +197,8 @@ type mirrorEntry struct {
 	ID      string   `json:"id"`
 }
 
-// mirrorChart загружает чарт из JSON-зеркала. Ожидается массив объектов
-// с полями name, year, rating, desc, genre, image_url, imdb_url (id).
+// mirrorChart загружает чарт из JSON-зеркала (name, year, rating, desc,
+// genre, image_url, imdb_url).
 func (c *Client) mirrorChart(ctx context.Context, u string) ([]Film, error) {
 	data, err := c.get(ctx, u)
 	if err != nil {
@@ -226,7 +224,7 @@ func (c *Client) mirrorChart(ctx context.Context, u string) ([]Film, error) {
 		films = append(films, Film{
 			IMDBID:    id,
 			Title:     e.Name,
-			Kind:      "feature", // чарты IMDb содержат полнометражные фильмы
+			Kind:      "feature", // в чартах только полнометражные фильмы
 			Year:      e.Year,
 			Rating:    e.Rating,
 			Plot:      e.Desc,

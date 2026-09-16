@@ -1,0 +1,277 @@
+/* IPTV: раздел каналов, плеер канала, программа передач и плейлисты. */
+
+.iptv-open {
+  margin-left: 8px;
+  white-space: nowrap;
+}
+
+/* Пока открыт IPTV, каталог скрыт целиком (сетка/фильтры/поиск/продолжить). */
+body.iptv-on .topbar .search,
+body.iptv-on .filters,
+body.iptv-on #continue,
+body.iptv-on #grid,
+body.iptv-on #empty,
+body.iptv-on #sentinel {
+  display: none !important;
+}
+
+.iptv {
+  padding: 16px 20px 32px;
+}
+
+.iptv-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.iptv-title {
+  margin: 0;
+  font-size: 20px;
+}
+
+.iptv-head .search {
+  flex: 1 1 220px;
+  min-width: 160px;
+}
+
+.iptv-groups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.iptv-grid {
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+}
+
+.iptv-card {
+  cursor: pointer;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 10px;
+  min-height: 72px;
+}
+
+.iptv-card:focus,
+.iptv-card:hover {
+  outline: 2px solid var(--accent, #3b82f6);
+  outline-offset: 2px;
+}
+
+.iptv-logo {
+  width: 48px;
+  height: 48px;
+  flex: 0 0 48px;
+  object-fit: contain;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+}
+
+.iptv-card-body {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+/* Название в две строки: «National Geographic · Болгария» обрезкой по одной
+   строке превращалось в «National Geograph…» — именно по нему и различаются
+   каналы-однофамильцы (см. IPTVDuplicateNameKeys на сервере). */
+.iptv-cname {
+  font-weight: 600;
+  line-height: 1.25;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+}
+
+.iptv-now,
+.iptv-next {
+  font-size: 12px;
+  opacity: 0.75;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.iptv-progress {
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.15);
+  margin-top: 4px;
+  overflow: hidden;
+}
+
+.iptv-progress > i {
+  display: block;
+  height: 100%;
+  background: var(--accent, #3b82f6);
+}
+
+.iptv-badge {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: rgba(59, 130, 246, 0.18);
+  color: var(--accent, #60a5fa);
+}
+
+/* ---- Плеер канала ---- */
+.iptv-player {
+  position: fixed;
+  inset: 0;
+  background: #000;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+}
+
+.iptv-player video {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+  background: #000;
+}
+
+.iptv-player-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  background: rgba(10, 10, 14, 0.95);
+  color: #fff;
+  flex-wrap: wrap;
+}
+
+.iptv-live {
+  color: #ef4444;
+  font-weight: 700;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+}
+
+.iptv-plogo {
+  width: 26px;
+  height: 26px;
+  object-fit: contain;
+}
+
+.iptv-pname {
+  font-weight: 600;
+}
+
+.iptv-pnow {
+  opacity: 0.8;
+  font-size: 13px;
+  margin-right: auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 45vw;
+}
+
+/* ---- Программа передач и плейлисты ---- */
+.iptv-epg,
+.iptv-admin {
+  position: fixed;
+  right: 16px;
+  top: 64px;
+  width: min(460px, 92vw);
+  max-height: 70vh;
+  overflow: auto;
+  background: #14141c;
+  color: #eee;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  padding: 12px 14px;
+  z-index: 70;
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.5);
+}
+
+.iptv-epg-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.iptv-epg-item {
+  display: flex;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  font-size: 14px;
+}
+
+.iptv-epg-item.now {
+  color: var(--accent, #60a5fa);
+  font-weight: 600;
+}
+
+.iptv-epg-time {
+  flex: 0 0 92px;
+  opacity: 0.75;
+  font-variant-numeric: tabular-nums;
+}
+
+.iptv-epg-desc {
+  font-size: 12px;
+  opacity: 0.65;
+}
+
+.iptv-admin-list {
+  margin: 8px 0 12px;
+}
+
+.iptv-admin-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 13px;
+}
+
+.iptv-admin-row .iptv-admin-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.iptv-admin-row .iptv-admin-err {
+  color: #f87171;
+  font-size: 12px;
+}
+
+/* Выключенный плейлист: каналы в списке не участвуют. */
+.iptv-admin-row.off .iptv-admin-name {
+  opacity: 0.55;
+}
+
+.iptv-form {
+  display: grid;
+  gap: 6px;
+}
+
+.iptv-form input,
+.iptv-form select {
+  padding: 7px 9px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.06);
+  color: #eee;
+}
+
+.iptv-note {
+  font-size: 13px;
+  opacity: 0.75;
+  margin: 6px 0;
+}

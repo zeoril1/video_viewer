@@ -1,5 +1,4 @@
-// Package db — работа с PostgreSQL: подключение, схема и репозиторий
-// фильмов, собранных из IMDb.
+// Package db — работа с PostgreSQL: подключение, схема и репозиторий фильмов, собранных из IMDb.
 package db
 
 import (
@@ -30,12 +29,10 @@ func Open(dsn string) (*sql.DB, error) {
 	return conn, nil
 }
 
-// OpenRetry подключается к PostgreSQL с повторными попытками. Нужно при
-// одновременном старте всего стека (docker compose up после перезагрузки
-// хоста): БД может быть ещё не готова, и разовый сбой подключения не
-// должен оставлять сервис без БД (иначе каталог стартует пустым).
-// Делает до attempts попыток с паузой delay между ними; при отмене ctx
-// возвращает ctx.Err(). Отвечает nil, если все попытки исчерпаны.
+// OpenRetry подключается к PostgreSQL с повторными попытками: при одновременном старте всего стека
+// (docker compose up после перезагрузки хоста) БД может быть ещё не готова, и разовый сбой подключения
+// не должен оставлять сервис без БД (иначе каталог стартует пустым). До attempts попыток с паузой delay;
+// при отмене ctx возвращает ctx.Err(); nil — если все попытки исчерпаны.
 func OpenRetry(ctx context.Context, dsn string, attempts int, delay time.Duration) (*sql.DB, error) {
 	var lastErr error
 	for i := 1; i <= attempts; i++ {
@@ -66,6 +63,3 @@ func NewRepo(conn *sql.DB) *Repo { return &Repo{conn: conn} }
 
 // Close закрывает соединение с БД.
 func (r *Repo) Close() error { return r.conn.Close() }
-
-// Ping проверяет доступность БД.
-func (r *Repo) Ping(ctx context.Context) error { return r.conn.PingContext(ctx) }

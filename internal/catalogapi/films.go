@@ -14,7 +14,6 @@ import (
 	"github.com/zeoril1/video_viewer/internal/wikidata"
 )
 
-// requireDataSources проверяет, что БД и IMDb-клиент сконфигурированы.
 func requireDataSources(cfg Config, w http.ResponseWriter) bool {
 	if cfg.DB == nil || cfg.IMDB == nil {
 		http.Error(w, "database or imdb client not configured", http.StatusServiceUnavailable)
@@ -23,12 +22,9 @@ func requireDataSources(cfg Config, w http.ResponseWriter) bool {
 	return true
 }
 
-// handleFilmByID обрабатывает GET /api/films/{imdbID}.
-// Если фильма нет в БД, его данные запрашиваются у IMDb и сохраняются.
-// ВАЖНО: никаких медленных сетевых вызовов в запросе — недостающие данные
-// (описание из IMDb, карточка из Wikidata) дозаполняются В ФОНЕ, чтобы
-// WDQS/IMDb (таймауты до минут) не вешали клиента. Фронтенд переспрашивает
-// и подхватывает уже сохранённое в БД.
+// handleFilmByID обрабатывает GET /api/films/{imdbID}: нет в БД — запрашиваем у IMDb и сохраняем.
+// ВАЖНО: в запросе нет медленных сетевых вызовов — недостающие данные (описание IMDb, карточка Wikidata)
+// дозаполняются В ФОНЕ, иначе WDQS/IMDb с таймаутами до минут вешали бы клиента.
 func handleFilmByID(cfg Config, id string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !requireDataSources(cfg, w) {
@@ -47,9 +43,8 @@ func handleFilmByID(cfg Config, id string) http.HandlerFunc {
 		}
 
 		if !ok {
-			// Фильма нет в БД — получаем данные из IMDb синхронно (они
-			// нужны для ответа). В обычном UI-потоке так не бывает: карточки
-			// идут из каталога, где фильм уже в БД.
+			// Фильма нет в БД — получаем данные из IMDb синхронно (они нужны для ответа).
+			// В обычном UI-потоке так не бывает: карточки идут из каталога, где фильм уже в БД.
 			f, err := cfg.IMDB.GetByID(r.Context(), id)
 			if err != nil {
 				http.Error(w, "not found on imdb: "+err.Error(), http.StatusNotFound)
@@ -60,11 +55,9 @@ func handleFilmByID(cfg Config, id string) http.HandlerFunc {
 			}
 			film = db.FromIMDB(f)
 			log.Printf("films: get %s: нет в БД — загружен из IMDb и сохранён", id)
-			// Заполняем недостающие данные из TMDB в фоне.
 			maybeRefreshFilmDataBg(cfg, id)
 		} else {
-			// Фильм есть в БД — дозаполняем недостающее (описание, карточку)
-			// и данные из TMDB в фоне, отвечаем сразу.
+			// Фильм есть в БД — дозаполняем описание/карточку и данные TMDB в фоне, отвечаем сразу.
 			maybeFillFilmBg(cfg, id, film)
 			maybeRefreshFilmDataBg(cfg, id)
 		}
@@ -74,22 +67,16 @@ func handleFilmByID(cfg Config, id string) http.HandlerFunc {
 	}
 }
 
-// fillTotalTimeout — общий бюджет на фоновое дозаполнение одного фильма
-// (IMDb-описание + Wikidata-карточка). Больше не ждём — карточка просто
-// останется базовой до следующего запроса.
+// fillTotalTimeout — общий бюджет на фоновое дозаполнение одного фильма (IMDb-описание + карточка Wikidata); дальше карточка остаётся базовой.
 const fillTotalTimeout = 40 * time.Second
 
-// fillRetryAfter — не повторяем дозаполнение фильма чаще этого интервала,
-// даже если прошлый раз WDQS/IMDb были недоступны.
+// fillRetryAfter — не повторяем дозаполнение фильма чаще этого интервала, даже если WDQS/IMDb были недоступны.
 const fillRetryAfter = 15 * time.Minute
 
-// fillStateMax — предел записей fillDone. Карта растёт с числом фильмов,
-// которые хоть раз пытались дозаполнить; прунинг не даёт ей расти
-// бесконечно за долгую сессию.
+// fillStateMax — предел записей fillDone: прунинг не даёт карте расти бесконечно за долгую сессию.
 const fillStateMax = 2048
 
-// pruneFillDoneLocked удаляет старые попытки дозаполнения. Вызывается с
-// захваченным fillMu.
+// pruneFillDoneLocked удаляет старые попытки дозаполнения; вызывается с захваченным fillMu.
 func pruneFillDoneLocked() {
 	if len(fillDone) <= fillStateMax {
 		return
@@ -102,23 +89,20 @@ func pruneFillDoneLocked() {
 	}
 }
 
-// Защита от дублирующих фоновых дозаполнений одного фильма: фронтенд шлёт
-// /api/films/{id} для каждой видимой карточки, и без дедупа параллельные
-// запросы дублировали бы сетевые вызовы к IMDb/WDQS.
+// Защита от дублирующих фоновых дозаполнений одного фильма: фронтенд шлёт /api/films/{id}
+// на каждую видимую карточку, и без дедупа параллельные запросы дублировали бы вызовы IMDb/WDQS.
 var (
 	fillMu   sync.Mutex
 	fillRun  = map[string]bool{}      // id → дозаполнение уже выполняется
 	fillDone = map[string]time.Time{} // id → время последней попытки
 )
 
-// filmExtrasEmpty — нет ли в фильме ни одного из полей обогащения карточки.
 func filmExtrasEmpty(f db.Film) bool {
 	return f.MovieLength <= 0 && len(f.Countries) == 0 && f.Director == "" && len(f.Actors) == 0
 }
 
-// maybeFillFilmBg запускает фоновое дозаполнение фильма: описание (IMDb),
-// если его нет на одном из языков, и карточку из Wikidata (длительность/
-// страна/режиссёр/актёры). Не блокирует клиента.
+// maybeFillFilmBg запускает фоновое дозаполнение: описание IMDb (если нет на одном из языков)
+// и карточка Wikidata (длительность/страна/режиссёр/актёры). Не блокирует клиента.
 func maybeFillFilmBg(cfg Config, id string, film db.Film) {
 	needIMDb := film.Plot == "" || film.PlotRU == ""
 	needWiki := filmExtrasEmpty(film)
@@ -173,24 +157,21 @@ func maybeFillFilmBg(cfg Config, id string, film db.Film) {
 	}()
 }
 
-// ratingRefreshMin — не обновляем рейтинг одного фильма чаще этого
-// интервала при открытии карточки (защита от частых запросов к TMDB).
+// ratingRefreshMin — не обновляем рейтинг одного фильма чаще этого интервала при открытии карточки (защита от частых запросов к TMDB).
 const ratingRefreshMin = 60 * time.Second
 
-// ratingStateMax — предел записей ratingDone. Прунинг не даёт карте расти
-// бесконечно за долгую сессию.
+// ratingStateMax — предел записей ratingDone (прунинг не даёт карте расти бесконечно за долгую сессию).
 const ratingStateMax = 2048
 
-// Защита от дублирующих обновлений рейтинга одного фильма: карточки
-// открываются часто, а TMDB не должен долбиться на каждый клик.
+// Защита от дублирующих обновлений рейтинга одного фильма: карточки открываются часто,
+// а TMDB не должен долбиться на каждый клик.
 var (
 	ratingMu   sync.Mutex
 	ratingRun  = map[string]bool{}      // id → обновление уже выполняется
 	ratingDone = map[string]time.Time{} // id → время последнего обновления
 )
 
-// pruneRatingDoneLocked удаляет старые отметки обновлений рейтинга.
-// Вызывается с захваченным ratingMu.
+// pruneRatingDoneLocked удаляет старые отметки обновлений рейтинга; вызывается с захваченным ratingMu.
 func pruneRatingDoneLocked() {
 	if len(ratingDone) <= ratingStateMax {
 		return
@@ -203,10 +184,8 @@ func pruneRatingDoneLocked() {
 	}
 }
 
-// maybeRefreshFilmDataBg запускает фоновое заполнение данных фильма из
-// TMDB при открытии карточки (GET /api/films/{id}): рейтинг, жанры,
-// описания, русское название, постер и т.д. Не блокирует клиента и не
-// долбит API: на один фильм — не чаще раза в ratingRefreshMin.
+// maybeRefreshFilmDataBg запускает фоновое заполнение данных фильма из TMDB при открытии карточки (GET /api/films/{id}):
+// рейтинг, жанры, описания, русское название, постер. Не блокирует клиента и не долбит API: на фильм — не чаще раза в ratingRefreshMin.
 func maybeRefreshFilmDataBg(cfg Config, id string) {
 	if cfg.TMDB == nil {
 		return

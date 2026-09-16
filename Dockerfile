@@ -12,7 +12,7 @@ ARG SERVICE=gateway
 ARG WITH_FFMPEG=0
 
 # ---------- Стадия сборки ----------
-FROM golang:1.25-alpine AS build
+FROM golang:1.27-alpine AS build
 
 # Не скачивать тулчейн автоматически — используем версию из образа
 ENV GOTOOLCHAIN=local

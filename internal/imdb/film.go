@@ -1,13 +1,10 @@
-// Package imdb — клиент для получения данных о фильмах с IMDb:
-// списки «топ-250» и «популярные сейчас», поиск и получение по IMDb ID.
+// Package imdb — клиент IMDb: чарты «топ-250»/«популярные», поиск, получение по ID.
 package imdb
 
 import "strings"
 
-// NormalizeKind приводит тип контента IMDb к нормализованному виду
-// (feature, tvSeries, tvMiniSeries, tvMovie, short, tvShort, video,
-// tvEpisode, tvSpecial). Эндпоинт поиска отдаёт человекочитаемые
-// строки вроде "TV series" или "Short".
+// NormalizeKind приводит тип контента IMDb к нормализованному виду (feature,
+// tvSeries, tvMiniSeries, ...): поиск отдаёт строки вроде "TV series".
 func NormalizeKind(k string) string {
 	switch strings.ToLower(strings.TrimSpace(k)) {
 	case "", "feature", "movie", "film":

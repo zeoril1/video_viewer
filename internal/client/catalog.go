@@ -10,16 +10,15 @@ import (
 	"time"
 )
 
-// CatalogClient — клиент catalog-сервиса. Используется stream-сервисом
-// для резолва магнет-ссылки по id записи (когда фронтенд не передал
-// ?magnet= в /api/stream/{id}).
+// CatalogClient — клиент catalog-сервиса: резолв магнет-ссылки по id записи
+// (когда фронтенд не передал ?magnet= в /api/stream/{id}).
 type CatalogClient struct {
 	BaseURL string
 	HTTP    *http.Client
 }
 
-// NewCatalogClient создаёт клиент. Пустой baseURL даёт nil-клиент,
-// который всегда возвращает «не найдено» (резолв магнета выключен).
+// NewCatalogClient создаёт клиент; пустой baseURL даёт nil-клиент, который всегда
+// возвращает «не найдено» (резолв магнета выключен).
 func NewCatalogClient(baseURL string) *CatalogClient {
 	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	if baseURL == "" {
@@ -31,8 +30,7 @@ func NewCatalogClient(baseURL string) *CatalogClient {
 	}
 }
 
-// FindMagnet возвращает магнет-ссылку по id через внутренний эндпоинт
-// catalog-сервиса /api/internal/films/{id}/magnet.
+// FindMagnet возвращает магнет по id через /api/internal/films/{id}/magnet.
 func (c *CatalogClient) FindMagnet(ctx context.Context, id string) (string, bool) {
 	if c == nil {
 		return "", false

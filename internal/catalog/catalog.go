@@ -1,5 +1,4 @@
-// Package catalog описывает каталог торрент-записей, которые
-// можно стримить через веб-интерфейс.
+// Package catalog описывает каталог торрент-записей для стриминга через веб-интерфейс.
 package catalog
 
 import (
@@ -12,7 +11,7 @@ type Item struct {
 	ID       string `json:"id"`
 	Title    string `json:"title"`
 	Magnet   string `json:"magnet"`
-	Poster   string `json:"poster,omitempty"` // необязательный URL постера/обложки
+	Poster   string `json:"poster,omitempty"`
 	Category string `json:"category,omitempty"`
 	Size     string `json:"size,omitempty"` // человекочитаемая подсказка размера
 	AddedAt  string `json:"added_at,omitempty"`

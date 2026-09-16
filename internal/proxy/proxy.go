@@ -1,8 +1,7 @@
-// Package proxy предоставляет HTTP-прокси из конфигурации (PROXY_STATIC)
-// с автоматическим failover на прямое соединение при сбое. Динамические
-// публичные списки (PROXY_SOURCES) не используются: прокси задаются
-// явно, доверяются и проверяются фактическим использованием (при сбое
-// убираются, и запросы идут напрямую).
+// Package proxy предоставляет HTTP-прокси из конфигурации (PROXY_STATIC) с
+// автоматическим failover на прямое соединение при сбое. Динамические публичные
+// списки (PROXY_SOURCES) не используются: прокси задаются явно и проверяются
+// фактическим использованием (при сбое убираются, запросы идут напрямую).
 package proxy
 
 import (
@@ -23,9 +22,9 @@ type Config struct {
 	Timeout time.Duration
 }
 
-// Pool — пул HTTP-прокси (из PROXY_STATIC) с round-robin и failover:
-// при сбое соединения прокси помечается нерабочим (MarkBroken) и
-// убирается из пула, запросы идут через следующий или напрямую.
+// Pool — пул HTTP-прокси (из PROXY_STATIC) с round-robin и failover: при сбое
+// соединения прокси помечается нерабочим (MarkBroken) и убирается из пула,
+// запросы идут через следующий или напрямую.
 type Pool struct {
 	mu         sync.Mutex
 	staticList []string                   // рабочие статические прокси
@@ -53,7 +52,6 @@ func NewPool(cfg Config) *Pool {
 	return p
 }
 
-// defaultTransport — транспорт для прямых соединений (fallback).
 func defaultTransport() *http.Transport {
 	return &http.Transport{
 		Proxy:               http.ProxyFromEnvironment,
@@ -65,8 +63,7 @@ func defaultTransport() *http.Transport {
 	}
 }
 
-// normalize приводит прокси к виду [user:pass@]host:port, убирая схему
-// и лишние пробелы.
+// normalize приводит прокси к виду [user:pass@]host:port (убирает схему и пробелы).
 func normalize(s string) string {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -79,9 +76,8 @@ func normalize(s string) string {
 	return s
 }
 
-// proxyURL строит *url.URL из строки прокси вида [user:pass@]host:port.
-// Учётные данные попадают в url.User — Go сам отправит их как
-// Proxy-Authorization: Basic.
+// proxyURL строит *url.URL из строки [user:pass@]host:port; учётные данные попадают
+// в url.User — Go сам отправит их как Proxy-Authorization: Basic.
 func proxyURL(addr string) *url.URL {
 	u := &url.URL{Scheme: "http"}
 	if i := strings.LastIndexByte(addr, '@'); i >= 0 {
@@ -98,8 +94,7 @@ func proxyURL(addr string) *url.URL {
 	return u
 }
 
-// redact убирает учётные данные из адреса для логов (пароль не должен
-// попадать в логи).
+// redact убирает учётные данные из адреса (пароль не должен попадать в логи).
 func redact(addr string) string {
 	if i := strings.IndexByte(addr, '@'); i >= 0 {
 		return addr[i+1:]
@@ -107,8 +102,7 @@ func redact(addr string) string {
 	return addr
 }
 
-// Next возвращает следующий прокси (round-robin). Пустая строка, если
-// пул пуст (тогда запросы идут напрямую).
+// Next возвращает следующий прокси (round-robin); "" — пул пуст (запросы идут напрямую).
 func (p *Pool) Next() string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -136,7 +130,6 @@ func (p *Pool) MarkBroken(addr string) {
 	log.Printf("proxy: removed broken %s (working: %d)", redact(addr), n)
 }
 
-// removeAddr удаляет addr из списка. Возвращает true, если элемент удалён.
 func removeAddr(list *[]string, addr string) bool {
 	for i, a := range *list {
 		if a == addr {
@@ -147,13 +140,6 @@ func removeAddr(list *[]string, addr string) bool {
 	return false
 }
 
-// All возвращает копию текущих прокси.
-func (p *Pool) All() []string {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return append([]string{}, p.staticList...)
-}
-
 // Size возвращает число рабочих прокси.
 func (p *Pool) Size() int {
 	p.mu.Lock()
@@ -161,21 +147,7 @@ func (p *Pool) Size() int {
 	return len(p.staticList)
 }
 
-// ProxyURL возвращает функцию для http.Transport.Proxy или
-// torrent.ClientConfig.HTTPProxy: берёт следующий рабочий прокси
-// (round-robin) или nil (прямое соединение), если прокси нет.
-func (p *Pool) ProxyURL() func(*http.Request) (*url.URL, error) {
-	return func(*http.Request) (*url.URL, error) {
-		addr := p.Next()
-		if addr == "" {
-			return nil, nil
-		}
-		return proxyURL(addr), nil
-	}
-}
-
-// transportFor возвращает транспорт для конкретного прокси, создавая
-// его лениво (соединения переиспользуются).
+// transportFor — транспорт конкретного прокси, создаётся лениво (соединения переиспользуются).
 func (p *Pool) transportFor(addr string) *http.Transport {
 	p.mu.Lock()
 	defer p.mu.Unlock()

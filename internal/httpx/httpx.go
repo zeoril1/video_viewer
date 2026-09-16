@@ -1,5 +1,4 @@
-// Package httpx — общие HTTP-утилиты для микросервисов: middleware
-// логирования запросов и хелперы для JSON-ответов.
+// Package httpx — общие HTTP-утилиты для микросервисов: лог запросов и хелперы JSON-ответов.
 package httpx
 
 import (
@@ -20,26 +19,57 @@ func (r *statusRecorder) WriteHeader(code int) {
 	r.ResponseWriter.WriteHeader(code)
 }
 
+// ExternalScheme возвращает схему внешнего запроса: "https" при r.TLS или
+// X-Forwarded-Proto от обратного прокси, иначе "http". Нужно, когда сервис
+// стоит за прокси (Caddy/nginx): без этого абсолютные ссылки и Secure-кука
+// «теряют» https.
+func ExternalScheme(r *http.Request) string {
+	if r.TLS != nil {
+		return "https"
+	}
+	p := strings.TrimSpace(r.Header.Get("X-Forwarded-Proto"))
+	if p == "" {
+		return "http"
+	}
+	// Прокси может передать список ("https, http") — берём первый элемент.
+	if i := strings.IndexByte(p, ','); i >= 0 {
+		p = strings.TrimSpace(p[:i])
+	}
+	return strings.ToLower(p)
+}
+
+// IsSecureRequest сообщает, что внешний запрос пришёл по HTTPS.
+func IsSecureRequest(r *http.Request) bool {
+	return ExternalScheme(r) == "https"
+}
+
+// PublicBase возвращает внешний базовый адрес (scheme://host) с учётом
+// X-Forwarded-Proto: абсолютные ссылки должны указывать на тот адрес,
+// по которому клиент реально обращался.
+func PublicBase(r *http.Request) string {
+	host := r.Host
+	if host == "" {
+		host = "localhost"
+	}
+	return ExternalScheme(r) + "://" + host
+}
+
 // LogMiddleware логирует каждый HTTP-запрос: метод, путь, статус и время
-// обработки. HLS-сегменты (их тысячи) не логируются, чтобы не засорять
-// логи. Длинные query-параметры (магнеты) обрезаются.
+// обработки. HLS-сегменты и healthcheck не логируются — их слишком много.
 func LogMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		start := time.Now()
 		next.ServeHTTP(rec, r)
-		// Каждый HLS-сегмент не логируем: их тысячи (идут каждые ~6с на
-		// активный стрим), и они засоряют логи.
+		// Каждый HLS-сегмент не логируем: их тысячи на активный стрим.
 		if strings.Contains(r.URL.Path, "/hls/segments/") {
 			return
 		}
-		// Успешные проверки живости (docker healthcheck бьёт в /api/health
-		// каждые несколько секунд, а шлюз опрашивает все сервисы) — не
-		// логируем: они засоряют лог. Ошибки (status != 200) оставляем.
+		// Успешные проверки живости (healthcheck и шлюз) не логируем;
+		// ошибки (status != 200) остаются.
 		if r.Method == http.MethodGet && r.URL.Path == "/api/health" && rec.status == http.StatusOK {
 			return
 		}
-		// Query-параметры в лог — видно, что именно просил фронтенд.
 		// Длинные магнеты обрезаем: хвост с трекерами не информативен,
 		// info_hash в начале сохраняется.
 		qs := r.URL.RawQuery
