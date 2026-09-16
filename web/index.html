@@ -4,11 +4,10 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Video Viewer</title>
-  <link rel="stylesheet" href="style.css?v=20" />
+  <link rel="stylesheet" href="style.css?v=21" />
   <link rel="stylesheet" href="tv.css?v=1" />
-  <link rel="stylesheet" href="iptv.css?v=1" />
 </head>
-<body>
+<body data-page="catalog">
   <header class="topbar">
     <h1 class="logo">🎬 Video Viewer</h1>
     <input id="search" class="search" type="search" placeholder="Поиск по каталогу..." autocomplete="off" />
@@ -21,8 +20,8 @@
       <span id="user-name" class="user-name"></span>
       <button id="auth-logout" class="auth-btn" type="button">Выйти</button>
     </div>
-    <button id="iptv-open" class="auth-btn iptv-open" type="button" title="IPTV">📺 IPTV</button>
-    <button id="auth-open" class="auth-btn auth-btn-primary" type="button" hidden>Войти</button>
+    <a id="iptv-link" class="auth-btn" href="/iptv.html" title="IPTV">📺 IPTV</a>
+    <a id="auth-open" class="auth-btn auth-btn-primary" href="/login.html" hidden>Войти</a>
   </header>
 
   <main>
@@ -48,208 +47,8 @@
     <div id="sentinel" class="sentinel" hidden></div>
   </main>
 
-  <!-- IPTV: каналы из плейлиста (M3U/Xtream), телепрограмма и плеер.
-       Раздел включается кнопкой «📺 IPTV» в шапке: каталог при этом
-       прячется, а поток тянется с нашего сервера (см. internal/iptvapi). -->
-  <main id="iptv-view" class="iptv" hidden>
-    <div class="iptv-head">
-      <h2 class="iptv-title" data-i18n="iptvTitle">IPTV</h2>
-      <input id="iptv-search" class="search" type="search" placeholder="Поиск канала..." autocomplete="off" />
-      <button id="iptv-refresh" class="auth-btn" type="button" title="Обновить список">⟳</button>
-      <button id="iptv-admin-open" class="auth-btn" type="button" title="Плейлисты" hidden>⚙</button>
-      <button id="iptv-close" class="auth-btn" type="button" title="Закрыть"><span data-i18n="close">Закрыть</span></button>
-    </div>
-
-    <div id="iptv-groups" class="src-chips iptv-groups"></div>
-    <p id="iptv-empty" class="empty" hidden></p>
-    <div id="iptv-grid" class="grid iptv-grid"></div>
-
-    <!-- Плеер канала -->
-    <div id="iptv-player-wrap" class="iptv-player" hidden>
-      <video id="iptv-player" playsinline></video>
-      <div class="iptv-player-bar">
-        <button id="iptv-play" class="ctrl-btn" type="button" aria-label="Play/Pause">⏸</button>
-        <span class="iptv-live">LIVE</span>
-        <img id="iptv-plogo" class="iptv-plogo" alt="" hidden />
-        <span id="iptv-pname" class="iptv-pname"></span>
-        <span id="iptv-pnow" class="iptv-pnow"></span>
-        <button id="iptv-pmute" class="ctrl-btn" type="button" aria-label="Mute">🔊</button>
-        <input id="iptv-pvolume" class="ctrl-volume" type="range" min="0" max="1" step="0.05" value="1" aria-label="Volume" />
-        <button id="iptv-pepg" class="ctrl-btn" type="button" title="Программа передач">🕒</button>
-        <button id="iptv-pfull" class="ctrl-btn" type="button" aria-label="Fullscreen">⛶</button>
-        <button id="iptv-pclose" class="ctrl-btn" type="button" aria-label="Стоп">✕</button>
-      </div>
-      <p id="iptv-pnote" class="player-error" hidden></p>
-    </div>
-
-    <!-- Программа передач канала -->
-    <div id="iptv-epg" class="iptv-epg" hidden>
-      <div class="iptv-epg-head">
-        <span id="iptv-epg-title"></span>
-        <button id="iptv-epg-close" class="close" type="button">&times;</button>
-      </div>
-      <div id="iptv-epg-list" class="ep-list"></div>
-    </div>
-
-    <!-- Плейлисты (только админ): добавить/обновить/удалить -->
-    <div id="iptv-admin" class="iptv-admin" hidden>
-      <div class="iptv-epg-head">
-        <span data-i18n="iptvPlaylists">Плейлисты IPTV</span>
-        <button id="iptv-admin-close" class="close" type="button">&times;</button>
-      </div>
-      <div id="iptv-admin-list" class="iptv-admin-list"></div>
-      <form id="iptv-form" class="iptv-form" autocomplete="off">
-        <input id="iptv-f-name" placeholder="Название" required />
-        <select id="iptv-f-kind">
-          <option value="m3u">M3U-ссылка</option>
-          <option value="xtream">Xtream Codes</option>
-        </select>
-        <input id="iptv-f-url" placeholder="URL плейлиста или адрес панели" required />
-        <input id="iptv-f-user" placeholder="Логин (для Xtream)" />
-        <input id="iptv-f-pass" type="password" placeholder="Пароль (для Xtream)" />
-        <input id="iptv-f-epg" placeholder="URL телепрограммы XMLTV (необязательно)" />
-        <button type="submit" class="resume-btn"><span data-i18n="iptvSave">Сохранить и обновить</span></button>
-      </form>
-    </div>
-  </main>
-
-  <div id="modal" class="modal" hidden>
-    <div class="modal-card">
-      <div class="modal-head">
-        <h2 id="modal-title"></h2>
-        <div class="modal-actions">
-          <button id="resume-btn" class="resume-btn" type="button" hidden>▶ Продолжить</button>
-          <button id="watch-btn" class="resume-btn" type="button" hidden>▶ Смотреть</button>
-          <button id="modal-close" class="close" aria-label="Закрыть">&times;</button>
-        </div>
-      </div>
-      <div id="details" class="details" hidden>
-        <div class="details-body">
-          <img id="details-poster" class="details-poster" alt="" />
-          <div class="details-info">
-            <h3 id="details-title" class="details-title"></h3>
-            <div id="details-rating" class="details-rating" title="IMDB / TMDB"></div>
-            <div id="details-subtitle" class="details-subtitle"></div>
-            <div id="details-meta" class="details-meta"></div>
-            <div id="details-director" class="details-line"></div>
-            <div id="details-actors" class="details-line"></div>
-            <p id="details-plot" class="details-plot"></p>
-            <p id="details-note" class="details-note">К этому фильму пока не привязана магнет-ссылка — стриминг недоступен. Данные получены из IMDb.</p>
-          </div>
-        </div>
-      </div>
-      <div id="sources" class="sources" hidden>
-        <h3 id="sources-title" class="sources-title"></h3>
-        <div id="sources-season-wrap" class="src-group" hidden>
-          <div class="src-group-label"></div>
-          <div id="sources-season" class="src-chips"></div>
-        </div>
-        <div id="sources-episodes-wrap" class="src-group" hidden>
-          <div class="src-group-label"></div>
-          <div id="sources-episodes" class="ep-list"></div>
-        </div>
-        <div id="sources-audio-wrap" class="src-group" hidden>
-          <div class="src-group-label"></div>
-          <div id="sources-audio" class="src-chips"></div>
-        </div>
-        <div id="sources-rel-wrap" class="src-group" hidden>
-          <div class="src-group-label"></div>
-          <div id="sources-rel" class="src-chips"></div>
-        </div>
-        <p id="sources-empty" class="sources-empty" hidden></p>
-      </div>
-      <div id="tracks" class="tracks" hidden>
-        <h3 id="tracks-title" class="tracks-title"></h3>
-        <div id="tracks-list" class="tracks-list"></div>
-      </div>
-      <div id="subs" class="tracks" hidden>
-        <h3 id="subs-title" class="tracks-title"></h3>
-        <div id="subs-list" class="tracks-list"></div>
-      </div>
-      <div id="episodes" class="episodes" hidden>
-        <h3 id="episodes-title" class="episodes-title"></h3>
-        <div id="ep-seasons" class="src-chips" hidden></div>
-        <div id="ep-list" class="ep-list"></div>
-      </div>
-      <div id="player-wrap" class="player-wrap" hidden>
-        <video id="player" playsinline></video>
-        <div id="ctrl-mini" class="ctrl-mini"><div id="ctrl-mini-fill"></div></div>
-        <div id="player-controls" class="player-controls">
-          <button id="ctrl-play" class="ctrl-btn" type="button" aria-label="Play/Pause">▶</button>
-          <button id="ctrl-prev" class="ctrl-btn ctrl-ep" type="button" title="Предыдущая серия">⏮</button>
-          <button id="ctrl-next" class="ctrl-btn ctrl-ep" type="button" title="Следующая серия">⏭</button>
-          <button id="ctrl-seek-b" class="ctrl-btn ctrl-seek" type="button" title="Назад 5 секунд" aria-label="Назад 5 секунд">−5</button>
-          <div id="ctrl-bar" class="ctrl-bar" role="slider" aria-label="Progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-            <div id="ctrl-buffered" class="ctrl-buffered"></div>
-            <div id="ctrl-position" class="ctrl-position"></div>
-            <div id="ctrl-thumb" class="ctrl-thumb"></div>
-          </div>
-          <button id="ctrl-seek-f" class="ctrl-btn ctrl-seek" type="button" title="Вперёд 5 секунд" aria-label="Вперёд 5 секунд">+5</button>
-          <span id="ctrl-time" class="ctrl-time">0:00 / 0:00</span>
-          <div id="ctrl-quality" class="ctrl-quality" role="group" aria-label="Качество">
-            <button data-quality="source" class="q-btn active" type="button">SRC</button>
-            <button data-quality="2160" class="q-btn" type="button">4K</button>
-            <button data-quality="1080" class="q-btn" type="button">1080</button>
-            <button data-quality="720" class="q-btn" type="button">720</button>
-            <button data-quality="480" class="q-btn" type="button">480</button>
-          </div>
-          <button id="ctrl-mute" class="ctrl-btn" type="button" aria-label="Mute">🔊</button>
-          <input id="ctrl-volume" class="ctrl-volume" type="range" min="0" max="1" step="0.05" value="1" aria-label="Volume" />
-          <button id="ctrl-fullscreen" class="ctrl-btn" type="button" aria-label="Fullscreen">⛶</button>
-          <button id="ctrl-debug" class="ctrl-btn" type="button" aria-label="Logs" title="Логи воспроизведения">🛠</button>
-        </div>
-      </div>
-      <p id="player-error" class="player-error" hidden></p>
-      <pre id="player-debug" class="player-debug" hidden></pre>
-    </div>
-  </div>
-
-  <!-- Диалог «озвучка не сделана на все серии» (предложение выбрать из
-       доступных серий или закрыть просмотр). -->
-  <div id="tl-dialog" class="modal" hidden>
-    <div class="modal-card tl-card">
-      <div class="modal-head">
-        <h2 id="tl-title"></h2>
-        <button id="tl-close" class="close" aria-label="Закрыть">&times;</button>
-      </div>
-      <div class="tl-body">
-        <p id="tl-message" class="tl-message"></p>
-        <div id="tl-episodes" class="ep-list tl-episodes"></div>
-        <button id="tl-close-viewing" class="auth-submit" type="button">Закрыть просмотр</button>
-      </div>
-    </div>
-  </div>
-
-  <div id="auth-modal" class="modal" hidden>
-    <div class="modal-card auth-card">
-      <div class="modal-head">
-        <h2 id="auth-title"></h2>
-        <button id="auth-close" class="close" aria-label="Закрыть">&times;</button>
-      </div>
-      <div class="auth-body">
-        <div class="auth-tabs" role="tablist">
-          <button id="auth-tab-login" class="auth-tab active" type="button" role="tab">Вход</button>
-          <button id="auth-tab-register" class="auth-tab" type="button" role="tab">Регистрация</button>
-        </div>
-        <form id="auth-form" class="auth-form" autocomplete="on">
-          <label class="auth-field">
-            <span data-i18n="username">Логин</span>
-            <input id="auth-username" name="username" type="text" autocomplete="username" required />
-          </label>
-          <label class="auth-field">
-            <span data-i18n="password">Пароль</span>
-            <input id="auth-password" name="password" type="password" autocomplete="current-password" required />
-          </label>
-          <p id="auth-error" class="auth-error" hidden></p>
-          <button id="auth-submit" class="auth-submit" type="submit">Войти</button>
-        </form>
-      </div>
-    </div>
-  </div>
-
-  <script src="vendor/hls.min.js"></script>
-  <script src="app.js?v=66"></script>
-  <script src="iptv.js?v=1"></script>
-  <script src="tv.js?v=1"></script>
+  <script src="shared.js?v=2"></script>
+  <script src="catalog.js?v=1"></script>
+  <script src="tv.js?v=2"></script>
 </body>
 </html>

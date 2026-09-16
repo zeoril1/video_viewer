@@ -6,8 +6,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const app = fs.readFileSync(path.join(__dirname, '../web/app.js'), 'utf8');
-// seasonEpisodeCount … probeOrder — чистые функции без DOM.
+const app = fs.readFileSync(path.join(__dirname, '../web/series.js'), 'utf8');
+// seasonEpisodeCount … probeOrder — чистые функции без DOM (вырезаем из series.js).
 const source = app.slice(app.indexOf('// seasonEpisodeCount'), app.indexOf('// ensureSeasonEpisodes'));
 
 // Сезоны TMDB «Реальных пацанов» (tt1837341): 291 серия в 10 сезонах.

@@ -69,7 +69,7 @@ func NewServer(cfg Config) http.Handler {
 	// ---- Статические файлы фронтенда ----
 	// no-cache (а не no-store): файл перепроверяется (If-Modified-Since → 304),
 	// но после обновления фронтенда клиент сразу получает новую версию.
-	// Без этого заголовка браузер/WebView кэширует app.js эвристически (по
+	// Без этого заголовка браузер/WebView кэширует скрипты фронтенда (web/*.js) эвристически (по
 	// Last-Modified) и может долго работать на старой версии.
 	mux.Handle("/", noCacheStatic(http.Dir(cfg.WebDir)))
 
@@ -181,14 +181,16 @@ func healthHandler(cfg Config) http.HandlerFunc {
 // clientAddress перезаписывает внутренний заголовок с IP клиента:
 // forwarded-адрес принимается только от явно заданного прокси.
 func clientAddress(next http.Handler, trustedProxy string) http.Handler {
+	tp := &trustedProxyIPs{host: strings.TrimSpace(trustedProxy)}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ip, _, err := net.SplitHostPort(r.RemoteAddr)
 		if err != nil {
 			ip = r.RemoteAddr
 		}
-		if trustedProxy != "" && strings.HasPrefix(r.URL.Path, "/api/auth/") {
-			addresses, _ := net.LookupIP(trustedProxy)
-			for _, address := range addresses {
+		// Разбираем X-Forwarded-For только там, где он нужен (лимиты входа),
+		// и только если он вообще пришёл: без заголовка разбирать нечего.
+		if tp.host != "" && strings.HasPrefix(r.URL.Path, "/api/auth/") && r.Header.Get("X-Forwarded-For") != "" {
+			for _, address := range tp.ips() {
 				if address.Equal(net.ParseIP(ip)) {
 					chain := strings.Split(r.Header.Get("X-Forwarded-For"), ",")
 					if forwarded := net.ParseIP(strings.TrimSpace(chain[len(chain)-1])); forwarded != nil {
@@ -201,4 +203,36 @@ func clientAddress(next http.Handler, trustedProxy string) http.Handler {
 		r.Header.Set("X-Video-Viewer-Client-IP", ip)
 		next.ServeHTTP(w, r)
 	})
+}
+
+// trustedProxyIPs — адреса доверенного прокси. Имя резолвится не чаще раза в минуту
+// и с коротким таймаутом: раньше DNS-запрос шёл в каждом запросе /api/auth/* и вход
+// ждал ~4 с, пока Docker DNS не ответит про незапущенный caddy (профиль public).
+// Пустой ответ кэшируется тот же срок — прокси, поднятый позже, будет подхвачен.
+const trustedProxyTTL = time.Minute
+
+type trustedProxyIPs struct {
+	host string
+	mu   sync.Mutex
+	list []net.IP
+	at   time.Time
+}
+
+func (t *trustedProxyIPs) ips() []net.IP {
+	if t.host == "" {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.at.IsZero() && time.Since(t.at) < trustedProxyTTL {
+		return t.list
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	addrs, err := net.DefaultResolver.LookupIP(ctx, "ip", t.host)
+	if err != nil {
+		addrs = nil // прокси не запущен — forwarded-заголовку просто не доверяем
+	}
+	t.list, t.at = addrs, time.Now()
+	return t.list
 }

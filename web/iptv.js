@@ -120,27 +120,19 @@
     loading: false
   };
 
-  var view, grid, groupsEl, emptyEl, searchEl, refreshEl, adminOpenEl, closeEl;
+  var view, grid, groupsEl, emptyEl, searchEl, refreshEl, adminOpenEl;
   var playerWrap, videoEl, playBtn, logoEl, nameEl, nowEl, volEl, muteBtn, noteEl;
   var epgEl, epgTitleEl, epgListEl, adminEl, adminListEl, formEl;
 
-  // ---- Раздел целиком ----
+  // ---- Страница целиком ----
+  // IPTV — отдельная страница (/iptv.html): каналы грузятся сразу при открытии,
+  // «закрытие» раздела сведено к остановке потока (кнопка Back ТВ-пульта — tv.js).
 
-  function isOpen() { return view && !view.hidden; }
-
-  function open() {
-    if (!view) return;
-    view.hidden = false;
-    document.body.classList.add('iptv-on');
-    if (!state.channels.length) loadChannels();
-    focusFirst();
-  }
+  function isOpen() { return !!state.chan; }
 
   function close() {
     stop();
     hidePanels();
-    if (view) view.hidden = true;
-    document.body.classList.remove('iptv-on');
   }
 
   function focusFirst() {
@@ -226,6 +218,7 @@
     state.channels.forEach(function (ch) {
       grid.appendChild(channelCard(ch));
     });
+    focusFirst();
   }
 
   function channelCard(ch) {
@@ -646,7 +639,7 @@
       .catch(function () { /* гость — управление скрыто */ });
   }
 
-  // ---- Локализация подсказок (сам текст в HTML переводит app.js) ----
+  // ---- Локализация подсказок (текст в HTML переводит общий applyLang из shared.js) ----
 
   function applyLang() {
     if (searchEl) searchEl.placeholder = t('search');
@@ -668,7 +661,6 @@
     searchEl = $('iptv-search');
     refreshEl = $('iptv-refresh');
     adminOpenEl = $('iptv-admin-open');
-    closeEl = $('iptv-close');
     playerWrap = $('iptv-player-wrap');
     videoEl = $('iptv-player');
     playBtn = $('iptv-play');
@@ -685,9 +677,6 @@
     adminListEl = $('iptv-admin-list');
     formEl = $('iptv-form');
 
-    var openBtn = $('iptv-open');
-    if (openBtn) openBtn.addEventListener('click', function () { isOpen() ? close() : open(); });
-    if (closeEl) closeEl.addEventListener('click', close);
     if (refreshEl) {
       refreshEl.addEventListener('click', function () {
         state.channels = [];
@@ -749,29 +738,18 @@
     if (adminClose) adminClose.addEventListener('click', function () { adminEl.hidden = true; });
     if (formEl) formEl.addEventListener('submit', submitPlaylist);
 
-    // ТВ-пульт жмёт #ctrl-play (кнопка плеера фильмов) — в IPTV перехватываем в capture-фазе.
-    var ctrlPlay = $('ctrl-play');
-    if (ctrlPlay) {
-      ctrlPlay.addEventListener('click', function (e) {
-        if (state.chan) {
-          e.stopPropagation();
-          togglePlay();
-        }
-      }, true);
-    }
-
     checkAdmin();
     applyLang();
     document.addEventListener('vv:lang', applyLang);
+    loadChannels();
   }
 
   window.VideoViewerIPTV = {
     isOpen: isOpen,
-    open: open,
     close: close,
     play: play,
     stop: stop,
-    version: 1
+    version: 2
   };
 
   if (document.readyState === 'loading') {

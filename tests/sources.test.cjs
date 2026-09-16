@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const app = fs.readFileSync(path.join(__dirname, '../web/app.js'), 'utf8');
+const app = fs.readFileSync(path.join(__dirname, '../web/film.js'), 'utf8');
 const source = app.slice(app.indexOf('let sourcesRequest = null;'), app.indexOf('function updateSourceLabels'));
 
 function setup() {

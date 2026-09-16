@@ -2,13 +2,15 @@
 
 /* TV-режим (Android TV / пульт): включается при ?tv=1 (нативная обёртка), localStorage
  * vv_tv=1 или маркере VVTV/1.0 в user-agent. D-pad двигает фокус, Enter/OK — клик,
- * Back — window.__vvBack(). Работает аддитивно: обычный браузер (без tv=1) не затронут,
- * логика app.js (перемотка ←/→, Escape) не ломается. */
+ * Back — window.__vvBack(): закрыть оверлей, иначе шаг назад по истории.
+ * Сайт многостраничный (каталог → фильм → просмотр), поэтому «назад» — переход
+ * на предыдущую страницу, а выход из приложения — только из каталога. */
 (function () {
   'use strict';
   if (typeof window === 'undefined') return;
 
-  var MODALS = ['#modal', '#auth-modal', '#tl-dialog'];
+  // Оверлеи-панели: открылись — фокус внутрь, Back — закрыть.
+  var MODALS = ['#iptv-epg', '#iptv-admin'];
 
   // ---- Детект TV-режима --------------------------------------------------
   function detectedByUrl() {
@@ -177,24 +179,12 @@
       if (card && isVisible(card)) return card;
       var cont = document.querySelector('.continue .continue-card');
       if (cont && isVisible(cont)) return cont;
-      var any = document.querySelector('.card, .section-btn, .chip');
+      var any = document.querySelector('.card, .section-btn, .chip, .ep-btn, .resume-btn, .watch-btn');
       return (any && isVisible(any)) ? any : null;
     }
-    if (container.id === 'modal') {
-      var m = $('#watch-btn', container);
-      if (m && !m.hidden && isVisible(m)) return m;
-      var rb = $('#resume-btn', container);
-      if (rb && !rb.hidden && isVisible(rb)) return rb;
-      var cl = $('#modal-close', container);
-      if (cl && isVisible(cl)) return cl;
-    } else if (container.id === 'auth-modal') {
-      var u = $('#auth-username', container);
-      if (u) return u;
-    } else if (container.id === 'tl-dialog') {
-      var c2 = $('#tl-close', container);
-      if (c2 && isVisible(c2)) return c2;
-      var e1 = $('.ep-btn', container);
-      if (e1) return e1;
+    if (container.id === 'iptv-admin') {
+      var ab = $('#iptv-f-name', container);
+      if (ab) return ab;
     }
     var b = $('button, .close', container);
     return (b && isVisible(b)) ? b : null;
@@ -260,7 +250,7 @@
 
     var pOpen = playerOpen();
 
-    // Видео играет: ←/→ = перемотка (её делает app.js), если фокус не в панели.
+    // Видео играет: ←/→ = перемотка (её делает watch.js), если фокус не в панели.
     if (pOpen && dir && (dir === 'left' || dir === 'right')) {
       if (!inControls(t)) return; // перемотка
       e.preventDefault(); e.stopPropagation();
@@ -291,7 +281,7 @@
     moveFocus(dir, t);
   }
 
-  // ---- Реакция на открытие/закрытие модалок и плеера --------------------
+  // ---- Реакция на открытие/закрытие оверлеев и плеера --------------------
   function onDomChange() {
     var mOpen = !!topModal();
     var pOpen = playerOpen();
@@ -300,7 +290,7 @@
       var t = defaultTarget(modal, 'down');
       if (t) focusEl(t);
     } else if (!mOpen && wasModalOpen) {
-      // Вернуться к контенту за модалкой (если элемент ещё жив).
+      // Вернуться к контенту за оверлеем (если элемент ещё жив).
       if (tvFocus && isVisible(tvFocus)) {
         focusEl(tvFocus);
       } else {
@@ -334,21 +324,22 @@
         if (document.exitFullscreen) document.exitFullscreen();
         return 'consumed';
       }
-      // Раздел IPTV (каналы/плеер канала) закрывается своей кнопкой: сначала
-      // гасим поток, потом прячем раздел и возвращаемся в каталог.
+      // Канал IPTV играет — сначала гасим поток (остаёмся на странице каналов).
       if (window.VideoViewerIPTV && window.VideoViewerIPTV.isOpen()) {
         window.VideoViewerIPTV.close();
         return 'consumed';
       }
+      // Открытая панель (телепрограмма/плейлисты) закрывается своей кнопкой ×.
       var m = topModal();
       if (m) {
-        if (m.id === 'modal') {
-          // app.js закрывает плеер/модалку по Escape на document.
-          document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-        } else {
-          var c = $('.close', m);
-          if (c && isVisible(c)) c.click(); else m.setAttribute('hidden', '');
-        }
+        var c = $('.close', m);
+        if (c && isVisible(c)) c.click(); else m.setAttribute('hidden', '');
+        return 'consumed';
+      }
+      // Страницы фильма/просмотра/IPTV/входа — шаг назад; выход из приложения — только из каталога.
+      if ((document.body.getAttribute('data-page') || 'catalog') !== 'catalog') {
+        if (window.VV && window.VV.tvBack) window.VV.tvBack();
+        else window.history.back();
         return 'consumed';
       }
     } catch (e) { /* ignore */ }

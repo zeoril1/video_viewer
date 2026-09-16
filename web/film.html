@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Фильм — Video Viewer</title>
+  <link rel="stylesheet" href="style.css?v=21" />
+  <link rel="stylesheet" href="tv.css?v=1" />
+</head>
+<body data-page="film">
+  <header class="topbar">
+    <a class="logo" id="back-link" href="/">🎬 Video Viewer</a>
+    <div class="lang-switch" role="group" aria-label="Язык / Language">
+      <button id="lang-ru" class="lang-btn" data-lang="ru" type="button">RU</button>
+      <button id="lang-en" class="lang-btn" data-lang="en" type="button">EN</button>
+    </div>
+    <div class="user-area" id="user-area" hidden>
+      <a id="admin-link" class="auth-btn" href="/admin.html" hidden>🛠 Админ</a>
+      <span id="user-name" class="user-name"></span>
+      <button id="auth-logout" class="auth-btn" type="button">Выйти</button>
+    </div>
+    <a id="iptv-link" class="auth-btn" href="/iptv.html" title="IPTV">📺 IPTV</a>
+    <a id="auth-open" class="auth-btn auth-btn-primary" href="/login.html" hidden>Войти</a>
+  </header>
+
+  <main class="page">
+    <div class="page-card">
+      <div class="modal-head">
+        <h2 id="film-title"></h2>
+        <div class="modal-actions">
+          <button id="resume-btn" class="resume-btn" type="button" hidden>▶ Продолжить</button>
+          <button id="watch-btn" class="resume-btn" type="button" hidden>▶ Смотреть</button>
+          <a class="close" href="/" aria-label="Закрыть">&times;</a>
+        </div>
+      </div>
+
+      <div id="details" class="details" hidden>
+        <div class="details-body">
+          <img id="details-poster" class="details-poster" alt="" />
+          <div class="details-info">
+            <h3 id="details-title" class="details-title"></h3>
+            <div id="details-rating" class="details-rating" title="IMDB / TMDB"></div>
+            <div id="details-subtitle" class="details-subtitle"></div>
+            <div id="details-meta" class="details-meta"></div>
+            <div id="details-director" class="details-line"></div>
+            <div id="details-actors" class="details-line"></div>
+            <p id="details-plot" class="details-plot"></p>
+            <p id="details-note" class="details-note">К этому фильму пока не привязана магнет-ссылка — стриминг недоступен. Данные получены из IMDb.</p>
+          </div>
+        </div>
+      </div>
+
+      <div id="sources" class="sources" hidden>
+        <h3 id="sources-title" class="sources-title"></h3>
+        <div id="sources-season-wrap" class="src-group" hidden>
+          <div class="src-group-label" data-i18n="seasonLabel">Сезон</div>
+          <div id="sources-season" class="src-chips"></div>
+          <p id="sources-season-note" class="tracks-note" hidden></p>
+        </div>
+        <div id="sources-episodes-wrap" class="src-group" hidden>
+          <div class="src-group-label" data-i18n="episodeLabel">Серия</div>
+          <div id="sources-episodes" class="ep-list"></div>
+          <p id="sources-episodes-note" class="tracks-note" hidden></p>
+        </div>
+        <div id="sources-rel-wrap" class="src-group" hidden>
+          <div class="src-group-label" data-i18n="voicesLabel">Озвучки</div>
+          <div id="sources-rel" class="src-chips"></div>
+          <p id="sources-rel-note" class="tracks-note" hidden></p>
+        </div>
+        <p id="sources-empty" class="sources-empty" hidden></p>
+      </div>
+
+      <!-- Плеер: сериалы играются прямо здесь (те же id, что в watch.html). -->
+      <div class="player-wrap" id="player-wrap" hidden>
+        <video id="player" playsinline></video>
+        <div id="ctrl-mini" class="ctrl-mini"><div id="ctrl-mini-fill"></div></div>
+        <div id="player-controls" class="player-controls">
+          <button id="ctrl-play" class="ctrl-btn" type="button" aria-label="Play/Pause">▶</button>
+          <button id="ctrl-prev" class="ctrl-btn ctrl-ep" type="button" title="Предыдущая серия" data-i18n-title="prevEpisode">⏮</button>
+          <button id="ctrl-next" class="ctrl-btn ctrl-ep" type="button" title="Следующая серия" data-i18n-title="nextEpisode">⏭</button>
+          <button id="ctrl-seek-b" class="ctrl-btn ctrl-seek" type="button" title="Назад 5 секунд" aria-label="Назад 5 секунд">−5</button>
+          <div id="ctrl-bar" class="ctrl-bar" role="slider" aria-label="Progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <div id="ctrl-buffered" class="ctrl-buffered"></div>
+            <div id="ctrl-position" class="ctrl-position"></div>
+            <div id="ctrl-thumb" class="ctrl-thumb"></div>
+          </div>
+          <button id="ctrl-seek-f" class="ctrl-btn ctrl-seek" type="button" title="Вперёд 5 секунд" aria-label="Вперёд 5 секунд">+5</button>
+          <span id="ctrl-time" class="ctrl-time">0:00 / 0:00</span>
+          <div id="ctrl-quality" class="ctrl-quality" role="group" aria-label="Качество">
+            <button data-quality="source" class="q-btn active" type="button">SRC</button>
+            <button data-quality="2160" class="q-btn" type="button">4K</button>
+            <button data-quality="1080" class="q-btn" type="button">1080</button>
+            <button data-quality="720" class="q-btn" type="button">720</button>
+            <button data-quality="480" class="q-btn" type="button">480</button>
+          </div>
+          <button id="ctrl-mute" class="ctrl-btn" type="button" aria-label="Mute">🔊</button>
+          <input id="ctrl-volume" class="ctrl-volume" type="range" min="0" max="1" step="0.05" value="1" aria-label="Volume" />
+          <button id="ctrl-fullscreen" class="ctrl-btn" type="button" aria-label="Fullscreen">⛶</button>
+          <button id="ctrl-debug" class="ctrl-btn" type="button" aria-label="Logs" title="Логи воспроизведения">🛠</button>
+        </div>
+      </div>
+
+      <div id="tracks" class="tracks" hidden>
+        <h3 id="tracks-title" class="tracks-title"></h3>
+        <div id="tracks-list" class="tracks-list"></div>
+      </div>
+
+      <div id="subs" class="tracks" hidden>
+        <h3 id="subs-title" class="tracks-title"></h3>
+        <div id="subs-list" class="tracks-list"></div>
+      </div>
+
+      <p id="player-error" class="player-error" hidden></p>
+      <p id="film-note" class="player-error" hidden></p>
+      <pre id="player-debug" class="player-debug" hidden></pre>
+    </div>
+  </main>
+
+  <script src="vendor/hls.min.js"></script>
+  <script src="shared.js?v=2"></script>
+  <script src="series.js?v=2"></script>
+  <script src="player.js?v=1"></script>
+  <script src="film.js?v=2"></script>
+  <script src="tv.js?v=2"></script>
+</body>
+</html>
