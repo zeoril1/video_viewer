@@ -218,8 +218,9 @@ function cardMetaHtml(it) {
   const genres = (it.genres || []).map(dispGenre).join(', ');
   const line3 = [countries, genres].filter(Boolean).join(' · ');
 
-  const line4 = it.director ? t('directorLabel') + ': ' + escapeHtml(it.director) : '';
-  const actors = (it.actors || []).join(', ');
+  const director = dispDirector(it);
+  const line4 = director ? t('directorLabel') + ': ' + escapeHtml(director) : '';
+  const actors = dispActors(it).join(', ');
   const line5 = actors ? t('actorsLabel') + ': ' + escapeHtml(actors) : '';
 
   const tags = it.seasons
@@ -245,7 +246,8 @@ function hasFilmExtras(f) {
   return !!(f && (f.director || f.actors || f.movie_length || (f.countries && f.countries.length)));
 }
 
-// Сервер обогащает из Wikidata в фоне — при пустых extras переспрашиваем (данные за 1–3 с).
+// Сервер обогащает из Wikidata в фоне — при пустых extras переспрашиваем (данные за 1–3 с);
+// так же переспрашиваем, когда данные есть, но имена ещё не переведены (peoplePending).
 async function fetchCardEnrich(el, id, retries) {
   try {
     const r = await fetch('/api/films/' + encodeURIComponent(id));
@@ -254,7 +256,7 @@ async function fetchCardEnrich(el, id, retries) {
     if (hasFilmExtras(f)) {
       const meta = el.querySelector('.meta');
       if (meta) meta.innerHTML = cardMetaHtml(f);
-      return;
+      if (!peoplePending(f)) return;
     }
   } catch (e) {
     return;
@@ -264,7 +266,8 @@ async function fetchCardEnrich(el, id, retries) {
 
 function enrichCardWhenVisible(it, card) {
   if (!it.imdb_id) return;
-  if (it.director || it.actors || it.movie_length || (it.countries && it.countries.length)) return;
+  const filled = !!(it.director || it.actors || it.movie_length || (it.countries && it.countries.length));
+  if (filled && !peoplePending(it)) return;
   if (enrichedFetched.has(it.imdb_id)) return;
 
   if (!enrichObserver) {

@@ -40,8 +40,13 @@ type CatalogItem struct {
 	Countries   []string `json:"countries,omitempty"`
 	Director    string   `json:"director,omitempty"`
 	Actors      []string `json:"actors,omitempty"`
-	Source      string   `json:"source"` // "imdb", "tmdb" или "magnet"
-	HasMagnet   bool     `json:"has_magnet"`
+	// DirectorRU/ActorsRU — имена на русском из таблицы переводов person_names;
+	// PeoplePending — перевода ещё нет, его добирает фоновая задача из TMDB.
+	DirectorRU    string   `json:"director_ru,omitempty"`
+	ActorsRU      []string `json:"actors_ru,omitempty"`
+	PeoplePending bool     `json:"people_pending,omitempty"`
+	Source        string   `json:"source"` // "imdb", "tmdb" или "magnet"
+	HasMagnet     bool     `json:"has_magnet"`
 }
 
 // catalogEntry — внутреннее представление записи с магнет-ссылкой.
@@ -101,6 +106,8 @@ func (s *catalogService) All(ctx context.Context) []catalogEntry {
 		if err != nil {
 			log.Printf("catalog: list films: %v", err)
 		} else {
+			// Имена режиссёра/актёров — одним запросом на весь каталог (таблица person_names).
+			localizeFilmPeople(ctx, s.db, films)
 			for _, f := range films {
 				out = append(out, dbFilmToEntry(f))
 			}
@@ -525,6 +532,7 @@ func (s *catalogService) Popular(ctx context.Context) []catalogEntry {
 		log.Printf("catalog: list popular: %v", err)
 		return out
 	}
+	localizeFilmPeople(ctx, s.db, films)
 	for _, f := range films {
 		out = append(out, dbFilmToEntry(f))
 	}
@@ -542,6 +550,7 @@ func (s *catalogService) Best(ctx context.Context, series bool) []catalogEntry {
 		log.Printf("catalog: list top rated (series=%v): %v", series, err)
 		return out
 	}
+	localizeFilmPeople(ctx, s.db, films)
 	for _, f := range films {
 		out = append(out, dbFilmToEntry(f))
 	}
@@ -559,6 +568,7 @@ func (s *catalogService) PopularKind(ctx context.Context, series bool) []catalog
 		log.Printf("catalog: list popular (series=%v): %v", series, err)
 		return out
 	}
+	localizeFilmPeople(ctx, s.db, films)
 	for _, f := range films {
 		out = append(out, dbFilmToEntry(f))
 	}
@@ -667,28 +677,31 @@ func dbFilmToEntry(f db.Film) catalogEntry {
 	}
 	return catalogEntry{
 		item: CatalogItem{
-			ID:          f.IMDBID,
-			Title:       f.Title,
-			TitleRU:     f.TitleRU,
-			Kind:        f.Kind,
-			Poster:      f.PosterURL,
-			Category:    source,
-			Size:        f.Size,
-			Year:        f.Year,
-			ReleaseDate: f.ReleaseDate,
-			Rating:      f.Rating,
-			Plot:        f.Plot,
-			PlotRU:      f.PlotRU,
-			Genres:      f.Genres,
-			IMDbID:      f.IMDBID,
-			TMDBID:      f.TMDBID,
-			Seasons:     f.Seasons,
-			MovieLength: f.MovieLength,
-			Countries:   f.Countries,
-			Director:    f.Director,
-			Actors:      f.Actors,
-			RatingTMDB:  f.RatingTMDB,
-			Source:      source,
+			ID:            f.IMDBID,
+			Title:         f.Title,
+			TitleRU:       f.TitleRU,
+			Kind:          f.Kind,
+			Poster:        f.PosterURL,
+			Category:      source,
+			Size:          f.Size,
+			Year:          f.Year,
+			ReleaseDate:   f.ReleaseDate,
+			Rating:        f.Rating,
+			Plot:          f.Plot,
+			PlotRU:        f.PlotRU,
+			Genres:        f.Genres,
+			IMDbID:        f.IMDBID,
+			TMDBID:        f.TMDBID,
+			Seasons:       f.Seasons,
+			MovieLength:   f.MovieLength,
+			Countries:     f.Countries,
+			Director:      f.Director,
+			Actors:        f.Actors,
+			DirectorRU:    f.DirectorRU,
+			ActorsRU:      f.ActorsRU,
+			PeoplePending: f.PeoplePending,
+			RatingTMDB:    f.RatingTMDB,
+			Source:        source,
 		},
 	}
 }

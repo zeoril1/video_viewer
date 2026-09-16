@@ -62,6 +62,12 @@ func handleFilmByID(cfg Config, id string) http.HandlerFunc {
 			maybeRefreshFilmDataBg(cfg, id)
 		}
 
+		// Имена режиссёра/актёров — на языке сайта (переводы из таблицы person_names); если
+		// перевода ещё нет, человек помечается как people_pending и его добьёт фоновая задача.
+		list := []db.Film{film}
+		localizeFilmPeople(r.Context(), cfg.DB, list)
+		film = list[0]
+
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		_ = json.NewEncoder(w).Encode(film)
 	}

@@ -263,6 +263,22 @@ function dispTitleAlt(it) {
   return it.title_ru || '';
 }
 
+// Режиссёр и актёры на языке сайта: русские имена приходят отдельными полями director_ru/
+// actors_ru (таблица person_names на сервере), director/actors — исходное (английское) написание.
+function dispDirector(it) {
+  if (lang === 'ru' && it.director_ru) return it.director_ru;
+  return it.director || '';
+}
+function dispActors(it) {
+  if (lang === 'ru' && it.actors_ru && it.actors_ru.length) return it.actors_ru;
+  return it.actors || [];
+}
+
+// Имена ещё не переведены: сервер доберёт их из TMDB в фоне за 1–3 с — стоит переспросить карточку.
+function peoplePending(it) {
+  return lang === 'ru' && !!(it && it.people_pending);
+}
+
 // fmtRating — рейтинг в формате «IMDB/TMDB»: 6.7/8.2.
 function fmtRating(it) {
   const f = (v) => (v ? Number(v).toFixed(1) : '');

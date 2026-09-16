@@ -586,8 +586,9 @@ function showDetails(it) {
   const genres = (it.genres || []).map(dispGenre).join(', ');
   detailsMeta.textContent = [countries, genres].filter(Boolean).join(' · ');
 
-  detailsDirector.textContent = it.director ? t('directorLabel') + ': ' + it.director : '';
-  const actors = (it.actors || []).join(', ');
+  const director = dispDirector(it);
+  detailsDirector.textContent = director ? t('directorLabel') + ': ' + director : '';
+  const actors = dispActors(it).join(', ');
   detailsActors.textContent = actors ? t('actorsLabel') + ': ' + actors : '';
 
   detailsPlot.textContent = dispPlot(it) || t('noPlot');
@@ -614,6 +615,10 @@ async function fetchFilmDetails(id, retries) {
       updateResumeBtn(currentItem);
       setupSeriesUi();
       if (!hasFilmExtras(f) && retries > 0) {
+        setTimeout(() => fetchFilmDetails(id, retries - 1), 3000);
+      } else if (peoplePending(f) && retries > 0) {
+        // Имена (режиссёр/актёры) ещё не переведены — фоновая задача сервера доберёт их
+        // из TMDB за пару секунд, после чего карточка покажет их по-русски.
         setTimeout(() => fetchFilmDetails(id, retries - 1), 3000);
       }
     }

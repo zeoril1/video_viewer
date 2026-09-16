@@ -121,6 +121,12 @@ type Film struct {
 	Countries       []string `json:"countries,omitempty"`
 	Director        string   `json:"director,omitempty"`
 	Actors          []string `json:"actors,omitempty"`
+	// DirectorRU/ActorsRU — имена на русском из таблицы person_names (пусто, если перевода нет:
+	// тогда показывается исходное написание). PeoplePending — перевода ещё нет и его добирает
+	// фоновая задача из TMDB (клиенту стоит переспросить карточку через пару секунд).
+	DirectorRU    string   `json:"director_ru,omitempty"`
+	ActorsRU      []string `json:"actors_ru,omitempty"`
+	PeoplePending bool     `json:"people_pending,omitempty"`
 	// RatingUpdatedAt — когда последний раз обновлялся рейтинг (заполняется только джобой обновления рейтингов; в списках — нулевое).
 	RatingUpdatedAt time.Time `json:"-"`
 	// TMDBNotFound — совпадение на TMDB не найдено (отдельная таблица на админ-странице, из «пустых полей» исключается).
@@ -187,6 +193,10 @@ func (r *Repo) EnsureSchema(ctx context.Context) error {
 		return err
 	}
 	if err := r.ensureSourcesSchema(ctx); err != nil {
+		return err
+	}
+	// Таблица переводов имён (режиссёр/актёры) для показа карточки на языке сайта.
+	if err := r.ensurePeopleSchema(ctx); err != nil {
 		return err
 	}
 	// Таблицы авторизации (users/sessions) и истории просмотра.
