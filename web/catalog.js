@@ -140,14 +140,42 @@ function render() {
 
 // Карточка — ссылка на страницу фильма: ?tv=1 и обычный клик ведут себя одинаково,
 // состояние (kind/tmdb_id/…) передаём через sessionStorage (см. VV.storeItem).
+
+// Постер: у TMDB указываем несколько размеров (srcset) — браузер скачает самый лёгкий
+// подходящий, поэтому ряд карточек заполняется картинками в разы быстрее (w500 ≈ 80 КБ на
+// карточку, w342 ≈ 35 КБ). Чужие адреса (Кинопоиск и т. п.) отдаём как есть.
+const TMDB_IMG = 'https://image.tmdb.org/t/p/';
+
+function posterImgHtml(url) {
+  if (!url) return '<div class="placeholder">🎬</div>';
+  let attrs;
+  if (url.indexOf(TMDB_IMG) === 0) {
+    const path = url.slice(TMDB_IMG.length).split('/').slice(1).join('/');
+    const at = (w) => TMDB_IMG + w + '/' + path;
+    attrs = ` src="${escapeHtml(at('w342'))}"` +
+      ` srcset="${escapeHtml(at('w200'))} 200w, ${escapeHtml(at('w342'))} 342w, ${escapeHtml(at('w500'))} 500w"` +
+      ` sizes="(max-width: 700px) 50vw, (max-width: 1100px) 33vw, 260px"`;
+  } else {
+    attrs = ` src="${escapeHtml(url)}"`;
+  }
+  return `<img${attrs} alt="" loading="lazy" decoding="async" />`;
+}
+
+// Постер проявляется по факту загрузки: пока картинки нет, видна градиентная заглушка
+// (раньше был чёрный прямоугольник — карточка выглядела «прогруженной наполовину»).
+function markPosterLoaded(scope) {
+  const img = scope.querySelector('.thumb img');
+  if (!img) return;
+  if (img.complete && img.naturalWidth > 0) img.classList.add('loaded');
+  else img.addEventListener('load', () => img.classList.add('loaded'), { once: true });
+}
+
 function makeCard(it) {
   const card = document.createElement('a');
   card.className = 'card';
   card.href = filmUrl(it);
 
-  const thumb = it.poster
-    ? `<img src="${escapeHtml(it.poster)}" alt="" loading="lazy" />`
-    : `<div class="placeholder">🎬</div>`;
+  const thumb = posterImgHtml(it.poster);
 
   card.innerHTML = `
     <div class="thumb">
@@ -156,6 +184,7 @@ function makeCard(it) {
     </div>
     <div class="meta">${cardMetaHtml(it)}</div>
   `;
+  markPosterLoaded(card);
 
   card.addEventListener('click', () => storeItem(it));
 
@@ -255,7 +284,9 @@ async function fetchCardEnrich(el, id, retries) {
     const f = await r.json();
     if (hasFilmExtras(f)) {
       const meta = el.querySelector('.meta');
-      if (meta) meta.innerHTML = cardMetaHtml(f);
+      const html = cardMetaHtml(f);
+      // Перерисовываем только если текст реально изменился (иначе карточка мигает без причины).
+      if (meta && meta.innerHTML !== html) meta.innerHTML = html;
       if (!peoplePending(f)) return;
     }
   } catch (e) {
@@ -299,9 +330,7 @@ function renderContinue() {
   watchHistory.forEach((e) => {
     const card = document.createElement('div');
     card.className = 'continue-card';
-    const poster = e.poster_url
-      ? `<img src="${escapeHtml(e.poster_url)}" alt="" loading="lazy" />`
-      : `<div class="placeholder">🎬</div>`;
+    const poster = posterImgHtml(e.poster_url);
     const sub = isSeriesKind(e.kind) && e.season > 0
       ? t('seasonLabel') + ' ' + e.season + (e.episode > 0 ? ' · ' + t('episodeLabel') + ' ' + e.episode : '')
       : '';
@@ -316,6 +345,7 @@ function renderContinue() {
       </div>
       <button class="continue-remove" type="button" title="${t('removeFromHistory')}">✕</button>
     `;
+    markPosterLoaded(card);
     card.addEventListener('click', (ev) => {
       if (ev.target.closest('.continue-remove')) {
         removeHistoryEntry(e.film_id);
@@ -342,6 +372,7 @@ function resumeItem(e) {
     const p = new URLSearchParams({ id: e.film_id });
     if (e.season) p.set('season', String(e.season));
     if (e.episode) p.set('ep', String(e.episode));
+    if (e.voice) p.set('voice', e.voice);
     p.set('magnet', e.magnet);
     if (file >= 0) p.set('file', String(file));
     if (pos) p.set('pos', String(Math.round(pos)));
@@ -350,7 +381,7 @@ function resumeItem(e) {
     return;
   }
   go(watchUrl(e.film_id, {
-    magnet: e.magnet, file: file, season: e.season || 0, ep: e.episode || 0, pos: pos,
+    magnet: e.magnet, file: file, season: e.season || 0, ep: e.episode || 0, pos: pos, voice: e.voice || '',
   }));
 }
 

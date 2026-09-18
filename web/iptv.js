@@ -27,6 +27,7 @@
       off: 'Выключить',
       disabled: 'выключен',
       channels: 'каналов',
+      entries: 'записей в плейлисте',
       streamError: 'Не удалось открыть канал: ',
       remuxing: 'Перепаковываю поток на сервере (звук провайдера не поддерживается браузером)…',
       noHls: 'Этот браузер не умеет играть HLS-потоки.',
@@ -54,6 +55,7 @@
       off: 'Disable',
       disabled: 'off',
       channels: 'channels',
+      entries: 'playlist entries',
       streamError: 'Cannot open channel: ',
       remuxing: 'Repacking the stream on the server (browser cannot decode the provider audio)…',
       noHls: 'This browser cannot play HLS streams.',
@@ -120,6 +122,18 @@
     loading: false
   };
 
+  // Время берём у сервера (в ответе приходит now): системные часы машины
+  // могут уйти на сутки и больше, и тогда «сейчас» в программе и ход передачи
+  // в карточке сдвинулись бы вместе с ними.
+  var clockOffset = 0;
+
+  function serverNow() { return Date.now() + clockOffset; }
+
+  function setServerTime(iso) {
+    var t = Date.parse(iso);
+    if (!isNaN(t)) clockOffset = t - Date.now();
+  }
+
   var view, grid, groupsEl, emptyEl, searchEl, refreshEl, adminOpenEl;
   var playerWrap, videoEl, playBtn, logoEl, nameEl, nowEl, volEl, muteBtn, noteEl;
   var epgEl, epgTitleEl, epgListEl, adminEl, adminListEl, formEl;
@@ -162,6 +176,7 @@
     fetch('/api/iptv/channels?' + q.join('&'))
       .then(function (r) { return r.json(); })
       .then(function (data) {
+        setServerTime(data.now);
         state.channels = data.channels || [];
         state.groups = data.groups || [];
         state.playlists = data.playlists || [];
@@ -289,7 +304,7 @@
   function progressPct(p) {
     var s = Date.parse(p.start), e = Date.parse(p.stop);
     if (!(s && e && e > s)) return 0;
-    return Math.max(0, Math.min(100, ((Date.now() - s) / (e - s)) * 100));
+    return Math.max(0, Math.min(100, ((serverNow() - s) / (e - s)) * 100));
   }
 
   function hhmm(iso) {
@@ -467,6 +482,7 @@
     fetch('/api/iptv/epg?channel=' + encodeURIComponent(ch.id) + '&hours=12')
       .then(function (r) { return r.json(); })
       .then(function (data) {
+        setServerTime(data.now);
         var items = data.programs || [];
         if (!epgListEl) return;
         epgListEl.innerHTML = '';
@@ -479,7 +495,7 @@
           row.className = 'iptv-epg-item';
           var now = false;
           try {
-            now = Date.parse(p.start) <= Date.now() && Date.parse(p.stop) > Date.now();
+            now = Date.parse(p.start) <= serverNow() && Date.parse(p.stop) > serverNow();
           } catch (e) { /* noop */ }
           if (now) row.className += ' now';
           var time = document.createElement('span');
@@ -529,8 +545,12 @@
           row.className = 'iptv-admin-row' + (pl.enabled === false ? ' off' : '');
           var name = document.createElement('span');
           name.className = 'iptv-admin-name';
-          name.textContent = pl.name + ' · ' + (pl.channels || 0) + ' ' + t('channels') + (pl.has_epg ? ' · EPG' : '')
+          // Каналов без дублей (visible) в плейлисте обычно меньше, чем записей
+          // (channels): один канал идёт несколькими потоками — SD/HD/«Архив».
+          var n = pl.visible ? pl.visible : (pl.channels || 0);
+          name.textContent = pl.name + ' · ' + n + ' ' + t('channels') + (pl.has_epg ? ' · EPG' : '')
             + (pl.enabled === false ? ' · ' + t('disabled') : '');
+          if (pl.channels && n !== pl.channels) name.title = pl.channels + ' ' + t('entries');
           row.appendChild(name);
           if (pl.last_error) {
             var err = document.createElement('span');

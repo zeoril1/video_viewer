@@ -41,9 +41,9 @@ let wantEp = parseInt(filmParams.get('ep') || '0', 10) || 0;
 let wantVoice = filmParams.get('voice') || '';
 let wantPlay = filmParams.get('autoplay') === '1' || filmParams.get('play') === '1';
 // Продолжение просмотра: конкретная раздача/файл/позиция в адресе — играем её сразу.
-const startMagnet = filmParams.get('magnet') || '';
-const startFile = filmParams.get('file') !== null && filmParams.get('file') !== '' ? parseInt(filmParams.get('file'), 10) : -1;
-const startPos = parseFloat(filmParams.get('pos') || '0') || 0;
+let startMagnet = filmParams.get('magnet') || '';
+let startFile = filmParams.get('file') !== null && filmParams.get('file') !== '' ? parseInt(filmParams.get('file'), 10) : -1;
+let startPos = parseFloat(filmParams.get('pos') || '0') || 0;
 let seriesUiReady = false;
 
 let lastSourceItems = [];
@@ -104,8 +104,8 @@ async function loadSources(it, opts) {
   }
 
   // Сброс выбора — только при старте загрузки, не при перерисовках ниже.
-  selectedSeason = null;
-  selectedEpisode = null;
+  selectedSeason = PP.playing() ? PP.season() || wantSeason || null : wantSeason || null;
+  selectedEpisode = PP.playing() ? PP.episode() || wantEp || null : wantEp || null;
   // Ручной выбор озвучки/раздачи живёт в рамках одной карточки.
   for (const k in relPref) delete relPref[k];
   for (const k in voicePref) delete voicePref[k];
@@ -274,7 +274,7 @@ function renderSeasonChips(items, id) {
   applyWanted();
   const seasons = allKnownSeasons(id, items);
   const available = (k) => seasonReleaseSources(items, k).length > 0;
-  if (selectedSeason === null || !seasons.includes(selectedSeason) || !available(selectedSeason)) {
+  if (selectedSeason === null || !seasons.includes(selectedSeason)) {
     selectedSeason = seasons.find(available) || null;
   }
   // Сезоны показываем всегда (в том числе когда сезон один) — блок не прячем.
@@ -554,6 +554,7 @@ function updateResumeBtn(it) {
         season: entry.season || 0,
         ep: entry.episode || 0,
         pos: entry.position || 0,
+        voice: entry.voice || '',
       });
       return;
     }
@@ -563,6 +564,7 @@ function updateResumeBtn(it) {
       season: entry.season || 0,
       ep: entry.episode || 0,
       pos: entry.position || 0,
+      voice: entry.voice || '',
     }));
   };
 }
@@ -677,6 +679,7 @@ function onPlayerFiles(files, st) {
 // Плеер сменил серию/раздачу — обновляем выделение в сетке и адрес страницы,
 // чтобы F5 продолжил ту же серию (и с тем же ?autoplay=1).
 function onPlayerState(st) {
+  if (st.season && st.voice) voicePref[st.season] = st.voice;
   if (st.season) selectedSeason = st.season;
   if (st.episode) selectedEpisode = st.episode;
   if (isSeriesKind(currentItem && currentItem.kind)) {
@@ -740,7 +743,27 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
+function restoreWatchSelection() {
+  const entry = historyEntry(filmId);
+  if (!entry) return;
+  if (startMagnet === entry.magnet && startFile === entry.file) {
+    if (!filmParams.has('pos')) startPos = entry.position || 0;
+    if (!wantVoice) wantVoice = entry.voice || '';
+  }
+  const explicit = ['season', 'ep', 'magnet', 'file'].some((key) => filmParams.has(key));
+  if (explicit) return;
+  wantSeason = entry.season || 0;
+  wantEp = entry.episode || 0;
+  if (!wantVoice) wantVoice = entry.voice || '';
+  if (wantPlay && entry.magnet) {
+    startMagnet = entry.magnet;
+    startFile = typeof entry.file === 'number' ? entry.file : -1;
+    startPos = entry.position || 0;
+  }
+}
+
 function initFilmPage() {
+  restoreWatchSelection();
   if (!filmId) {
     filmTitleEl.textContent = t('empty');
     if (filmNote) {
@@ -790,5 +813,4 @@ onLang(() => {
 onAuth(() => updateResumeBtn(currentItem));
 
 applyLang();
-initAuth();
-initFilmPage();
+initAuth().then(initFilmPage);

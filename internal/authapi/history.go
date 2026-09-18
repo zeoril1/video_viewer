@@ -67,6 +67,7 @@ func (h *historyHandler) save(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
+		Voice    string  `json:"voice"`
 		FilmID   string  `json:"film_id"`
 		Magnet   string  `json:"magnet"`
 		File     int     `json:"file"`
@@ -91,6 +92,7 @@ func (h *historyHandler) save(w http.ResponseWriter, r *http.Request) {
 		body.Position = 0
 	}
 	if err := h.repo.SaveWatchProgress(r.Context(), u.ID, db.WatchProgress{
+		Voice:    body.Voice,
 		FilmID:   body.FilmID,
 		Magnet:   body.Magnet,
 		File:     body.File,

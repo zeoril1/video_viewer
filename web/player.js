@@ -63,6 +63,7 @@ const PP = (() => {
   let pendingCodecNote = false;
   const maxStreamRestarts = 3; // перезапуск после простоя ffmpeg (>90 с → 404 на сегмент)
   let streamRestarts = 0;
+  let selectedVoice = '';
   let autoVoice = '';          // выбранная озвучка: loadTracks включит её дорожку
   let lastTracksItems = [];
   let currentFile = -1;        // индекс файла (серии) в торренте; -1 — авто
@@ -97,6 +98,7 @@ const PP = (() => {
       file: currentFile,
       season: curSeason,
       episode: curEpisode,
+      voice: selectedVoice,
       playing: !!hlsPlayer && !playerWrap.hidden,
     };
   }
@@ -135,6 +137,7 @@ const PP = (() => {
       file: currentFile >= 0 ? currentFile : -1,
       season: sea,
       episode: num,
+      voice: selectedVoice,
       position: pos,
       duration: Math.round(totalDuration || 0),
     };
@@ -143,7 +146,13 @@ const PP = (() => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
       keepalive: !!beacon,
-    }).catch(() => {});
+    }).then((res) => {
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      rememberWatchProgress(body);
+    }).catch((err) => {
+      lastProgressSend = 0;
+      dbg('history: ' + err.message);
+    });
   }
 
   // Тёплый кеш (24 ч) для текущей раздачи — не чаще раза на (раздача, серия).
@@ -409,6 +418,13 @@ const PP = (() => {
       // Выбранная озвучка (autoVoice): включаем её дорожку, перезапуская поток.
       const av = autoVoice;
       autoVoice = '';
+      if (!selectedVoice) {
+        const activeTrack = items.find((tr) => tr.ordinal === currentTrack);
+        if (activeTrack) {
+          selectedVoice = titleVoices(activeTrack.title || '')[0] || activeTrack.title || trackButtonLabel(activeTrack);
+          notify();
+        }
+      }
       if (av && items.length > 1) {
         const vo = matchVoiceOrdinal(items, av);
         if (vo != null && vo !== currentTrack && currentPlay) {
@@ -495,8 +511,10 @@ const PP = (() => {
       btn.addEventListener('click', () => {
         document.querySelectorAll('.track-btn').forEach((b) => b.classList.remove('active'));
         btn.classList.add('active');
+        selectedVoice = titleVoices(tr.title || '')[0] || tr.title || label;
+        notify();
         // Смена дорожки сохраняет позицию, серию, качество и субтитры (ordinal аудио).
-        playHls(id, magnetSrc, currentFile, tr.ordinal, streamStart, currentQuality, currentSubs);
+        playHls(id, magnetSrc, currentFile, tr.ordinal, absTime(), currentQuality, currentSubs);
       });
       tracksList.appendChild(btn);
     });
@@ -580,6 +598,9 @@ const PP = (() => {
   // Запуск указанной серии текущей раздачи (prev/next, список серий, автопереход).
   function selectEpisode(index) {
     if (!currentPlay || currentFile === index) return;
+    maybeSaveProgress(true);
+    lastProgressSend = 0;
+    autoVoice = selectedVoice;
     currentFile = index;
     streamStart = 0;
     currentTrack = 0;
@@ -900,7 +921,7 @@ const PP = (() => {
   if (available) {
     window.addEventListener('pagehide', leave);
     window.addEventListener('beforeunload', () => {
-      if (hlsPlayer) stop();
+      if (hlsPlayer) { leave(); stop({ keepProgress: true }); }
     });
   }
 
@@ -933,6 +954,8 @@ const PP = (() => {
     if (!available) return false;
     const o = opts || {};
     if (!o.id || !o.magnet) return false;
+    if (currentPlay) maybeSaveProgress(true);
+    lastProgressSend = 0;
     currentPlay = { id: o.id, magnet: o.magnet };
     releaseTitle = o.release || '';
     h264FallbackDone = false;
@@ -942,7 +965,8 @@ const PP = (() => {
     lastFiles = [];
     curSeason = o.season || 0;
     curEpisode = o.ep || 0;
-    autoVoice = o.voice || '';
+    selectedVoice = o.voice || '';
+    autoVoice = selectedVoice;
     currentFile = (typeof o.file === 'number' && o.file >= 0) ? o.file : -1;
     durationFetch = { key: '', inflight: false };
     totalDuration = 0;

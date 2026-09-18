@@ -483,6 +483,31 @@ func (r *Repo) CountIPTVChannels(ctx context.Context, playlistID int64) (int, er
 	return n, err
 }
 
+// IPTVChannelCounts — число каналов БЕЗ дублей по каждому плейлисту. Дедупликация та же, что в
+// ListIPTVChannels, поэтому в панели плейлистов число совпадает с числом карточек на экране,
+// а playlist.channel_count — это число записей плейлиста (варианты SD/HD/«Архив» одного канала
+// считаются в нём отдельно).
+func (r *Repo) IPTVChannelCounts(ctx context.Context) (map[int64]int, error) {
+	rows, err := r.conn.QueryContext(ctx,
+		`SELECT playlist_id, count(DISTINCT `+channelKeyExpr+`) FROM iptv_channels GROUP BY playlist_id`)
+	if err != nil {
+		return nil, fmt.Errorf("число каналов по плейлистам: %w", err)
+	}
+	defer rows.Close()
+	out := map[int64]int{}
+	for rows.Next() {
+		var (
+			id int64
+			n  int
+		)
+		if err := rows.Scan(&id, &n); err != nil {
+			return nil, err
+		}
+		out[id] = n
+	}
+	return out, rows.Err()
+}
+
 // nameKeyExpr — ключ НАЗВАНИЯ в dedup_key: вторая часть ключа канала после «|» (см. iptv.ChannelKey);
 // без «|» ключом названия является весь dedup_key — так выглядит канал без tvg-id.
 const nameKeyExpr = `CASE WHEN position('|' IN dedup_key) > 0

@@ -266,7 +266,9 @@ main {
 .thumb {
   position: relative;
   aspect-ratio: 16 / 9;
-  background: #000;
+  /* До загрузки постера видна градиентная заглушка: чёрный прямоугольник выглядел
+     так, будто карточка прогрузилась только наполовину. */
+  background: linear-gradient(135deg, #1e2230, #171a23);
 }
 
 .thumb img {
@@ -274,6 +276,18 @@ main {
   height: 100%;
   object-fit: cover;
   display: block;
+}
+
+/* Постер проявляется по факту загрузки (класс .loaded ставит JS/страница каталога). */
+.grid .thumb img,
+.continue-list .thumb img {
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.grid .thumb img.loaded,
+.continue-list .thumb img.loaded {
+  opacity: 1;
 }
 
 .thumb .placeholder {

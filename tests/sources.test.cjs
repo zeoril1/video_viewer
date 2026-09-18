@@ -11,6 +11,7 @@ function setup() {
   const pending = [];
   const rendered = [];
   const ctx = vm.createContext({
+    PP: { playing: () => false }, wantSeason: 0, wantEp: 0,
     AbortController, Date, currentItem: { id: 'a' }, relPref: {}, voicePref: {}, filmSeasonEps: {}, seriesEpisodes: {},
     sourcesRelWrap: {}, sourcesEl: {}, sourcesEmpty: {}, sourcesTitle: {}, sourcesSeasonWrap: {}, sourcesAudioWrap: {}, sourcesEpisodesWrap: {},
     t: s => s, dbg() {}, syncWatchBtn() {}, sleep: async () => {},

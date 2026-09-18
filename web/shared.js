@@ -489,6 +489,12 @@ async function loadHistory() {
   authHooks.forEach((fn) => fn());
 }
 
+function rememberWatchProgress(progress) {
+  const previous = historyEntry(progress.film_id) || {};
+  watchHistory = [Object.assign({}, previous, progress), ...watchHistory.filter((x) => x.film_id !== progress.film_id)];
+  authHooks.forEach((fn) => fn());
+}
+
 function historyEntry(id) {
   if (!id) return null;
   return watchHistory.find((x) => x.film_id === id) || null;

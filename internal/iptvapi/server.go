@@ -169,7 +169,9 @@ func (s *Server) handleChannels(w http.ResponseWriter, r *http.Request) {
 			keys = append(keys, c.EPGKey)
 		}
 	}
-	now := time.Now()
+	// Время — сервисное (по внешним серверам, см. clock.go): системные часы
+	// могут уйти, и тогда «сейчас/далее» не совпало бы с программой.
+	now := s.now()
 	progs, err := s.cfg.DB.ListIPTVProgramsForKeys(ctx, keys, now.Add(-3*time.Hour), now.Add(24*time.Hour))
 	if err != nil {
 		log.Printf("iptv: программы каналов: %v", err)
@@ -201,19 +203,32 @@ func (s *Server) handleChannels(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type playlistView struct {
-		ID        int64  `json:"id"`
-		Name      string `json:"name"`
+		ID   int64  `json:"id"`
+		Name string `json:"name"`
+		// Channels — число ЗАПИСЕЙ плейлиста, Visible — каналов без дублей
+		// (совпадает со списком карточек): в M3U один канал идёт несколькими
+		// потоками (SD/HD/«Архив»), и по записям их 561, а каналов — 415.
 		Channels  int    `json:"channels"`
+		Visible   int    `json:"visible"`
 		Kind      string `json:"kind"`
 		HasEPG    bool   `json:"has_epg"`
 		LastSync  string `json:"last_sync,omitempty"`
 		LastError string `json:"last_error,omitempty"`
 	}
+	// Число каналов без дублей — одним запросом на все плейлисты.
+	counts, err := s.cfg.DB.IPTVChannelCounts(ctx)
+	if err != nil {
+		log.Printf("iptv: число каналов по плейлистам: %v", err)
+		counts = nil
+	}
 	pv := make([]playlistView, 0, len(playlists))
 	for _, p := range playlists {
 		item := playlistView{
-			ID: p.ID, Name: p.Name, Channels: p.ChannelCount, Kind: p.Kind,
+			ID: p.ID, Name: p.Name, Channels: p.ChannelCount, Visible: counts[p.ID], Kind: p.Kind,
 			HasEPG: p.EPGURL != "", LastError: p.LastError,
+		}
+		if item.Visible == 0 {
+			item.Visible = item.Channels // старая база/пустой плейлист — лучше записей, чем нуля
 		}
 		if !p.LastSync.IsZero() {
 			item.LastSync = p.LastSync.Format(time.RFC3339)
@@ -225,6 +240,9 @@ func (s *Server) handleChannels(w http.ResponseWriter, r *http.Request) {
 		"playlists": pv,
 		"groups":    groups,
 		"channels":  views,
+		// now — сервисное время (UTC): клиент считает по нему ход передачи,
+		// чтобы системные часы браузера не сдвигали «сейчас».
+		"now": now.Format(time.RFC3339),
 	})
 }
 
@@ -274,7 +292,7 @@ func (s *Server) handleEPG(w http.ResponseWriter, r *http.Request) {
 	if hours <= 0 || hours > 48 {
 		hours = 6
 	}
-	now := time.Now()
+	now := s.now()
 	var list []db.IPTVProgram
 	if ch.EPGKey != "" {
 		list, err = s.cfg.DB.ListIPTVPrograms(r.Context(), ch.EPGKey, now.Add(-2*time.Hour), now.Add(time.Duration(hours)*time.Hour), 200)
@@ -291,6 +309,7 @@ func (s *Server) handleEPG(w http.ResponseWriter, r *http.Request) {
 		"channel":  map[string]any{"id": ch.ID, "name": ch.Name, "group": ch.Group, "logo": ch.Logo},
 		"has_epg":  ch.EPGKey != "",
 		"programs": out,
+		"now":      now.Format(time.RFC3339),
 	})
 }
 
@@ -371,12 +390,23 @@ func (s *Server) handleListPlaylists(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := make([]map[string]any, 0, len(list))
+	// visible — каналов без дублей (совпадает со списком карточек), channels —
+	// записей плейлиста (варианты SD/HD/«Архив» одного канала считаются отдельно).
+	counts, err := s.cfg.DB.IPTVChannelCounts(r.Context())
+	if err != nil {
+		log.Printf("iptv: число каналов по плейлистам: %v", err)
+		counts = nil
+	}
 	for _, p := range list {
+		visible := counts[p.ID]
+		if visible == 0 {
+			visible = p.ChannelCount
+		}
 		item := map[string]any{
 			"id": p.ID, "name": p.Name, "kind": p.Kind, "url": p.URL,
 			"username": p.Username, "epg_url": p.EPGURL, "user_agent": p.UA,
 			"referrer": p.Referer, "enabled": p.Enabled,
-			"channels": p.ChannelCount, "last_error": p.LastError,
+			"channels": p.ChannelCount, "visible": visible, "last_error": p.LastError,
 		}
 		if !p.LastSync.IsZero() {
 			item["last_sync"] = p.LastSync.Format(time.RFC3339)

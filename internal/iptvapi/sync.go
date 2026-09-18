@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -109,13 +110,29 @@ func (s *Server) fetchPlaylistChannels(ctx context.Context, pl db.IPTVPlaylist) 
 
 // toDBChannels переводит каналы парсера в записи БД, подставляя общие
 // заголовки плейлиста, если у канала своих нет.
+//
+// ext_id — ключ канала в плейлисте (UNIQUE(playlist_id, ext_id)), а в M3U им
+// служит tvg-id, который НЕ уникален: один канал идёт несколькими потоками
+// (SD/HD/«Архив») и все они несут один tvg-id. Без нумерации потоки затирали
+// бы друг друга — в базе оставался последний из них (обычно «Архив»), а
+// остальные каналы терялись. Дубли нумеруем («zvezda#2»), показ дублей всё
+// равно схлопывает их по dedup_key и выбирает лучший вариант потока.
 func toDBChannels(list []iptv.Channel, pl db.IPTVPlaylist) []db.IPTVChannel {
 	out := make([]db.IPTVChannel, 0, len(list))
+	seen := make(map[string]bool, len(list))
 	for _, c := range list {
 		ua, ref := channelHeaders(c.UA, c.Referer, pl.UA, pl.Referer)
+		ext := strings.TrimSpace(c.ExtID)
+		if ext != "" {
+			base := ext
+			for i := 2; seen[ext]; i++ {
+				ext = base + "#" + strconv.Itoa(i)
+			}
+			seen[ext] = true
+		}
 		out = append(out, db.IPTVChannel{
 			PlaylistID: pl.ID,
-			ExtID:      c.ExtID,
+			ExtID:      ext,
 			Name:       strings.TrimSpace(c.Name),
 			Group:      strings.TrimSpace(c.Group),
 			Logo:       strings.TrimSpace(c.Logo),
@@ -254,7 +271,7 @@ func (s *Server) SyncEPG(ctx context.Context, pl db.IPTVPlaylist) (int, error) {
 		return 0, err
 	}
 
-	now := time.Now()
+	now := s.now()
 	from, to := now.Add(-epgWindowBack), now.Add(epgWindowForward)
 	byKey := make(map[string][]db.IPTVProgram, len(wanted))
 	for _, p := range progs {
