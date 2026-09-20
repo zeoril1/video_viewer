@@ -481,6 +481,7 @@ async function apiGet(url, timeoutMs) {
 async function loadHistory() {
   if (!currentUser) {
     watchHistory = [];
+    episodeHistory.clear();
     authHooks.forEach((fn) => fn());
     return;
   }
@@ -489,7 +490,27 @@ async function loadHistory() {
   authHooks.forEach((fn) => fn());
 }
 
+const episodeHistory = new Map();
+
+async function loadEpisodeHistory(id) {
+  episodeHistory.delete(id);
+  if (!currentUser || !id) return;
+  const res = await apiGet('/api/history?film_id=' + encodeURIComponent(id), 10000);
+  if (res && res.ok && res.data) episodeHistory.set(id, res.data.items || []);
+}
+
+function episodeHistoryEntry(id, season, episode, magnet, file) {
+  const entries = episodeHistory.get(id) || [];
+  // Season/episode is stable across different releases and voice tracks.
+  return entries.find((e) => season > 0 && episode > 0
+    ? e.season === season && e.episode === episode
+    : e.magnet === magnet && e.file === file) || null;
+}
+
 function rememberWatchProgress(progress) {
+  const entries = episodeHistory.get(progress.film_id) || [];
+  episodeHistory.set(progress.film_id, [progress, ...entries.filter((e) =>
+    e.magnet !== progress.magnet || e.file !== progress.file)]);
   const previous = historyEntry(progress.film_id) || {};
   watchHistory = [Object.assign({}, previous, progress), ...watchHistory.filter((x) => x.film_id !== progress.film_id)];
   authHooks.forEach((fn) => fn());
@@ -502,6 +523,7 @@ function historyEntry(id) {
 
 // В истории хранится только последняя серия — удаление убирает фильм целиком.
 async function removeHistoryEntry(filmId) {
+  episodeHistory.delete(filmId);
   try {
     await fetch('/api/history/' + encodeURIComponent(filmId), { method: 'DELETE' });
   } catch (err) { /* игнорируем: локальный список всё равно обновим */ }

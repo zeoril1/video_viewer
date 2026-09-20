@@ -135,6 +135,10 @@ function render() {
     // Пока локальных совпадений нет — идёт поиск на IMDb.
     emptyEl.textContent = searchEl.value.trim() ? t('searching') : t('empty');
   }
+  if (items.length && !grid.children.length && document.getElementById('hide-watched')?.checked) {
+    emptyEl.hidden = false;
+    emptyEl.textContent = 'Загруженные фильмы уже просмотрены. Снимите фильтр или загрузите следующие.';
+  }
   updateSentinel();
 }
 
@@ -194,12 +198,12 @@ function makeCard(it) {
 
 function renderList(list) {
   grid.innerHTML = '';
-  for (const it of list) grid.appendChild(makeCard(it));
+  for (const it of list) { if (!document.getElementById('hide-watched')?.checked || !Personal.get('watched', it.imdb_id || it.id)) grid.appendChild(makeCard(it)); }
   emptyEl.hidden = list.length > 0;
 }
 
 function appendCards(list) {
-  for (const it of list) grid.appendChild(makeCard(it));
+  for (const it of list) { if (!document.getElementById('hide-watched')?.checked || !Personal.get('watched', it.imdb_id || it.id)) grid.appendChild(makeCard(it)); }
   emptyEl.hidden = items.length > 0;
 }
 
@@ -573,3 +577,6 @@ initInfiniteScroll();
 initAuth();
 
 if (DEBUG) showDebug();
+
+window.addEventListener('personalchange', () => render());
+document.getElementById('hide-watched')?.addEventListener('change', () => render());

@@ -11,7 +11,7 @@ const releaseTitle = wParams.get('rt') || '';
 let wantSeason = parseInt(wParams.get('season') || '0', 10) || 0;
 let wantEp = parseInt(wParams.get('ep') || '0', 10) || 0;
 const wantVoice = wParams.get('voice') || '';
-const startPos = parseFloat(wParams.get('pos') || '0') || 0;
+const startPos = wParams.has('pos') ? (parseFloat(wParams.get('pos')) || 0) : undefined;
 // Файл (серия) в торренте: его выбрала страница фильма; -1 — авто (крупнейший видеофайл).
 const startFile = wParams.get('file') !== null && wParams.get('file') !== '' ? parseInt(wParams.get('file'), 10) : -1;
 
@@ -43,6 +43,8 @@ function syncUrl() {
   if (!watchId) return;
   const p = new URLSearchParams(location.search);
   const st = PP.state();
+  if (st.magnet) p.set('magnet', st.magnet);
+  if (PP.release()) p.set('rt', PP.release());
   if (st.file >= 0) p.set('file', String(st.file)); else p.delete('file');
   if (st.season) p.set('season', String(st.season));
   if (st.episode) p.set('ep', String(st.episode));
@@ -84,6 +86,8 @@ document.addEventListener('keydown', (e) => {
 });
 
 async function initWatchPage() {
+  await loadEpisodeHistory(watchId);
+  PP.init({ onStateChange: onPlayerState, onReleaseEnd: nextFromFilmPage });
   if (!watchId || !magnet) {
     PP.showNote(t('noSources'));
     return;
@@ -123,5 +127,4 @@ onLang(() => {
 });
 
 applyLang();
-initAuth();
-initWatchPage();
+initAuth().then(() => Personal.load()).catch(() => {}).then(initWatchPage);

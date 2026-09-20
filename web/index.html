@@ -6,6 +6,7 @@
   <title>Video Viewer</title>
   <link rel="stylesheet" href="style.css?v=21" />
   <link rel="stylesheet" href="tv.css?v=1" />
+  <link rel="stylesheet" href="features.css?v=1" />
 </head>
 <body data-page="catalog">
   <header class="topbar">
@@ -28,6 +29,7 @@
     <div class="filters">
       <nav id="sections" class="sections" aria-label="Разделы"></nav>
       <div class="filter-controls">
+        <label class="released-toggle"><input id="hide-watched" type="checkbox"> Скрыть просмотренное</label>
         <label class="released-toggle" title="Показывать только вышедшие фильмы">
           <input type="checkbox" id="released" checked />
           <span data-i18n="onlyReleased">Только вышедшие</span>
@@ -48,6 +50,8 @@
   </main>
 
   <script src="shared.js?v=2"></script>
+  <script src="personal.js?v=1"></script>
+  <script src="features.js?v=1"></script>
   <script src="catalog.js?v=1"></script>
   <script src="tv.js?v=2"></script>
 </body>

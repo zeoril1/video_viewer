@@ -6,6 +6,7 @@
   <title>Вход — Video Viewer</title>
   <link rel="stylesheet" href="style.css?v=21" />
   <link rel="stylesheet" href="tv.css?v=1" />
+  <link rel="stylesheet" href="features.css?v=1" />
 </head>
 <body data-page="login">
   <header class="topbar">
@@ -34,6 +35,7 @@
           <button id="auth-tab-login" class="auth-tab active" type="button" role="tab" data-i18n="login">Вход</button>
           <button id="auth-tab-register" class="auth-tab" type="button" role="tab" data-i18n="register">Регистрация</button>
         </div>
+        <p><a class="auth-btn" href="/device.html">Войти на телевизоре по коду</a></p>
         <form id="auth-form" class="auth-form" autocomplete="on">
           <label class="auth-field">
             <span data-i18n="username">Логин</span>
@@ -51,6 +53,8 @@
   </main>
 
   <script src="shared.js?v=2"></script>
+  <script src="personal.js?v=1"></script>
+  <script src="features.js?v=1"></script>
   <script src="login.js?v=1"></script>
   <script src="tv.js?v=2"></script>
 </body>

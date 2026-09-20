@@ -77,12 +77,14 @@ type xtreamCategory struct {
 }
 
 type xtreamStream struct {
-	Num        int    `json:"num"`
-	Name       string `json:"name"`
-	StreamID   int    `json:"stream_id"`
-	Icon       string `json:"stream_icon"`
-	EPGChannel string `json:"epg_channel_id"`
-	CategoryID string `json:"category_id"`
+	ArchiveDays int    `json:"tv_archive_duration"`
+	Archive     int    `json:"tv_archive"`
+	Num         int    `json:"num"`
+	Name        string `json:"name"`
+	StreamID    int    `json:"stream_id"`
+	Icon        string `json:"stream_icon"`
+	EPGChannel  string `json:"epg_channel_id"`
+	CategoryID  string `json:"category_id"`
 }
 
 // LiveChannels забирает категории и live-каналы панели.
@@ -113,15 +115,20 @@ func (x Xtream) LiveChannels(ctx context.Context, hc *http.Client) ([]Channel, e
 		// Отдаём HLS-вариант потока: браузер играет его без перепаковки.
 		streamURL := fmt.Sprintf("%s/live/%s/%s/%d.m3u8", base, url.PathEscape(x.Username), url.PathEscape(x.Password), s.StreamID)
 		ch := Channel{
-			ExtID:   strconv.Itoa(s.StreamID),
-			Name:    strings.TrimSpace(s.Name),
-			Group:   catName[s.CategoryID],
-			Logo:    s.Icon,
-			EPGID:   strings.TrimSpace(s.EPGChannel),
-			URL:     streamURL,
-			UA:      x.UA,
-			Referer: x.Referer,
-			IsHLS:   true,
+			CatchupDays: s.ArchiveDays,
+			CatchupMode: "xtream",
+			ExtID:       strconv.Itoa(s.StreamID),
+			Name:        strings.TrimSpace(s.Name),
+			Group:       catName[s.CategoryID],
+			Logo:        s.Icon,
+			EPGID:       strings.TrimSpace(s.EPGChannel),
+			URL:         streamURL,
+			UA:          x.UA,
+			Referer:     x.Referer,
+			IsHLS:       true,
+		}
+		if s.Archive != 1 {
+			ch.CatchupDays = 0
 		}
 		if ch.ExtID == "" {
 			ch.ExtID = ch.Name

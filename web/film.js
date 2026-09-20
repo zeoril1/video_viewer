@@ -220,6 +220,7 @@ function renderSources(items, id) {
   if (!currentItem || (currentItem.imdb_id || currentItem.id) !== id) return;
   lastSourceItems = items;
   lastSourceId = id;
+  if (typeof FilmFeatures !== 'undefined') FilmFeatures.sources(items, id);
   updateSourceLabels();
   const isSeries = isSeriesKind(currentItem && currentItem.kind);
 
@@ -301,6 +302,7 @@ function renderSeasonChips(items, id) {
     });
     sourcesSeason.appendChild(btn);
   });
+  if (typeof FilmFeatures !== 'undefined') FilmFeatures.render(currentItem);
 }
 
 // Чипы озвучек сезона; раздача подбирается автоматически по озвучке.
@@ -392,7 +394,7 @@ async function onPickEpisode(ep) {
 async function playEpisode(id, season, ep) {
   const items = lastSourceItems;
   if (!id || !items || !items.length) return false;
-  const voice = voicePref[season];
+  const voice = voicePref[season] || Personal.preferences().voice || '';
   let cands;
   if (voice) {
     cands = seasonReleaseSources(items, season).filter((s) => titleVoices(s.title).includes(voice));
@@ -414,7 +416,7 @@ async function playEpisode(id, season, ep) {
   // (среди них «мёртвые» заявители редких озвучек TVShows/Novamedia/Jaskier).
   cands = probeOrder(cands, season);
   cands = cands.filter((s) => (s.seeds || 0) > 0).concat(cands.filter((s) => !((s.seeds || 0) > 0)));
-  cands = cands.slice(0, episodeProbeLimit);
+  cands = Personal.rank(cands, voice).slice(0, episodeProbeLimit);
   for (const c of cands) {
     if (!c || !c.magnet) continue;
     const fs = (await fetchFiles(id, c.magnet, c.title)) || [];
@@ -507,7 +509,9 @@ async function startWanted(id) {
   const items = lastSourceItems;
   if (!id || !items || !items.length) return false;
   if (!isSeriesKind(currentItem && currentItem.kind)) {
-    openWatch(id, items[0], null, 0, 0, '');
+    const ranked = Personal.rank(items);
+    if (!ranked.length) { flashFilmNote('Нет источников в пределах ваших настроек. Измените предпочтения или выберите вручную.'); return false; }
+    openWatch(id, ranked[0], null, 0, 0, Personal.preferences().voice || '');
     return true;
   }
   const season = selectedSeason || wantSeason || allKnownSeasons(id, items)[0] || 0;
@@ -572,6 +576,7 @@ function updateResumeBtn(it) {
 // ---- Карточка фильма ----
 
 function showDetails(it) {
+  if (typeof FilmFeatures !== 'undefined') { FilmFeatures.render(it); FilmFeatures.explore(it); }
   detailsEl.hidden = false;
   detailsPoster.src = it.poster_url || it.poster || '';
   detailsPoster.hidden = !detailsPoster.src;
@@ -762,7 +767,8 @@ function restoreWatchSelection() {
   }
 }
 
-function initFilmPage() {
+async function initFilmPage() {
+  await loadEpisodeHistory(filmId);
   restoreWatchSelection();
   if (!filmId) {
     filmTitleEl.textContent = t('empty');
@@ -777,6 +783,7 @@ function initFilmPage() {
   showDetails(currentItem);
   updateResumeBtn(currentItem);
   if (filmId.indexOf('tt') === 0) fetchFilmDetails(filmId, 3);
+  if (filmId.indexOf('tmdb-') === 0) await fetchFilmDetails(filmId, 0);
   setupSeriesUi();
   // Продолжение просмотра из истории: в адресе есть конкретная раздача — играем её сразу,
   // не дожидаясь поиска источников (сетка серий подтянется вместе с файлами раздачи).
@@ -788,7 +795,7 @@ function initFilmPage() {
       file: startFile,
       season: wantSeason,
       ep: wantEp,
-      pos: startPos,
+      pos: filmParams.has('pos') || startPos > 0 ? startPos : undefined,
       voice: wantVoice,
     });
   }
@@ -813,4 +820,4 @@ onLang(() => {
 onAuth(() => updateResumeBtn(currentItem));
 
 applyLang();
-initAuth().then(initFilmPage);
+initAuth().then(() => Personal.load()).catch(() => {}).then(initFilmPage);

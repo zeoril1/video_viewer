@@ -72,6 +72,8 @@ const PP = (() => {
   let curEpisode = 0;
   let autoNextFired = false;   // защита от повторного автоперехода
   let lastProgressSend = 0;
+  let playbackReady = false;
+  let lastSavedSample = '';
   let cacheKeepKey = '';       // раздача#серия, для которых уже запрошен тёплый кеш
   let noteTimer = null;
   let listEl = null;           // куда рисовать список серий раздачи (необязательно)
@@ -96,6 +98,9 @@ const PP = (() => {
       id: currentPlay ? currentPlay.id : '',
       magnet: currentPlay ? currentPlay.magnet : '',
       file: currentFile,
+      position: absTime(),
+      duration: totalDuration,
+      quality: currentQuality,
       season: curSeason,
       episode: curEpisode,
       voice: selectedVoice,
@@ -112,11 +117,14 @@ const PP = (() => {
   // ---- Прогресс просмотра ----
   // Отправка позиции в историю (не чаще раза в 5 с; final=true — принудительно).
   function maybeSaveProgress(final, beacon) {
-    if (!VV.user || !currentPlay) return null;
+    if (!VV.user || !currentPlay || !playbackReady) return null;
     const now = Date.now();
     if (!final && now - lastProgressSend < 5000) return null;
     const pos = Math.round(absTime());
-    if (pos < 5) return null; // не сохраняем случайные клики в самом начале
+    if (!Number.isFinite(pos) || pos < 0) return null;
+    const sample = currentPlay.id + '|' + currentPlay.magnet + '|' + currentFile + '|' + pos;
+    if (sample === lastSavedSample) return null;
+    lastSavedSample = sample;
     // Просмотрено >5% — просим stream держать раздачу 24 ч (другие зрители той же озвучки скачают без повторов).
     if (totalDuration > 0 && pos / totalDuration > 0.05) keepStreamCache(true);
     lastProgressSend = now;
@@ -150,6 +158,7 @@ const PP = (() => {
       if (!res.ok) throw new Error('HTTP ' + res.status);
       rememberWatchProgress(body);
     }).catch((err) => {
+      if (lastSavedSample === sample) lastSavedSample = '';
       lastProgressSend = 0;
       dbg('history: ' + err.message);
     });
@@ -183,6 +192,7 @@ const PP = (() => {
   // (source|2160|1080|720|480), субтитр subs (-1 — без субтитров). Смена дорожки/качества/
   // субтитра перезапускает ffmpeg; вкл/выкл текущей дорожки делает hls.js (subtitleTrack).
   function playHls(id, magnetSrc, file, track, start, quality, subs) {
+    playbackReady = false;
     if (hlsPlayer) {
       hlsPlayer.destroy();
       hlsPlayer = null;
@@ -281,6 +291,7 @@ const PP = (() => {
         // Ошибку показываем, НО плеер не скрываем: селекторы дорожек/качества остаются
         // доступными — можно выбрать другую дорожку или вариант с H.264.
         if (data && data.fatal) {
+          window.dispatchEvent(new Event('playbackfailure'));
           dbg('hls: ФАТАЛЬНАЯ ошибка, воспроизведение остановлено');
           // Автофолбэк: кодек (H.265/HEVC) не поддержан браузером — вместо ошибки перезапускаем
           // поток с перекодированием в H.264 (1080p); один раз на источник.
@@ -357,6 +368,7 @@ const PP = (() => {
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const data = await res.json();
       if (data.duration > 0) {
+        if (!currentPlay || currentPlay.id !== id || currentPlay.magnet !== magnetSrc || currentFile !== file) return;
         totalDuration = data.duration;
         updatePlayerUI();
         dbg('tracks: длительность ' + id + ' = ' + data.duration + 's');
@@ -391,6 +403,7 @@ const PP = (() => {
       }
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const data = await res.json();
+      if (!currentPlay || currentPlay.id !== id || currentPlay.magnet !== magnetSrc || currentFile !== file) return;
       totalDuration = data.duration || 0;
       updatePlayerUI();
       // Запрос длительности завершён — fetchDuration в playHls больше не нужен.
@@ -563,7 +576,9 @@ const PP = (() => {
   // Файлы раздачи: prev/next, список серий и (через хук onFiles) сетка на странице.
   async function loadFiles() {
     if (!currentPlay) return;
-    const files = await fetchFiles(currentPlay.id, currentPlay.magnet, releaseTitle);
+    const play = currentPlay;
+    const files = await fetchFiles(play.id, play.magnet, releaseTitle);
+    if (currentPlay !== play) return;
     lastFiles = files || [];
     dbg('files: файлов=' + lastFiles.length + ' (id=' + currentPlay.id + ')');
     if (hooks.onFiles) {
@@ -599,6 +614,7 @@ const PP = (() => {
   function selectEpisode(index) {
     if (!currentPlay || currentFile === index) return;
     maybeSaveProgress(true);
+    playbackReady = false;
     lastProgressSend = 0;
     autoVoice = selectedVoice;
     currentFile = index;
@@ -611,15 +627,17 @@ const PP = (() => {
     // Кеш длительности привязан к файлу — новый запрос обязателен.
     durationFetch = { key: '', inflight: false };
     const sel = lastFiles.find((f) => f.index === index);
-    if (sel && (sel.season || 0) > 0) curSeason = sel.season;
-    if (sel && (sel.episode || 0) > 0) curEpisode = sel.episode;
+    curSeason = sel && sel.season || 0;
+    curEpisode = sel && sel.episode || 0;
+    const saved = episodeHistoryEntry(currentPlay.id, curSeason, curEpisode, currentPlay.magnet, index);
+    streamStart = saved ? saved.position : 0;
     h264FallbackDone = false;
     autoNextFired = false;
     renderEpisodeList();
     notify();
     dbg('серия: файл #' + index);
     loadTracks(currentPlay.id, currentPlay.magnet, currentFile);
-    playHls(currentPlay.id, currentPlay.magnet, currentFile, 0, 0, currentQuality);
+    playHls(currentPlay.id, currentPlay.magnet, currentFile, 0, streamStart, currentQuality);
   }
 
   // Соседний файл серии в текущем источнике (dir=1 — следующая, -1 — предыдущая).
@@ -893,6 +911,8 @@ const PP = (() => {
     }
 
     player.addEventListener('timeupdate', updatePlayerUI);
+    player.addEventListener('playing', () => { playbackReady = true; });
+    player.addEventListener('pause', () => maybeSaveProgress(true));
     player.addEventListener('progress', updatePlayerUI);
     player.addEventListener('play', updatePlayerUI);
     player.addEventListener('pause', updatePlayerUI);
@@ -919,6 +939,9 @@ const PP = (() => {
   }
 
   if (available) {
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') maybeSaveProgress(true, true);
+    });
     window.addEventListener('pagehide', leave);
     window.addEventListener('beforeunload', () => {
       if (hlsPlayer) { leave(); stop({ keepProgress: true }); }
@@ -955,6 +978,7 @@ const PP = (() => {
     const o = opts || {};
     if (!o.id || !o.magnet) return false;
     if (currentPlay) maybeSaveProgress(true);
+    playbackReady = false;
     lastProgressSend = 0;
     currentPlay = { id: o.id, magnet: o.magnet };
     releaseTitle = o.release || '';
@@ -965,7 +989,7 @@ const PP = (() => {
     lastFiles = [];
     curSeason = o.season || 0;
     curEpisode = o.ep || 0;
-    selectedVoice = o.voice || '';
+    selectedVoice = o.voice || (typeof Personal !== 'undefined' ? Personal.preferences().voice : '') || '';
     autoVoice = selectedVoice;
     currentFile = (typeof o.file === 'number' && o.file >= 0) ? o.file : -1;
     durationFetch = { key: '', inflight: false };
@@ -975,7 +999,10 @@ const PP = (() => {
     // Серии текущей раздачи — для prev/next (фоном: плеер стартует сразу).
     loadFiles();
     loadTracks(o.id, o.magnet, currentFile);
-    playHls(o.id, o.magnet, currentFile, 0, o.pos || 0, 'source', -1);
+    const saved = episodeHistoryEntry(o.id, curSeason, curEpisode, o.magnet, currentFile);
+    const position = o.pos != null ? o.pos : (saved ? saved.position : 0);
+    playHls(o.id, o.magnet, currentFile, 0, position, o.quality || 'source', -1);
+    window.dispatchEvent(new Event('playbackstart'));
     notify();
     return true;
   }
@@ -984,6 +1011,7 @@ const PP = (() => {
   function stop(opts) {
     const o = opts || {};
     if (currentPlay && !o.keepProgress) maybeSaveProgress(true);
+    playbackReady = false;
     if (hlsPlayer) {
       hlsPlayer.destroy();
       hlsPlayer = null;

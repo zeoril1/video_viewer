@@ -209,13 +209,13 @@ async function ensureSeasonEpisodes(id, season, items) {
 
 // Файлы раздачи; title/tmdb уходят на сервер — он раскладывает серии по сезонам TMDB
 // (у трекеров своя нарезка, сборники нумеруют серии сквозняком: «001 seriya» … «291 seriya»).
-async function fetchFiles(id, magnet, title) {
+async function fetchFiles(id, magnet, title, options) {
   try {
     const tmdb = (currentItem && currentItem.tmdb_id) || '';
     const qs = '?magnet=' + encodeURIComponent(magnet)
       + (title ? '&title=' + encodeURIComponent(title) : '')
       + (tmdb ? '&tmdb=' + encodeURIComponent(tmdb) : '');
-    const res = await fetch(`/api/films/${encodeURIComponent(id)}/files${qs}`);
+    const res = await fetch(`/api/films/${encodeURIComponent(id)}/files${qs}`, options);
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
     return data.files || [];

@@ -14,6 +14,9 @@ import (
 
 // Channel — один канал плейлиста.
 type Channel struct {
+	CatchupDays   int
+	CatchupSource string
+	CatchupMode   string
 	// ExtID — стабильный id внутри плейлиста: tvg-id, иначе порядковый
 	// номер. По нему канал обновляется/удаляется при повторном синке.
 	ExtID string
@@ -79,6 +82,9 @@ func ParseM3U(r io.Reader) ([]Channel, error) {
 			cur.EPGID = attrs["tvg-id"]
 			cur.ExtID = attrs["tvg-id"]
 			cur.Logo = attrs["tvg-logo"]
+			cur.CatchupDays, _ = strconv.Atoi(attrs["catchup-days"])
+			cur.CatchupSource = attrs["catchup-source"]
+			cur.CatchupMode = attrs["catchup"]
 			cur.Group = attrs["group-title"]
 			if v := attrs["tvg-name"]; v != "" && cur.Name == "" {
 				cur.Name = v

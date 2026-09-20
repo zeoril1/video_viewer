@@ -29,6 +29,12 @@ func NewServer(cfg Config) http.Handler {
 	mux.HandleFunc("POST /api/auth/login", auth.login)
 	mux.HandleFunc("POST /api/auth/logout", auth.logout)
 	mux.HandleFunc("GET /api/auth/me", auth.me)
+	mux.HandleFunc("GET /api/personal", auth.personal)
+	mux.HandleFunc("PUT /api/personal/{kind}/{key}", auth.personal)
+	mux.HandleFunc("DELETE /api/personal/{kind}/{key}", auth.personal)
+	mux.HandleFunc("POST /api/auth/device/start", auth.deviceStart)
+	mux.HandleFunc("POST /api/auth/device/approve", auth.deviceApprove)
+	mux.HandleFunc("POST /api/auth/device/poll", auth.devicePoll)
 
 	mux.HandleFunc("GET /api/history", history.list)
 	mux.HandleFunc("POST /api/history/progress", history.save)

@@ -56,6 +56,10 @@ func NewServer(cfg Config) http.Handler {
 
 	// ---- Авторизация и история (auth-сервис) ----
 	mux.HandleFunc("/api/auth/", proxyTo(cfg.AuthURL))
+	mux.HandleFunc("/api/personal", proxyTo(cfg.AuthURL))
+	mux.HandleFunc("/api/personal/", proxyTo(cfg.AuthURL))
+	mux.HandleFunc("/api/discover/", proxyTo(cfg.CatalogURL))
+	mux.HandleFunc("GET /api/films/{id}/explore", proxyTo(cfg.CatalogURL))
 	mux.HandleFunc("/api/history", proxyTo(cfg.AuthURL))
 	mux.HandleFunc("/api/history/", proxyTo(cfg.AuthURL))
 

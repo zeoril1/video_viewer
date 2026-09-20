@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -27,6 +28,35 @@ func requireDataSources(cfg Config, w http.ResponseWriter) bool {
 // дозаполняются В ФОНЕ, иначе WDQS/IMDb с таймаутами до минут вешали бы клиента.
 func handleFilmByID(cfg Config, id string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(id, "tmdb-") && cfg.TMDB != nil {
+			parts := strings.Split(id, "-")
+			if len(parts) != 3 || (parts[1] != "movie" && parts[1] != "tv") {
+				http.NotFound(w, r)
+				return
+			}
+			n, err := strconv.ParseInt(parts[2], 10, 64)
+			if err != nil || n <= 0 {
+				http.NotFound(w, r)
+				return
+			}
+			kind := "feature"
+			if parts[1] == "tv" {
+				kind = "tvSeries"
+			}
+			film, err := cfg.TMDB.ByIDKind(r.Context(), n, kind)
+			if err != nil {
+				http.Error(w, "metadata unavailable", 502)
+				return
+			}
+			film.IMDBID = id
+			if cfg.DB != nil {
+				_ = cfg.DB.SaveTMDBFilm(r.Context(), film)
+			}
+			it := tmdbFilmToEntry(film).item
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			_ = json.NewEncoder(w).Encode(it)
+			return
+		}
 		if !requireDataSources(cfg, w) {
 			return
 		}

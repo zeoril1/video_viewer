@@ -19,7 +19,7 @@ import (
 // epgWindowBack/epgWindowForward — окно программы, которое держим в БД:
 // немного назад (для «сейчас идёт») и на двое суток вперёд.
 const (
-	epgWindowBack    = 6 * time.Hour
+	epgWindowBack    = 7 * 24 * time.Hour
 	epgWindowForward = 48 * time.Hour
 )
 
@@ -131,17 +131,18 @@ func toDBChannels(list []iptv.Channel, pl db.IPTVPlaylist) []db.IPTVChannel {
 			seen[ext] = true
 		}
 		out = append(out, db.IPTVChannel{
-			PlaylistID: pl.ID,
-			ExtID:      ext,
-			Name:       strings.TrimSpace(c.Name),
-			Group:      strings.TrimSpace(c.Group),
-			Logo:       strings.TrimSpace(c.Logo),
-			EPGID:      strings.TrimSpace(c.EPGID),
-			StreamURL:  c.URL,
-			IsHLS:      c.IsHLS,
-			UA:         ua,
-			Referer:    ref,
-			Num:        c.Num,
+			PlaylistID:  pl.ID,
+			CatchupDays: c.CatchupDays, CatchupSource: c.CatchupSource, CatchupMode: c.CatchupMode,
+			ExtID:     ext,
+			Name:      strings.TrimSpace(c.Name),
+			Group:     strings.TrimSpace(c.Group),
+			Logo:      strings.TrimSpace(c.Logo),
+			EPGID:     strings.TrimSpace(c.EPGID),
+			StreamURL: c.URL,
+			IsHLS:     c.IsHLS,
+			UA:        ua,
+			Referer:   ref,
+			Num:       c.Num,
 		})
 	}
 	return out
@@ -291,7 +292,7 @@ func (s *Server) SyncEPG(ctx context.Context, pl db.IPTVPlaylist) (int, error) {
 		saved += len(list)
 	}
 	// Чистим совсем старые передачи, чтобы таблица не росла.
-	if n, err := s.cfg.DB.PruneIPTVPrograms(ctx, now.Add(-48*time.Hour)); err == nil && n > 0 {
+	if n, err := s.cfg.DB.PruneIPTVPrograms(ctx, now.Add(-epgWindowBack)); err == nil && n > 0 {
 		log.Printf("iptv: удалено устаревших передач: %d", n)
 	}
 	return saved, nil

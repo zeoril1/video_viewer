@@ -231,3 +231,8 @@ HLS requests from the web player carry a random `session` identifier per tab.
 Custom clients should pass their own random identifier on the initial playlist
 and stop requests; generated media, subtitle and segment URLs preserve it.
 Legacy clients without this parameter retain the shared session behavior.
+
+
+## Медиатека и календарь новинок
+
+Добавлены личные списки, подписки на сериалы, календарь премьер и серий, подбор раздач по предпочтениям, восстановление просмотра, вход на ТВ по коду и расширенный IPTV. [Возможности, настройка и тесты](docs/features.md).

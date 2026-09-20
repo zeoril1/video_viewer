@@ -6,6 +6,7 @@
   <title>Фильм — Video Viewer</title>
   <link rel="stylesheet" href="style.css?v=21" />
   <link rel="stylesheet" href="tv.css?v=1" />
+  <link rel="stylesheet" href="features.css?v=1" />
 </head>
 <body data-page="film">
   <header class="topbar">
@@ -50,6 +51,8 @@
         </div>
       </div>
 
+      <div id="film-personal" class="feature-section"></div>
+      <div id="film-explore" class="feature-section"></div>
       <div id="sources" class="sources" hidden>
         <h3 id="sources-title" class="sources-title"></h3>
         <div id="sources-season-wrap" class="src-group" hidden>
@@ -118,9 +121,13 @@
 
   <script src="vendor/hls.min.js"></script>
   <script src="shared.js?v=2"></script>
+  <script src="personal.js?v=1"></script>
+  <script src="features.js?v=1"></script>
   <script src="series.js?v=2"></script>
   <script src="player.js?v=1"></script>
+  <script src="film-features.js?v=1"></script>
   <script src="film.js?v=2"></script>
+  <script src="recovery.js?v=1"></script>
   <script src="tv.js?v=2"></script>
 </body>
 </html>

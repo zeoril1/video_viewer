@@ -230,7 +230,7 @@
       return;
     }
     if (emptyEl) emptyEl.hidden = true;
-    state.channels.forEach(function (ch) {
+    (window.IPTVFeatures ? IPTVFeatures.filter(state.channels) : state.channels).forEach(function (ch) {
       grid.appendChild(channelCard(ch));
     });
     focusFirst();
@@ -290,6 +290,7 @@
       body.appendChild(badge);
     }
     card.appendChild(body);
+    if (window.IPTVFeatures) IPTVFeatures.decorate(card, ch);
 
     card.addEventListener('click', function () { play(ch); });
     card.addEventListener('keydown', function (e) {
@@ -316,6 +317,7 @@
   // ---- Плеер ----
 
   function play(ch) {
+    if (window.IPTVFeatures) IPTVFeatures.playing(ch);
     stop();
     state.chan = ch;
     if (!playerWrap) return;
@@ -336,6 +338,8 @@
     if (noteEl) noteEl.hidden = true;
     state.remux = false;
 
+    videoEl.controls = !!ch.archive;
+    var liveLabel = document.querySelector('.iptv-live'); if(liveLabel)liveLabel.textContent = ch.archive ? 'АРХИВ' : 'LIVE';
     var url = ch.play_url || ('/api/iptv/play/' + ch.id + '.m3u8');
     startHls(url, ch);
     state.playing = true;
@@ -371,6 +375,7 @@
     var hls = new Hls({
       // Живой поток: держим небольшой буфер у «края», перемотка не нужна.
       lowLatencyMode: false,
+      startPosition: ch.archive ? 0 : -1,
       liveSyncDurationCount: 3,
       maxBufferLength: 20,
       backBufferLength: 30,
@@ -390,7 +395,7 @@
         if (!remux) {
           state.remux = true;
           showNote(t('remuxing'));
-          setTimeout(function () { startHls(url + '?remux=1', ch, true); }, 800);
+          setTimeout(function () { startHls(url + (url.indexOf('?') >= 0 ? '&' : '?') + 'remux=1', ch, true); }, 800);
           return;
         }
         hls.recoverMediaError();
@@ -768,6 +773,8 @@
     isOpen: isOpen,
     close: close,
     play: play,
+    channels: function () { return state.channels; },
+    render: renderChannels,
     stop: stop,
     version: 2
   };

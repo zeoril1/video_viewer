@@ -272,6 +272,17 @@ func (m *liveManager) ensureSession(ctx context.Context, ch db.IPTVChannel, ua, 
 		"-hls_segment_filename", filepath.Join(dir, "seg_%05d.m4s"),
 		filepath.Join(dir, "index.m3u8"),
 	)
+	if ch.IsArchive {
+		for i := range args {
+			if args[i] == "-hls_list_size" {
+				args[i+1] = "0"
+			}
+			if args[i] == "-hls_flags" {
+				args[i+1] = "independent_segments+temp_file"
+			}
+		}
+		args = append(args[:len(args)-1], "-hls_playlist_type", "event", args[len(args)-1])
+	}
 	cmd := exec.Command(ffmpeg, args...)
 	cmd.Stdout = io.Discard
 	cmd.Stderr = &ffmpegLog{channel: ch.ID, name: ch.Name}

@@ -69,6 +69,8 @@ func NewServer(cfg Config) (http.Handler, func()) {
 	// ---- Каналы и программа ----
 	mux.HandleFunc("GET /api/iptv/channels", s.handleChannels)
 	mux.HandleFunc("GET /api/iptv/epg", s.handleEPG)
+	mux.HandleFunc("GET /api/iptv/guide", s.handleGuide)
+	mux.HandleFunc("GET /api/iptv/archive/{id}", s.handleArchive)
 	// Экспорт плейлиста со ссылками на наш прокси (для VLC, телефонов):
 	// креды провайдера и здесь не раскрываются.
 	mux.HandleFunc("GET /api/iptv/export.m3u", s.handleExportM3U)
@@ -101,9 +103,10 @@ func NewServer(cfg Config) (http.Handler, func()) {
 // channelView — канал для клиента. Внутренние поля (stream_url, креды, UA)
 // наружу не отдаются: браузер не должен знать адрес провайдера.
 type channelView struct {
-	ID         int64  `json:"id"`
-	PlaylistID int64  `json:"playlist_id"`
-	Name       string `json:"name"`
+	CatchupDays int    `json:"catchup_days"`
+	ID          int64  `json:"id"`
+	PlaylistID  int64  `json:"playlist_id"`
+	Name        string `json:"name"`
 	// NameOriginal — исходное название из плейлиста (латиница, пометки
 	// качества); показывается в подсказке, если отличается от имени интерфейса.
 	NameOriginal string     `json:"name_original,omitempty"`
@@ -183,13 +186,14 @@ func (s *Server) handleChannels(w http.ResponseWriter, r *http.Request) {
 	for _, c := range channels {
 		name := iptv.DisplayName(c.Name, c.NameRU)
 		v := channelView{
-			ID:         c.ID,
-			PlaylistID: c.PlaylistID,
-			Name:       namer.qualify(name, c),
-			Group:      c.Group,
-			Logo:       c.Logo,
-			Num:        c.Num,
-			PlayURL:    "/api/iptv/play/" + strconv.FormatInt(c.ID, 10) + ".m3u8",
+			ID:          c.ID,
+			PlaylistID:  c.PlaylistID,
+			Name:        namer.qualify(name, c),
+			Group:       c.Group,
+			Logo:        c.Logo,
+			Num:         c.Num,
+			CatchupDays: c.CatchupDays,
+			PlayURL:     "/api/iptv/play/" + strconv.FormatInt(c.ID, 10) + ".m3u8",
 		}
 		// Исходное имя — в подсказку, если отличается от имени интерфейса.
 		if orig := strings.TrimSpace(c.Name); orig != "" && orig != name {

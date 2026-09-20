@@ -58,6 +58,29 @@ func (r *Repo) ensureHistorySchema(ctx context.Context) error {
 	return err
 }
 
+// ListEpisodeHistory returns every saved file for a title, newest first.
+// Unlike the home-page history, this must not collapse seasons or episodes.
+func (r *Repo) ListEpisodeHistory(ctx context.Context, userID int64, filmID string) ([]HistoryEntry, error) {
+	rows, err := r.conn.QueryContext(ctx, `SELECT film_id, magnet, file, season, episode,
+		position_sec, duration_sec, updated_at, voice FROM watch_history
+		WHERE user_id=$1 AND film_id=$2
+		ORDER BY (updated_at <= now()) DESC, updated_at DESC, id DESC`, userID, filmID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]HistoryEntry, 0)
+	for rows.Next() {
+		var e HistoryEntry
+		if err := rows.Scan(&e.FilmID, &e.Magnet, &e.File, &e.Season, &e.Episode,
+			&e.Position, &e.Duration, &e.UpdatedAt, &e.Voice); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
 // SaveWatchProgress сохраняет/обновляет позицию просмотра (upsert по user+film+magnet+file —
 // один эпизод одного источника = одна запись, чтобы при повторном поиске источников не плодились дубли).
 func (r *Repo) SaveWatchProgress(ctx context.Context, userID int64, p WatchProgress) error {
@@ -95,9 +118,10 @@ func (r *Repo) ListWatchHistory(ctx context.Context, userID int64, limit int) ([
 			FROM watch_history wh
 			LEFT JOIN films f ON f.imdb_id = wh.film_id
 			WHERE wh.user_id = $1
-			ORDER BY wh.film_id, wh.updated_at DESC
+			-- Clock skew in older records must not hide current playback.
+			ORDER BY wh.film_id, (wh.updated_at <= now()) DESC, wh.updated_at DESC, wh.id DESC
 		) sub
-		ORDER BY updated_at DESC
+		ORDER BY (updated_at <= now()) DESC, updated_at DESC
 		LIMIT $2
 	`, userID, limit)
 	if err != nil {

@@ -5,7 +5,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const read = (file) => fs.readFileSync(path.join(__dirname, '../web', file), 'utf8');
 const film = read('film.js');
-const restore = film.slice(film.indexOf('function restoreWatchSelection()'), film.indexOf('function initFilmPage()'));
+const restore = film.slice(film.indexOf('function restoreWatchSelection()'), film.search(/(?:async\s+)?function initFilmPage\(\)/));
 const entry = { film_id: 'tt1', season: 3, episode: 7, voice: 'LostFilm', magnet: 'magnet:saved', file: 6, position: 125 };
 function selection(query = '') {
   const p = new URLSearchParams(query);
@@ -38,7 +38,7 @@ const save = player.slice(player.indexOf('  function maybeSaveProgress('), playe
 test('series progress includes episode and voice and updates local history after success', async () => {
   let sent, remembered;
   const ctx = vm.createContext({ VV: { user: {} }, currentPlay: { id: 'tt1', magnet: entry.magnet },
-    lastProgressSend: 0, absTime: () => 125, totalDuration: 1800, keepStreamCache() {},
+    playbackReady: true, lastSavedSample: '', lastProgressSend: 0, absTime: () => 125, totalDuration: 1800, keepStreamCache() {},
     currentFile: 6, lastFiles: [{ index: 6, season: 3, episode: 7 }], curSeason: 3, curEpisode: 7,
     selectedVoice: 'LostFilm', seasonEpisodeCount: () => 10,
     fetch: async (_, opts) => { sent = JSON.parse(opts.body); assert.equal(opts.keepalive, true); return { ok: true }; },
@@ -49,7 +49,7 @@ test('series progress includes episode and voice and updates local history after
   assert.equal(sent.position, 125); assert.equal(remembered.film_id, 'tt1');
 });
 test('failed progress save is retried and does not update local history', async () => {
-  const ctx = vm.createContext({ VV: { user: {} }, currentPlay: { id: 'tt1' }, lastProgressSend: 0,
+  const ctx = vm.createContext({ VV: { user: {} }, currentPlay: { id: 'tt1' }, playbackReady: true, lastSavedSample: '', lastProgressSend: 0,
     absTime: () => 125, totalDuration: 0, currentFile: 6, lastFiles: [], curSeason: 3, curEpisode: 7,
     selectedVoice: 'LostFilm', seasonEpisodeCount: () => 10, fetch: async () => ({ ok: false, status: 500 }),
     rememberWatchProgress: () => assert.fail('failed save must not update history'), dbg() {} });
@@ -61,7 +61,7 @@ test('switching episode saves the previous file before resetting playback and re
   const source = player.slice(player.indexOf('  function selectEpisode('), player.indexOf('  function episodeNeighbor('));
   let savedFile, savedTime;
   const ctx = vm.createContext({ currentPlay: { id: 'tt1', magnet: entry.magnet }, currentFile: 6,
-    selectedVoice: 'LostFilm', streamStart: 125, currentQuality: 'source',
+    selectedVoice: 'LostFilm', streamStart: 125, currentQuality: 'source', episodeHistoryEntry: () => ({ position: 87 }),
     lastFiles: [{ index: 7, season: 3, episode: 8 }],
     maybeSaveProgress() { savedFile = ctx.currentFile; savedTime = ctx.streamStart; },
     renderEpisodeList() {}, notify() {}, dbg() {}, loadTracks() {}, playHls() {} });
@@ -69,4 +69,57 @@ test('switching episode saves the previous file before resetting playback and re
   ctx.selectEpisode(7);
   assert.equal(savedFile, 6); assert.equal(savedTime, 125);
   assert.equal(ctx.curEpisode, 8); assert.equal(ctx.autoVoice, 'LostFilm');
+  assert.equal(ctx.streamStart, 87);
+});
+
+test('unchanged position and a stream that has not started cannot refresh old history', async () => {
+  let calls = 0;
+  const ctx = vm.createContext({ VV: { user: {} }, currentPlay: { id: 'tt1', magnet: 'm' },
+    playbackReady: false, lastSavedSample: '', lastProgressSend: 0, absTime: () => 125,
+    totalDuration: 0, currentFile: 1, lastFiles: [], curSeason: 4, curEpisode: 21,
+    selectedVoice: '', seasonEpisodeCount: () => 30,
+    fetch: async () => { calls++; return { ok: true }; }, rememberWatchProgress() {}, dbg() {} });
+  vm.runInContext(save, ctx);
+  await ctx.maybeSaveProgress(true);
+  assert.equal(calls, 0);
+  ctx.playbackReady = true;
+  await ctx.maybeSaveProgress(true);
+  await ctx.maybeSaveProgress(true, true);
+  assert.equal(calls, 1);
+  ctx.absTime = () => 130;
+  await ctx.maybeSaveProgress(true);
+  assert.equal(calls, 2);
+});
+
+test('each episode keeps its own position, including across releases', async () => {
+  const shared = read('shared.js');
+  const source = shared.slice(shared.indexOf('const episodeHistory ='), shared.indexOf('// В истории хранится'));
+  const ctx = vm.createContext({ currentUser: {}, watchHistory: [], authHooks: [],
+    apiGet: async () => ({ ok: true, data: { items: [
+      { film_id: 'tt1', season: 4, episode: 21, magnet: 'old', file: 142, position: 136 },
+      { film_id: 'tt1', season: 3, episode: 32, magnet: 'old', file: 121, position: 1479 },
+    ] } }) });
+  vm.runInContext(source, ctx);
+  await ctx.loadEpisodeHistory('tt1');
+  assert.equal(ctx.episodeHistoryEntry('tt1', 3, 32, 'new', 8).position, 1479);
+  assert.equal(ctx.episodeHistoryEntry('tt1', 4, 21, 'new', 9).position, 136);
+  assert.equal(ctx.episodeHistoryEntry('tt1', 4, 22, 'old', 142), null);
+  ctx.rememberWatchProgress({ film_id: 'tt1', season: 4, episode: 21, magnet: 'old', file: 142, position: 200 });
+  assert.equal(ctx.episodeHistoryEntry('tt1', 4, 21, 'new', 9).position, 200);
+  assert.equal(ctx.episodeHistoryEntry('tt1', 3, 32, 'new', 8).position, 1479);
+});
+
+test('opening an episode restores its position and respects explicit restart from zero', () => {
+  const source = player.slice(player.indexOf('  function start(opts)'), player.indexOf('  function stop(opts)'));
+  let position;
+  const ctx = vm.createContext({ available: true, currentPlay: null, selectedVoice: '',
+    playerWrap: {}, updateQualityButtons() {}, loadFiles() {}, loadTracks() {}, notify() {},
+    episodeHistoryEntry: () => ({ position: 136 }), maybeSaveProgress() {},
+    playHls: (id, magnet, file, track, pos) => { position = pos; },
+    window: { dispatchEvent() {} }, Event: function () {} });
+  vm.runInContext(source, ctx);
+  ctx.start({ id: 'tt1', magnet: 'new', file: 0, season: 4, ep: 21 });
+  assert.equal(position, 136);
+  ctx.start({ id: 'tt1', magnet: 'new', file: 0, season: 4, ep: 21, pos: 0 });
+  assert.equal(position, 0);
 });
