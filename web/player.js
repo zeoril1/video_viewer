@@ -59,8 +59,6 @@ const PP = (() => {
   let currentQuality = 'source';
   let currentVideoCodec = '';
   let currentVideoHeight = 0;
-  let h264FallbackDone = false; // автофолбэк H.265→H.264 — один раз на источник
-  let pendingCodecNote = false;
   const maxStreamRestarts = 3; // перезапуск после простоя ffmpeg (>90 с → 404 на сегмент)
   let streamRestarts = 0;
   let selectedVoice = '';
@@ -78,6 +76,47 @@ const PP = (() => {
   let noteTimer = null;
   let listEl = null;           // куда рисовать список серий раздачи (необязательно)
   let hooks = {};
+  let trailerActive = false;
+  let trailerWasHidden = true;
+  const trailerFrame = document.getElementById('trailer-player');
+  const trailerToggle = document.getElementById('trailer-toggle');
+
+  function closeTrailer() {
+    if (!trailerActive) return;
+    trailerActive = false;
+    trailerFrame.removeAttribute('src');
+    trailerFrame.hidden = true;
+    playerWrap.classList.remove('trailer-mode');
+    playerWrap.hidden = trailerWasHidden;
+    trailerToggle.textContent = '▶ Трейлер';
+    trailerToggle.setAttribute('aria-pressed', 'false');
+  }
+
+  function setTrailer(url) {
+    if (!trailerFrame || !trailerToggle) return;
+    closeTrailer();
+    let key = '';
+    try {
+      const parsed = new URL(url);
+      if (parsed.hostname === 'www.youtube.com' || parsed.hostname === 'youtube.com') key = parsed.searchParams.get('v') || '';
+    } catch (_) { /* No trailer available. */ }
+    const valid = /^[a-zA-Z0-9_-]{11}$/.test(key);
+    document.getElementById('trailer-actions').hidden = !valid;
+    trailerToggle.onclick = () => {
+      if (trailerActive) { closeTrailer(); return; }
+      if (!valid) return;
+      maybeSaveProgress(true);
+      player.pause();
+      trailerWasHidden = playerWrap.hidden;
+      trailerActive = true;
+      playerWrap.hidden = false;
+      playerWrap.classList.add('trailer-mode');
+      trailerFrame.hidden = false;
+      trailerFrame.src = 'https://www.youtube-nocookie.com/embed/' + key + '?autoplay=1';
+      trailerToggle.textContent = currentPlay ? 'Вернуться к просмотру' : 'Закрыть трейлер';
+      trailerToggle.setAttribute('aria-pressed', 'true');
+    };
+  }
 
   // ---- Мелкие помощники ----
   function showNote(text) {
@@ -104,7 +143,7 @@ const PP = (() => {
       season: curSeason,
       episode: curEpisode,
       voice: selectedVoice,
-      playing: !!hlsPlayer && !playerWrap.hidden,
+      playing: !!hlsPlayer && !playerWrap.hidden && !trailerActive,
     };
   }
 
@@ -192,6 +231,7 @@ const PP = (() => {
   // (source|2160|1080|720|480), субтитр subs (-1 — без субтитров). Смена дорожки/качества/
   // субтитра перезапускает ffmpeg; вкл/выкл текущей дорожки делает hls.js (subtitleTrack).
   function playHls(id, magnetSrc, file, track, start, quality, subs) {
+    closeTrailer();
     playbackReady = false;
     if (hlsPlayer) {
       hlsPlayer.destroy();
@@ -201,13 +241,6 @@ const PP = (() => {
     player.removeAttribute('src');
     player.load();
     playerError.hidden = true;
-    // Автофолбэк H.265→H.264: уведомление держим до старта потока (перекодирование не мгновенно).
-    const keepCodecNote = pendingCodecNote;
-    pendingCodecNote = false;
-    if (keepCodecNote) {
-      playerError.textContent = t('codecFallback');
-      playerError.hidden = false;
-    }
     // Плеер показываем при любом запуске — иначе после ошибки он останется скрытым.
     playerWrap.hidden = false;
 
@@ -267,8 +300,14 @@ const PP = (() => {
       hlsPlayer = hls;
       hls.loadSource(src);
       hls.attachMedia(player);
+      // The subtitle list can arrive after MANIFEST_PARSED (a separate playlist).
+      hls.on(Hls.Events.SUBTITLE_TRACKS_UPDATED, () => {
+        if (hlsPlayer !== hls) return;
+        hls.subtitleDisplay = currentSubs >= 0;
+        hls.subtitleTrack = currentSubs >= 0 && hls.subtitleTracks.length ? 0 : -1;
+      });
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
-        // Игнорируем событие заменённого плеера: старый HEVC-манифест скрыл бы уведомление.
+        // Игнорируем событие уже заменённого плеера.
         if (hlsPlayer !== hls) return;
         streamRestarts = 0; // поток успешно стартовал — свежие попытки перезапуска
         dbg('hls: манифест получен (уровней: ' + (hls.levels ? hls.levels.length : 0) + ' субтитров: ' + (hls.subtitleTracks ? hls.subtitleTracks.length : 0) + ')');
@@ -277,13 +316,13 @@ const PP = (() => {
           hls.subtitleTrack = (currentSubs >= 0 && hls.subtitleTracks.length) ? 0 : -1;
           hls.subtitleDisplay = true;
         }
-        playerError.hidden = true; // поток стартовал — убираем уведомление о перекодировании
-        player.play().catch((err) => dbg('player.play(): ' + err));
+        playerError.hidden = true;
+        if (!trailerActive) player.play().catch((err) => dbg('player.play(): ' + err));
       });
       hls.on(Hls.Events.LEVEL_SWITCHED, (_e, d) => dbg('hls: уровень переключён: ' + d.level));
       hls.on(Hls.Events.FRAG_BUFFERED, (_e, d) => dbg('hls: фрагмент ' + d.frag.sn + ' @ ' + Math.round(d.frag.start) + 's'));
       hls.on(Hls.Events.ERROR, (_evt, data) => {
-        // Устаревший mediaError от HEVC-потока не должен перекрывать работающий H.264-фолбэк.
+        // Игнорируем ошибки от уже заменённого потока.
         if (hlsPlayer !== hls) return;
         const resp = data && data.response ? ' (http ' + data.response.code + ')' : '';
         dbg('hls: ERROR type=' + (data && data.type) + ' details=' + (data && data.details) + resp);
@@ -293,17 +332,6 @@ const PP = (() => {
         if (data && data.fatal) {
           window.dispatchEvent(new Event('playbackfailure'));
           dbg('hls: ФАТАЛЬНАЯ ошибка, воспроизведение остановлено');
-          // Автофолбэк: кодек (H.265/HEVC) не поддержан браузером — вместо ошибки перезапускаем
-          // поток с перекодированием в H.264 (1080p); один раз на источник.
-          if (data.type === 'mediaError' && currentQuality === 'source' && !h264FallbackDone && currentPlay) {
-            h264FallbackDone = true;
-            dbg('hls: H.265/HEVC — автофолбэк на H.264 (1080p)');
-            if (hlsPlayer === hls) hlsPlayer = null;
-            hls.destroy();
-            pendingCodecNote = true;
-            playHls(currentPlay.id, currentPlay.magnet, currentFile, currentTrack, streamStart, '1080', currentSubs);
-            return;
-          }
           // Простой >90с (пауза/свёрнутая вкладка) — cleanup убил ffmpeg-сессию и файлы, hls.js
           // получает 404 на сегмент: вместо фатальной ошибки прозрачно перезапускаем поток с текущей
           // позиции (servePlaylist поднимет ffmpeg заново, при необходимости создаст новый поток).
@@ -335,6 +363,17 @@ const PP = (() => {
       // Нативные HLS (Safari).
       dbg('HLS: нативный (Safari)');
       player.src = src;
+      const showNativeSubtitles = () => {
+        if (hlsPlayer || player.getAttribute('src') !== src) return;
+        let selected = false;
+        for (const textTrack of player.textTracks) {
+          if (textTrack.kind !== 'subtitles' && textTrack.kind !== 'captions') continue;
+          textTrack.mode = currentSubs >= 0 && !selected ? 'showing' : 'disabled';
+          selected = true;
+        }
+      };
+      player.textTracks.onaddtrack = showNativeSubtitles;
+      player.onloadedmetadata = showNativeSubtitles;
       player.play().catch(() => {});
     } else {
       // HLS не поддерживается браузером — сырой поток (без транскодинга).
@@ -448,13 +487,6 @@ const PP = (() => {
           return;
         }
       }
-      // HEVC/H.265 через MSE не играет — в исходном качестве сразу фолбэчим на H.264 (1080p).
-      if (isHevcCodec(currentVideoCodec) && currentQuality === 'source' && !h264FallbackDone && currentPlay) {
-        h264FallbackDone = true;
-        dbg('tracks: H.265/HEVC — автофолбэк на H.264 (1080p)');
-        pendingCodecNote = true;
-        playHls(currentPlay.id, currentPlay.magnet, currentFile, currentTrack, streamStart, '1080', currentSubs);
-      }
       if (items.length <= 1) {
         tracksEl.hidden = true;
         return;
@@ -566,9 +598,10 @@ const PP = (() => {
   function subsSelect(id, magnetSrc, subs) {
     if (!currentPlay || subs === currentSubs) return;
     dbg('субтитры: ' + id + ' -> ' + (subs >= 0 ? subs : 'выкл'));
+    const position = absTime();
     currentSubs = subs;
     renderSubtitles(currentSubtitles, id, magnetSrc);
-    playHls(id, magnetSrc, currentFile, currentTrack, streamStart, currentQuality, subs);
+    playHls(id, magnetSrc, currentFile, currentTrack, position, currentQuality, subs);
   }
 
   // ---- Серии текущей раздачи ----
@@ -618,6 +651,7 @@ const PP = (() => {
     lastProgressSend = 0;
     autoVoice = selectedVoice;
     currentFile = index;
+    currentQuality = 'source'; // Новая серия всегда начинается в исходном разрешении.
     streamStart = 0;
     currentTrack = 0;
     // Субтитры новой серии могут отличаться — сброс (селектор перерисует loadTracks).
@@ -631,7 +665,6 @@ const PP = (() => {
     curEpisode = sel && sel.episode || 0;
     const saved = episodeHistoryEntry(currentPlay.id, curSeason, curEpisode, currentPlay.magnet, index);
     streamStart = saved ? saved.position : 0;
-    h264FallbackDone = false;
     autoNextFired = false;
     renderEpisodeList();
     notify();
@@ -911,7 +944,10 @@ const PP = (() => {
     }
 
     player.addEventListener('timeupdate', updatePlayerUI);
-    player.addEventListener('playing', () => { playbackReady = true; });
+    player.addEventListener('playing', () => {
+      if (trailerActive) { player.pause(); return; }
+      playbackReady = true;
+    });
     player.addEventListener('pause', () => maybeSaveProgress(true));
     player.addEventListener('progress', updatePlayerUI);
     player.addEventListener('play', updatePlayerUI);
@@ -924,7 +960,7 @@ const PP = (() => {
       if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
       const tag = ((e.target && e.target.tagName) || '').toLowerCase();
       if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
-      if (playerWrap.hidden || !currentPlay) return;
+      if (playerWrap.hidden || !currentPlay || trailerActive) return;
       e.preventDefault();
       seekBy(e.key === 'ArrowLeft' ? -5 : 5);
     });
@@ -977,13 +1013,12 @@ const PP = (() => {
     if (!available) return false;
     const o = opts || {};
     if (!o.id || !o.magnet) return false;
+    closeTrailer();
     if (currentPlay) maybeSaveProgress(true);
     playbackReady = false;
     lastProgressSend = 0;
     currentPlay = { id: o.id, magnet: o.magnet };
     releaseTitle = o.release || '';
-    h264FallbackDone = false;
-    pendingCodecNote = false;
     streamRestarts = 0;
     autoNextFired = false;
     lastFiles = [];
@@ -1009,6 +1044,7 @@ const PP = (() => {
 
   // Остановка: гасим поток и прячем плеер (карточка фильма при этом остаётся на месте).
   function stop(opts) {
+    closeTrailer();
     const o = opts || {};
     if (currentPlay && !o.keepProgress) maybeSaveProgress(true);
     playbackReady = false;
@@ -1047,7 +1083,8 @@ const PP = (() => {
     start,
     stop,
     relabel,
-    playing: () => !!currentPlay && !!playerWrap && !playerWrap.hidden,
+    setTrailer,
+    playing: () => !!currentPlay && !!playerWrap && !playerWrap.hidden && !trailerActive,
     state,
     season: () => curSeason,
     episode: () => curEpisode,

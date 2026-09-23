@@ -201,7 +201,9 @@ const FeatureUI = (() => {
       page++;
       return show(true);
     });
-    content.after(more);
+    const pagination = el("div", undefined, "feature-toolbar feature-pagination");
+    pagination.append(more);
+    content.after(pagination);
     try {
       await show(false);
     } catch (e) {

@@ -1,6 +1,74 @@
 package catalogapi
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/zeoril1/video_viewer/internal/db"
+)
+
+func TestMovieSourcesMatchSpecificFilm(t *testing.T) {
+	film := db.Film{IMDBID: "ttResidentEvil", TitleRU: "Обитель зла", Title: "Resident Evil", Year: 2026, Kind: "movie"}
+	m := newFilmTitleMatcher(film)
+	tests := []struct {
+		title string
+		want  bool
+	}{
+		{"Обитель зла / Resident Evil (2026) WEB-DL 1080p", true},
+		{"Resident.Evil.2026.1080p.WEB-DL", true},
+		{"Обитель зла [2026, ужасы, WEB-DL]", true},
+		{"Resident Evil WEB-DL 1080p", true},
+		{"Обитель зла: Раккун-Сити / Resident Evil: Welcome to Raccoon City (2021) HDRip", false},
+		{"Синистер. Обитель зла / Tenement (2024) WEB-DL", false},
+		{"Обитель зла: Остров смерти / Resident Evil: Death Island (2023) BDRip", false},
+		{"Обитель зла / Resident Evil [S1] (2022) WEBRip", false},
+		{"Обитель зла: Мутация / The Cure (2026) WEBRip", false},
+		{"Обитель зла: Бесконечная тьма / E01-E04 Resident Evil: Infinite Darkness", false},
+		{"Resident Evil (2002) BDRip", false},
+		{"Resident Evil: Death Island (2026) BDRip", false},
+		{"Обитель зла / Resident Evil: Death Island (2026) BDRip", false},
+		{"Resident Evil 2 (2026) BDRip", false},
+		{"Обитель страха (2026) WEB-DL", false},
+		{"Resident Evilness (2026) WEB-DL", false},
+		{"Resident Evil [S1-3] (2026) WEB-DL", false},
+		{"Resident Evil / E01-E04 (2026) WEB-DL", false},
+		{"Обитель зла / Alternate title (2002) BDRip", false},
+	}
+	var cached []db.Source
+	wantCount := 0
+	for _, tt := range tests {
+		t.Run(tt.title, func(t *testing.T) {
+			if got := m.matches(tt.title); got != tt.want {
+				t.Errorf("matches = %v, want %v", got, tt.want)
+			}
+		})
+		cached = append(cached, db.Source{Title: tt.title, Magnet: "magnet:?xt=test"})
+		if tt.want {
+			wantCount++
+		}
+	}
+	if items := sourceItemsFromDB(cached, film); len(items) != wantCount {
+		t.Errorf("cached sources = %d, want %d", len(items), wantCount)
+	}
+}
+
+func TestMovieTitleFormatting(t *testing.T) {
+	for _, tt := range []struct {
+		film  db.Film
+		title string
+	}{
+		{db.Film{Title: "1917", Year: 2019}, "1917 (2019) BDRip"},
+		{db.Film{Title: "2012", Year: 2009}, "2012.2009.1080p.BluRay"},
+		{db.Film{Title: "Blade Runner 2049", Year: 2017}, "Blade.Runner.2049.2017.1080p.BluRay"},
+		{db.Film{TitleRU: "Ёлки", Year: 2010}, "Елки (2010) BDRip"},
+		{db.Film{Title: "Spider-Man", Year: 2002}, "Spider.Man.2002.1080p.BluRay"},
+		{db.Film{Title: "Resident Evil: Death Island", Year: 2023}, "Resident.Evil.Death.Island.2023.BDRip"},
+		{db.Film{Title: "Example", Kind: "tvSeries", Year: 2010}, "Example [S12] (2026) WEB-DL"},
+	} {
+		if !newFilmTitleMatcher(tt.film).matches(tt.title) {
+			t.Errorf("valid release rejected: %s", tt.title)
+		}
+	}
+}
 
 // TestTitleMatcherForeignNames — отсев раздач-однофамильцев.
 //

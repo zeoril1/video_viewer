@@ -1,6 +1,7 @@
 "use strict";
 const FilmFeatures = (() => {
   let loadedID = "";
+  let exploreData = null;
   const markedSeasons = new Map();
   const { el, button, card } = FeatureUI;
   function note(text) {
@@ -102,57 +103,52 @@ const FilmFeatures = (() => {
     if (follow && snap.tmdb_id && !follow.data.tmdb_id)
       Personal.put("follow", id, snap).catch(() => {});
   }
+  function renderCredits() {
+    if (!exploreData) return;
+    for (const [key, target, title, filter] of [
+      ["directors", "details-director", t("directorLabel"), "with_crew"],
+      ["cast", "details-actors", t("actorsLabel"), "with_cast"],
+    ]) {
+      const people = exploreData[key] || [];
+      const line = document.getElementById(target);
+      if (!line || !people.length) continue;
+      line.replaceChildren(document.createTextNode(title + ": "));
+      people.forEach((person, index) => {
+        if (index) line.append(document.createTextNode(", "));
+        const link = el("a", person.name);
+        link.href = "/discover.html?" + filter + "=" + encodeURIComponent(person.id);
+        line.append(link);
+      });
+    }
+  }
   async function explore(it) {
     const id = it.imdb_id || it.id;
     if (!id || loadedID === id) return;
     loadedID = id;
     const box = document.getElementById("film-explore");
     if (!box) return;
-    const details = el("details");
-    details.append(el("summary", "Трейлер, похожие фильмы и участники"));
-    box.replaceChildren(details);
-    details.addEventListener("toggle", async () => {
-      if (!details.open || details.dataset.loaded) return;
-      details.dataset.loaded = "1";
-      const body = el("div", "Загрузка…");
-      details.append(body);
-      try {
-        const data = await Personal.request(
-          "/api/films/" + encodeURIComponent(id) + "/explore",
-        );
-        body.replaceChildren();
-        if (data.trailer) {
-          const a = el("a", "▶ Смотреть трейлер", "auth-btn");
-          a.href = data.trailer;
-          a.target = "_blank";
-          a.rel = "noopener noreferrer";
-          body.append(a);
-        }
-        for (const [key, title, filter] of [
-          ["directors", "Режиссёры", "with_crew"],
-          ["cast", "В ролях", "with_cast"],
-        ]) {
-          if (!(data[key] || []).length) continue;
-          body.append(el("h3", title));
-          const row = el("div", undefined, "feature-actions");
-          for (const p of data[key]) {
-            const a = el("a", p.name, "auth-btn");
-            a.href = "/discover.html?" + filter + "=" + p.id;
-            row.append(a);
-          }
-          body.append(row);
-        }
-        body.append(el("h3", "Похожие"));
-        const grid = el("div", undefined, "feature-grid");
-        (data.items || []).slice(0, 12).forEach((x) => grid.append(card(x)));
-        body.append(grid);
-        if (!grid.children.length)
-          grid.textContent = "Похожих вариантов пока нет.";
-      } catch (e) {
-        body.textContent = e.message;
-        delete details.dataset.loaded;
-      }
-    });
+    exploreData = null;
+    box.hidden = true;
+    PP.setTrailer("");
+    try {
+      const data = await Personal.request(
+        "/api/films/" + encodeURIComponent(id) + "/explore",
+      );
+      if (loadedID !== id) return;
+      exploreData = data;
+      renderCredits();
+      PP.setTrailer(data.trailer || "");
+      box.replaceChildren(el("h3", "Похожие"));
+      const grid = el("div", undefined, "feature-carousel");
+      grid.tabIndex = 0;
+      grid.setAttribute("role", "region");
+      grid.setAttribute("aria-label", "Похожие фильмы и сериалы");
+      (data.items || []).slice(0, 12).forEach((x) => grid.append(card(x)));
+      box.append(grid);
+      box.hidden = !grid.children.length;
+    } catch (e) {
+      if (loadedID === id) loadedID = "";
+    }
   }
   function sources(items, id) {
     let box = document.getElementById("manual-sources");
@@ -224,5 +220,5 @@ const FilmFeatures = (() => {
   window.addEventListener("personalchange", () => {
     if (typeof currentItem !== "undefined") render(currentItem);
   });
-  return { render, explore, sources };
+  return { render, explore, sources, renderCredits };
 })();

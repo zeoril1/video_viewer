@@ -129,6 +129,65 @@ button:focus-visible {
 .feature-section {
   margin: 24px 0;
 }
+.page-card > .feature-section,
+.page-card > #trailer-actions {
+  margin: 20px;
+}
+#film-personal .feature-actions {
+  padding: 0;
+}
+#film-personal label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+#film-personal input {
+  padding: 8px;
+  border: 1px solid #43465e;
+  border-radius: 8px;
+  background: #181b2b;
+  color: #eee;
+}
+#manual-sources > summary {
+  cursor: pointer;
+  padding: 10px 0;
+}
+.feature-pagination {
+  margin-top: 20px;
+  padding: 0;
+}
+#film-explore h3 {
+  margin: 0 0 12px;
+}
+.feature-carousel {
+  display: flex;
+  gap: 16px;
+  overflow-x: auto;
+  padding: 4px 4px 12px;
+  scroll-snap-type: x proximity;
+}
+.feature-carousel > .feature-card {
+  flex: 0 0 160px;
+  scroll-snap-align: start;
+}
+.details-line a {
+  color: inherit;
+  text-underline-offset: 3px;
+}
+#trailer-player {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border: 0;
+}
+#trailer-player[hidden],
+#player-wrap.trailer-mode > #player,
+#player-wrap.trailer-mode > #player-controls,
+#player-wrap.trailer-mode > #ctrl-mini,
+.trailer-mode ~ #tracks,
+.trailer-mode ~ #subs {
+  display: none;
+}
 .epg-table-wrap {
   overflow: auto;
   max-height: 70vh;

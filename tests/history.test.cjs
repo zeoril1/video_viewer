@@ -113,7 +113,7 @@ test('opening an episode restores its position and respects explicit restart fro
   const source = player.slice(player.indexOf('  function start(opts)'), player.indexOf('  function stop(opts)'));
   let position;
   const ctx = vm.createContext({ available: true, currentPlay: null, selectedVoice: '',
-    playerWrap: {}, updateQualityButtons() {}, loadFiles() {}, loadTracks() {}, notify() {},
+    playerWrap: {}, closeTrailer() {}, updateQualityButtons() {}, loadFiles() {}, loadTracks() {}, notify() {},
     episodeHistoryEntry: () => ({ position: 136 }), maybeSaveProgress() {},
     playHls: (id, magnet, file, track, pos) => { position = pos; },
     window: { dispatchEvent() {} }, Event: function () {} });

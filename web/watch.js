@@ -107,6 +107,9 @@ async function initWatchPage() {
   setFilmLink();
   setWatchTitle();
   // Сериал (переход по старой ссылке) — показываем список серий текущей раздачи.
+  Personal.request('/api/films/' + encodeURIComponent(watchId) + '/explore')
+    .then(data => PP.setTrailer(data.trailer || ''))
+    .catch(() => {});
   if (isSeriesKind(currentItem.kind)) PP.setEpisodeList(document.getElementById('ep-list'));
   PP.start({
     id: watchId,

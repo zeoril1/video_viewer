@@ -208,7 +208,7 @@ func (m *sourcesManager) run(ctx context.Context, filmID string) error {
 
 	// У сериалов один общий запрос по названию, недостающие сезоны добираются точечно; есть запасной проход по исходному названию.
 	isSeries := isSeriesKind(film.Kind)
-	matcher := newTitleMatcher(trackerTitles(film))
+	matcher := newFilmTitleMatcher(film)
 	var searchErr error
 	search := func(ctx context.Context, q string, limit int) ([]magnet.Result, error) {
 		results, err := m.magnet.Search(ctx, q, limit)
@@ -466,6 +466,7 @@ func sourceItemsFromDB(srcs []db.Source, film db.Film) []sourceItem {
 			Quality: s.Quality, Audio: s.Audio, Season: s.Season, Provider: s.Provider,
 		})
 	}
+	items = newFilmTitleMatcher(film).filter(film.IMDBID, items)
 	sortSourceItems(items, isSeriesKind(film.Kind))
 	return items
 }

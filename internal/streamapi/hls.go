@@ -39,6 +39,15 @@ type subtitleTrack struct {
 	Title    string `json:"title"`
 }
 
+func selectSubtitle(items []subtitleTrack, ordinal int) (subtitleTrack, error) {
+	for _, item := range items {
+		if item.Ordinal == ordinal && isTextSubtitleCodec(item.Codec) {
+			return item, nil
+		}
+	}
+	return subtitleTrack{}, fmt.Errorf("subtitle track %d not found", ordinal)
+}
+
 // hlsSession — запущенный ffmpeg-процесс HLS (видео копируется или перекодируется, звук — в AAC).
 type hlsSession struct {
 	id       string
@@ -351,22 +360,21 @@ func (m *hlsManager) ensure(ctx context.Context, id, magnet string, file, track,
 	// в Go нереентерабельны (иначе вешались все HLS-запросы при start=0).
 	m.mu.Unlock()
 
-	// Проверяем subs по кэшу ffprobe: невалидный номер уронит ffmpeg
-	// (-map 0:s:N не найдёт поток). Нет пробы — доверяем параметру.
+	// subs — номер в отфильтрованном списке текстовых дорожек API.
+	// Маппим по глобальному Index: перед текстом в файле могут идти PGS/DVDSUB.
 	subsLabel := ""
+	subsMap := ""
 	if subs >= 0 {
-		key := probeKey(id, magnet, file)
-		m.mu.Lock()
-		pr, ok := m.probeCache[key]
-		m.mu.Unlock()
-		if ok {
-			if subs >= len(pr.Subtitles) {
-				log.Printf("hls: ensure %s: субтитр %d не найден — без субтитров", id, subs)
-				subs = -1
-			} else {
-				subsLabel = subtitleLabel(pr.Subtitles[subs])
-			}
+		pr, err := m.tracks(ctx, id, magnet, file)
+		if err != nil {
+			return nil, fmt.Errorf("probe subtitles: %w", err)
 		}
+		selected, err := selectSubtitle(pr.Subtitles, subs)
+		if err != nil {
+			return nil, err
+		}
+		subsLabel = subtitleLabel(selected)
+		subsMap = fmt.Sprintf("0:%d", selected.Index)
 	}
 
 	// Зондируем ВНЕ лока: ffprobe может идти секунды и заблокировал бы HLS.
@@ -417,7 +425,7 @@ func (m *hlsManager) ensure(ctx context.Context, id, magnet string, file, track,
 	// поэтому задаём var_stream_map s:0,sgroup:subtitle и -master_pl_name.
 	hasSubs := subs >= 0
 	if hasSubs {
-		args = append(args, "-map", fmt.Sprintf("0:s:%d", subs))
+		args = append(args, "-map", subsMap)
 	}
 	if h := qualityHeight(quality); h > 0 {
 		// Понижение качества (H.264, высота ≤ исходной). Важно для HDR/10-бит: без

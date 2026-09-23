@@ -6,7 +6,7 @@
   <title>Просмотр — Video Viewer</title>
   <link rel="stylesheet" href="style.css?v=21" />
   <link rel="stylesheet" href="tv.css?v=1" />
-  <link rel="stylesheet" href="features.css?v=1" />
+  <link rel="stylesheet" href="features.css?v=2" />
 </head>
 <body data-page="watch">
   <header class="topbar">
@@ -27,7 +27,11 @@
   </header>
 
   <main class="page page-wide">
+    <div id="trailer-actions" class="feature-actions" hidden>
+      <button id="trailer-toggle" class="auth-btn" type="button" aria-pressed="false">▶ Трейлер</button>
+    </div>
     <div class="player-wrap" id="player-wrap" hidden>
+      <iframe id="trailer-player" title="Трейлер" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen hidden></iframe>
       <video id="player" playsinline></video>
       <div id="ctrl-mini" class="ctrl-mini"><div id="ctrl-mini-fill"></div></div>
       <div id="player-controls" class="player-controls">
@@ -79,9 +83,9 @@
   <script src="vendor/hls.min.js"></script>
   <script src="shared.js?v=2"></script>
   <script src="personal.js?v=1"></script>
-  <script src="features.js?v=1"></script>
+  <script src="features.js?v=2"></script>
   <script src="series.js?v=2"></script>
-  <script src="player.js?v=1"></script>
+  <script src="player.js?v=2"></script>
   <script src="watch.js?v=2"></script>
   <script src="recovery.js?v=1"></script>
   <script src="tv.js?v=2"></script>

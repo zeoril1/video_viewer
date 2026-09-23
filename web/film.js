@@ -597,6 +597,7 @@ function showDetails(it) {
   detailsDirector.textContent = director ? t('directorLabel') + ': ' + director : '';
   const actors = dispActors(it).join(', ');
   detailsActors.textContent = actors ? t('actorsLabel') + ': ' + actors : '';
+  if (typeof FilmFeatures !== 'undefined') FilmFeatures.renderCredits();
 
   detailsPlot.textContent = dispPlot(it) || t('noPlot');
   filmTitleEl.textContent = dispTitle(it);
