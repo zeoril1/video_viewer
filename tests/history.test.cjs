@@ -35,6 +35,26 @@ test('reload of same source restores position and voice but respects explicit po
 });
 const player = read('player.js');
 const save = player.slice(player.indexOf('  function maybeSaveProgress('), player.indexOf('  function keepStreamCache('));
+
+test('loading files restores episode metadata and notifies the page, including after a switch', async () => {
+  const source = player.slice(player.indexOf('  async function loadFiles()'), player.indexOf('  function renderEpisodeList()'));
+  let resolveFiles, notified;
+  const ctx = vm.createContext({ currentPlay: { id: 'tt0460681', magnet: 'm' }, releaseTitle: '',
+    currentFile: 3, curSeason: 0, curEpisode: 0, hooks: {},
+    fetchFiles: () => new Promise(resolve => { resolveFiles = resolve; }), dbg() {}, renderEpisodeList() {},
+    notify() { notified = [ctx.curSeason, ctx.curEpisode]; } });
+  vm.runInContext(source, ctx);
+  const pending = ctx.loadFiles();
+  ctx.currentFile = 4;
+  resolveFiles([{ index: 3, season: 1, episode: 4 }, { index: 4, season: 1, episode: 5 }]);
+  await pending;
+  assert.deepEqual(notified, [1, 5]);
+  const stale = ctx.loadFiles();
+  ctx.currentPlay = { id: 'other', magnet: 'new' };
+  resolveFiles([{ index: 4, season: 9, episode: 9 }]);
+  await stale;
+  assert.deepEqual(notified, [1, 5]);
+});
 test('series progress includes episode and voice and updates local history after success', async () => {
   let sent, remembered;
   const ctx = vm.createContext({ VV: { user: {} }, currentPlay: { id: 'tt1', magnet: entry.magnet },

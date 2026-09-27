@@ -161,7 +161,7 @@ const PP = (() => {
     if (!final && now - lastProgressSend < 5000) return null;
     const pos = Math.round(absTime());
     if (!Number.isFinite(pos) || pos < 0) return null;
-    const sample = currentPlay.id + '|' + currentPlay.magnet + '|' + currentFile + '|' + pos;
+    const sample = currentPlay.id + '|' + currentPlay.magnet + '|' + currentFile + '|' + pos + '|' + curSeason + '|' + curEpisode;
     if (sample === lastSavedSample) return null;
     lastSavedSample = sample;
     // Просмотрено >5% — просим stream держать раздачу 24 ч (другие зрители той же озвучки скачают без повторов).
@@ -613,11 +613,17 @@ const PP = (() => {
     const files = await fetchFiles(play.id, play.magnet, releaseTitle);
     if (currentPlay !== play) return;
     lastFiles = files || [];
+    const selected = lastFiles.find((f) => f.index === currentFile);
+    if (selected) {
+      curSeason = selected.season || curSeason;
+      curEpisode = selected.episode || curEpisode;
+    }
     dbg('files: файлов=' + lastFiles.length + ' (id=' + currentPlay.id + ')');
     if (hooks.onFiles) {
       try { hooks.onFiles(lastFiles, state()); } catch (e) { dbg('files hook: ' + e.message); }
     }
     renderEpisodeList();
+    notify();
   }
 
   // Список серий раздачи (только если страница передала элемент через setEpisodeList).
