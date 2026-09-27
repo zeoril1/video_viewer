@@ -40,6 +40,7 @@
     box.hidden = true;
   });
   window.addEventListener("playbackfailure", offer);
+ window.addEventListener("requestsourcechange",()=>{offer();button.click();});
   video.addEventListener("error", offer);
   video.addEventListener("waiting", () => {
     if (!stalled) stalled = Date.now();

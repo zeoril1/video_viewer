@@ -56,6 +56,9 @@ func NewServer(cfg Config) http.Handler {
 
 	// ---- Авторизация и история (auth-сервис) ----
 	mux.HandleFunc("/api/auth/", proxyTo(cfg.AuthURL))
+	mux.HandleFunc("/api/rooms", proxyTo(cfg.AuthURL))
+	mux.HandleFunc("/api/rooms/", proxyTo(cfg.AuthURL))
+	mux.HandleFunc("POST /api/stream/prepare", proxyTo(cfg.StreamURL))
 	mux.HandleFunc("/api/personal", proxyTo(cfg.AuthURL))
 	mux.HandleFunc("/api/personal/", proxyTo(cfg.AuthURL))
 	mux.HandleFunc("/api/discover/", proxyTo(cfg.CatalogURL))
@@ -193,7 +196,7 @@ func clientAddress(next http.Handler, trustedProxy string) http.Handler {
 		}
 		// Разбираем X-Forwarded-For только там, где он нужен (лимиты входа),
 		// и только если он вообще пришёл: без заголовка разбирать нечего.
-		if tp.host != "" && strings.HasPrefix(r.URL.Path, "/api/auth/") && r.Header.Get("X-Forwarded-For") != "" {
+		if tp.host != "" && (strings.HasPrefix(r.URL.Path, "/api/auth/") || r.URL.Path == "/api/rooms" || strings.HasPrefix(r.URL.Path, "/api/rooms/")) && r.Header.Get("X-Forwarded-For") != "" {
 			for _, address := range tp.ips() {
 				if address.Equal(net.ParseIP(ip)) {
 					chain := strings.Split(r.Header.Get("X-Forwarded-For"), ",")

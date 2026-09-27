@@ -9,12 +9,14 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 
 	g "github.com/anacrolix/generics"
 	"github.com/anacrolix/torrent/metainfo"
 	"github.com/anacrolix/torrent/storage"
+	"github.com/zeoril1/video_viewer/internal/disklimit"
 )
 
 // spoolClient хранит скачанные куски в файлах на диске — ПО ОДНОМУ ФАЙЛУ НА ФАЙЛ
@@ -24,7 +26,8 @@ import (
 // Данные лежат в вытесняемом OS page cache, в heap — только карта завершённости
 // кусков; спул временный (файлы удаляются при Drop/Close).
 type spoolClient struct {
-	dir string // каталог для файлов *.spool
+	budget *disklimit.Budget
+	dir    string // каталог для файлов *.spool
 
 	// mu защищает open; нужен, чтобы Close успел закрыть файлы до удаления
 	// (на Windows нельзя удалить открытый файл).
@@ -67,6 +70,18 @@ func removeLegacySpool(dir string) {
 
 var errSpoolClosed = errors.New("spool: storage closed")
 
+// Each spool directory belongs to one stream process. Completion maps live in
+// memory, so data from an earlier process cannot safely be reused after restart.
+func removeAbandonedSpool(dir string) {
+	owned := regexp.MustCompile(`^[a-fA-F0-9]{40}\.[0-9]+\.spool$`)
+	entries, _ := os.ReadDir(dir)
+	for _, entry := range entries {
+		if !entry.IsDir() && owned.MatchString(entry.Name()) {
+			_ = os.Remove(filepath.Join(dir, entry.Name()))
+		}
+	}
+}
+
 // spoolTorrent — открытый торрент: по файлу на серию; кусок на границе серий
 // разбит на сегменты (pieceSeg).
 type spoolTorrent struct {
@@ -83,6 +98,8 @@ type spoolTorrent struct {
 
 // spoolFile — дисковый файл серии; создаётся лениво (пока серия не качается, файла нет).
 type spoolFile struct {
+	budget *disklimit.Budget
+	high   int64
 	path   string
 	offset int64 // глобальное смещение серии в торренте
 	size   int64 // полный размер серии
@@ -156,6 +173,7 @@ func newSpoolTorrent(c *spoolClient, key string, info *metainfo.Info) *spoolTorr
 	t.files = make([]*spoolFile, len(fileInfos))
 	for i, fi := range fileInfos {
 		t.files[i] = &spoolFile{
+			budget: c.budget,
 			path:   filepath.Join(c.dir, fmt.Sprintf("%s.%d.spool", key, i)),
 			offset: fi.TorrentOffset,
 			size:   fi.Length,
@@ -321,27 +339,32 @@ func (f *spoolFile) reader() *os.File {
 // место выделяется только под качаемые серии).
 func (f *spoolFile) writeAt(off int64, b []byte) (int, error) {
 	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.f == nil {
-		// O_TRUNC: осиротевший файл от прошлого запуска не должен отдавать
-		// устаревшие данные (завершённость кусков живёт только в памяти клиента).
 		file, err := os.OpenFile(f.path, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0o644)
 		if err != nil {
-			f.mu.Unlock()
-			return 0, fmt.Errorf("spool: open %s: %w", f.path, err)
+			return 0, err
 		}
 		f.f = file
+		_ = f.budget.Resize(f.path, 0)
 	}
-	file := f.f
-	f.mu.Unlock()
-
-	n, err := file.WriteAt(b, off)
+	high := max(f.high, off+int64(len(b)))
+	if err := f.budget.Resize(f.path, high); err != nil {
+		return 0, err
+	}
+	n, err := f.f.WriteAt(b, off)
+	if info, e := f.f.Stat(); e == nil {
+		f.high = info.Size()
+		_ = f.budget.Resize(f.path, f.high)
+	} else {
+		f.high = high
+	}
 	if n < len(b) && err == nil {
 		err = io.ErrShortWrite
 	}
 	return n, err
 }
 
-// Close закрывает и удаляет файл серии (если в серию не писали — файла нет).
 func (f *spoolFile) Close() error {
 	f.mu.Lock()
 	file := f.f
@@ -356,6 +379,7 @@ func (f *spoolFile) Close() error {
 	if err := os.Remove(f.path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return errors.Join(closeErr, fmt.Errorf("spool: remove %s: %w", f.path, err))
 	}
+	_ = f.budget.Resize(f.path, 0)
 	return closeErr
 }
 

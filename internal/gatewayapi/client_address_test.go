@@ -20,14 +20,16 @@ func TestClientAddressTrustBoundary(t *testing.T) {
 			}))
 			defer upstream.Close()
 			h := NewServer(Config{AuthURL: upstream.URL, WebDir: t.TempDir(), TrustedProxy: tc.trusted})
-			req := httptest.NewRequest("POST", "/api/auth/login", nil)
-			req.RemoteAddr = tc.peer
-			req.Header.Set("X-Video-Viewer-Client-IP", "203.0.113.9")
-			req.Header.Set("X-Forwarded-For", "203.0.113.9, 198.51.100.2")
-			rec := httptest.NewRecorder()
-			h.ServeHTTP(rec, req)
-			if rec.Code != 200 {
-				t.Fatal(rec.Code)
+			for _, path := range []string{"/api/auth/login", "/api/rooms", "/api/rooms/example"} {
+				req := httptest.NewRequest("POST", path, nil)
+				req.RemoteAddr = tc.peer
+				req.Header.Set("X-Video-Viewer-Client-IP", "203.0.113.9")
+				req.Header.Set("X-Forwarded-For", "203.0.113.9, 198.51.100.2")
+				rec := httptest.NewRecorder()
+				h.ServeHTTP(rec, req)
+				if rec.Code != 200 {
+					t.Fatal(rec.Code)
+				}
 			}
 		})
 	}

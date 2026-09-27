@@ -86,6 +86,7 @@ document.addEventListener('keydown', (e) => {
 });
 
 async function initWatchPage() {
+ if(wParams.has("room")){await WatchRoom.join(wParams.get("room"));return;}
   await loadEpisodeHistory(watchId);
   PP.init({ onStateChange: onPlayerState, onReleaseEnd: nextFromFilmPage });
   if (!watchId || !magnet) {

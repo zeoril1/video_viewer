@@ -5,7 +5,9 @@ package torrents
 
 import (
 	"errors"
+	"github.com/zeoril1/video_viewer/internal/disklimit"
 	"log"
+	"os"
 	"runtime"
 	"runtime/debug"
 	"sort"
@@ -19,7 +21,9 @@ import (
 
 // Config — параметры торрент-клиента.
 type Config struct {
-	ListenPort int
+	MaxCacheBytes int64
+	MinFreeBytes  int64
+	ListenPort    int
 	// SpoolDir — каталог дискового спула скачанных кусков (по файлу на серию);
 	// пусто — прежнее поведение: данные в памяти.
 	SpoolDir string
@@ -63,7 +67,12 @@ func NewManager(cfg Config) (*Manager, error) {
 
 	var spool *spoolClient
 	if cfg.SpoolDir != "" {
+		if err := os.MkdirAll(cfg.SpoolDir, 0755); err != nil {
+			return nil, err
+		}
+		removeAbandonedSpool(cfg.SpoolDir)
 		spool = newSpoolClient(cfg.SpoolDir)
+		spool.budget = disklimit.New(cfg.SpoolDir, cfg.MaxCacheBytes, cfg.MinFreeBytes)
 		cc.DefaultStorage = spool
 		log.Printf("torrents: дисковый спул включён (%s)", cfg.SpoolDir)
 	} else {
@@ -149,6 +158,7 @@ func (m *Manager) Acquire(item catalog.Item) (*torrent.Torrent, func(), error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	m.trimDiskLocked()
 	t, err := m.getOrOpenLocked(item, hash)
 	if err != nil {
 		return nil, nil, err
@@ -237,6 +247,9 @@ func (m *Manager) Keep(magnet string, dur time.Duration) {
 	until := time.Now().Add(dur)
 
 	m.mu.Lock()
+	if existing := m.keepUntil[hash]; existing.After(until) {
+		until = existing
+	}
 	m.keepUntil[hash] = until
 	// Простаивающий открытый торрент — продлеваем отложенную выгрузку до TTL.
 	if _, open := m.open[hash]; open && m.readers[hash] <= 0 {
@@ -342,7 +355,10 @@ func (m *Manager) ApplyDownloadPriorities(item catalog.Item) {
 func (m *Manager) applyFilePriorities(hash string) {
 	m.mu.Lock()
 	t := m.open[hash]
-	wants := m.fileWants[hash]
+	wants := make(map[int]int)
+	for i, n := range m.fileWants[hash] {
+		wants[i] = n
+	}
 	m.mu.Unlock()
 	if t == nil || t.Info() == nil {
 		return
@@ -390,3 +406,31 @@ func (m *Manager) Status() []TorrentStatus {
 	}
 	return res
 }
+
+// Trim idle cached torrents before admitting more data; active readers survive.
+func (m *Manager) trimDiskLocked() {
+	if m.spool == nil || !m.spool.budget.Pressure() {
+		return
+	}
+	type candidate struct {
+		hash  string
+		until time.Time
+	}
+	var idle []candidate
+	for h := range m.open {
+		if m.readers[h] == 0 {
+			idle = append(idle, candidate{h, m.keepUntil[h]})
+		}
+	}
+	sort.Slice(idle, func(i, j int) bool { return idle[i].until.Before(idle[j].until) })
+	for _, c := range idle {
+		if !m.spool.budget.Pressure() {
+			break
+		}
+		if timer := m.dropTimers[c.hash]; timer != nil {
+			timer.Stop()
+		}
+		m.dropLocked(c.hash)
+	}
+}
+func (m *Manager) DiskPressure() bool { return m.spool != nil && m.spool.budget.Pressure() }

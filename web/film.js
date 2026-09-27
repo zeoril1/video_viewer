@@ -394,6 +394,7 @@ async function onPickEpisode(ep) {
 async function playEpisode(id, season, ep) {
   const items = lastSourceItems;
   if (!id || !items || !items.length) return false;
+ if(typeof PlaybackExtras!=='undefined')PlaybackExtras.loading('searching','Проверяем источник выбранной серии.');
   const voice = voicePref[season] || Personal.preferences().voice || '';
   let cands;
   if (voice) {
@@ -450,6 +451,7 @@ async function playEpisode(id, season, ep) {
   if ((!src || !f || !files) && fb) { src = fb.c; files = fb.fs; f = fb.f; }
   if (!src || !f || !files) {
     flashFilmNote(t('episodesUnavailable'));
+    if(typeof PlaybackExtras!=='undefined')PlaybackExtras.loading('error','Подходящий источник не найден. Выберите другую раздачу или озвучку.');
     return false;
   }
   if (voice) relPref[season] = src.magnet;
@@ -822,3 +824,5 @@ onAuth(() => updateResumeBtn(currentItem));
 
 applyLang();
 initAuth().then(() => Personal.load()).catch(() => {}).then(initFilmPage);
+
+window.addEventListener('retryplayback', () => watchNow());

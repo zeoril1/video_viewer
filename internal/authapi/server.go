@@ -24,6 +24,12 @@ func NewServer(cfg Config) http.Handler {
 
 	auth := &authHandler{repo: cfg.DB, secureCookies: cfg.SecureCookies, limiter: newLoginLimiter()}
 	history := &historyHandler{repo: cfg.DB}
+	rooms := newRoomStore()
+	mux.HandleFunc("POST /api/rooms", rooms.handler(auth))
+	mux.HandleFunc("GET /api/rooms/{room}", rooms.handler(auth))
+	mux.HandleFunc("POST /api/rooms/{room}/leave", rooms.handler(auth))
+	mux.HandleFunc("PUT /api/rooms/{room}", rooms.handler(auth))
+	mux.HandleFunc("DELETE /api/rooms/{room}", rooms.handler(auth))
 
 	mux.HandleFunc("POST /api/auth/register", auth.register)
 	mux.HandleFunc("POST /api/auth/login", auth.login)

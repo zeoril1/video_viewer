@@ -71,6 +71,17 @@ const PP = (() => {
   let autoNextFired = false;   // защита от повторного автоперехода
   let lastProgressSend = 0;
   let playbackReady = false;
+  let follower = false, remotePaused = false;
+  function stage(stage, message) {
+    window.dispatchEvent(new CustomEvent('playbackstage', { detail: { stage, message } }));
+  }
+  function autoPlay() {
+    if (remotePaused) {
+      stage('paused', 'Просмотр на паузе.');
+      return;
+    }
+    if (!trailerActive) player.play().catch(() => stage('paused', 'Нажмите ▶, чтобы начать просмотр.'));
+  }
   let lastSavedSample = '';
   let cacheKeepKey = '';       // раздача#серия, для которых уже запрошен тёплый кеш
   let noteTimer = null;
@@ -143,6 +154,7 @@ const PP = (() => {
       season: curSeason,
       episode: curEpisode,
       voice: selectedVoice,
+      paused: player.paused,
       playing: !!hlsPlayer && !playerWrap.hidden && !trailerActive,
     };
   }
@@ -231,6 +243,7 @@ const PP = (() => {
   // (source|2160|1080|720|480), субтитр subs (-1 — без субтитров). Смена дорожки/качества/
   // субтитра перезапускает ffmpeg; вкл/выкл текущей дорожки делает hls.js (subtitleTrack).
   function playHls(id, magnetSrc, file, track, start, quality, subs) {
+ stage('preparing');
     closeTrailer();
     playbackReady = false;
     if (hlsPlayer) {
@@ -317,7 +330,8 @@ const PP = (() => {
           hls.subtitleDisplay = true;
         }
         playerError.hidden = true;
-        if (!trailerActive) player.play().catch((err) => dbg('player.play(): ' + err));
+        stage('buffering');
+ autoPlay();
       });
       hls.on(Hls.Events.LEVEL_SWITCHED, (_e, d) => dbg('hls: уровень переключён: ' + d.level));
       hls.on(Hls.Events.FRAG_BUFFERED, (_e, d) => dbg('hls: фрагмент ' + d.frag.sn + ' @ ' + Math.round(d.frag.start) + 's'));
@@ -331,6 +345,7 @@ const PP = (() => {
         // доступными — можно выбрать другую дорожку или вариант с H.264.
         if (data && data.fatal) {
           window.dispatchEvent(new Event('playbackfailure'));
+ if(data.response&&data.response.code===503)stage('error','Сервер занят или достигнут лимит диска. Подождите немного и повторите запуск.');
           dbg('hls: ФАТАЛЬНАЯ ошибка, воспроизведение остановлено');
           // Простой >90с (пауза/свёрнутая вкладка) — cleanup убил ffmpeg-сессию и файлы, hls.js
           // получает 404 на сегмент: вместо фатальной ошибки прозрачно перезапускаем поток с текущей
@@ -374,14 +389,14 @@ const PP = (() => {
       };
       player.textTracks.onaddtrack = showNativeSubtitles;
       player.onloadedmetadata = showNativeSubtitles;
-      player.play().catch(() => {});
+      autoPlay();
     } else {
       // HLS не поддерживается браузером — сырой поток (без транскодинга).
       dbg('HLS: не поддерживается — сырой поток');
       const qs = new URLSearchParams({ magnet: magnetSrc });
       if (currentFile >= 0) qs.set('file', String(currentFile));
       player.src = `/api/stream/${encodeURIComponent(id)}?` + qs.toString();
-      player.play().catch(() => {});
+      autoPlay();
     }
   }
 
@@ -459,6 +474,7 @@ const PP = (() => {
       // (или нулевой) звуковой дорожке блок субтитров не появился бы.
       currentSubtitles = subtitles;
       renderSubtitles(subtitles, id, magnetSrc);
+ window.dispatchEvent(new CustomEvent("subtitletracks",{detail:subtitles}));
       // track — ПОРЯДКОВЫЙ номер аудио (ordinal), а не index потока: у MKV index=0 это
       // видео, и track=0 дал бы два видеопотока без звука → bufferAppendError. Дефолт —
       // первый аудио; аудио нет — track=-1 (video-only).
@@ -595,11 +611,12 @@ const PP = (() => {
   }
 
   // Выбор субтитр-дорожки (ordinal; -1 — выкл) с сохранением позиции/дорожки/качества.
-  function subsSelect(id, magnetSrc, subs) {
+  function subsSelect(id, magnetSrc, subs, remember = true) {
     if (!currentPlay || subs === currentSubs) return;
     dbg('субтитры: ' + id + ' -> ' + (subs >= 0 ? subs : 'выкл'));
     const position = absTime();
     currentSubs = subs;
+    if(remember){const tr=currentSubtitles.find(t=>t.ordinal===subs);window.dispatchEvent(new CustomEvent('subtitlechoice',{detail:tr?tr.language:'off'}));}
     renderSubtitles(currentSubtitles, id, magnetSrc);
     playHls(id, magnetSrc, currentFile, currentTrack, position, currentQuality, subs);
   }
@@ -677,6 +694,7 @@ const PP = (() => {
     dbg('серия: файл #' + index);
     loadTracks(currentPlay.id, currentPlay.magnet, currentFile);
     playHls(currentPlay.id, currentPlay.magnet, currentFile, 0, streamStart, currentQuality);
+ if(typeof window!=='undefined')window.dispatchEvent(new Event('playbackstart'));
   }
 
   // Соседний файл серии в текущем источнике (dir=1 — следующая, -1 — предыдущая).
@@ -690,7 +708,10 @@ const PP = (() => {
   // Следующая/предыдущая серия; auto=true — автопереход: раздача кончилась — спрашиваем
   // страницу (film.js ищет следующую серию в других раздачах, watch.js уводит на карточку).
   function playNeighbor(dir, auto) {
+ if(follower)return;
     if (!currentPlay) return;
+    const prepared=dir>0&&typeof PlaybackExtras!=='undefined'&&PlaybackExtras.next?PlaybackExtras.next():null;
+    if(prepared){start(prepared);return;}
     const next = episodeNeighbor(dir);
     if (next) {
       dbg('серия: ' + (dir > 0 ? 'следующая' : 'предыдущая') + ' -> файл #' + next.index);
@@ -756,7 +777,7 @@ const PP = (() => {
     ctrlMute.textContent = player.muted || player.volume === 0 ? '🔇' : '🔊';
     updateEpisodeButtons();
     // Автопереход: поток прогрессивный, ended не приходит — конец отслеживаем по позиции.
-    if (!player.paused && totalDuration > 0 && pos >= totalDuration - 1.5 && !autoNextFired) {
+    if (!follower && !player.paused && totalDuration > 0 && pos >= totalDuration - 1.5 && !autoNextFired) {
       autoNextFired = true;
       playNeighbor(1, true);
     }
@@ -767,7 +788,8 @@ const PP = (() => {
   // иначе (раньше streamStart или за переданной границей) перезапускаем ffmpeg с позиции.
   if (available && ctrlBar) {
     ctrlBar.addEventListener('click', (e) => {
-      const rect = ctrlBar.getBoundingClientRect();
+      if(follower)return;
+ const rect = ctrlBar.getBoundingClientRect();
       const frac = (e.clientX - rect.left) / rect.width;
       const dur = totalDuration || streamStart + (player.duration || 0);
       const target = Math.max(0, Math.min(dur, frac * dur));
@@ -791,6 +813,7 @@ const PP = (() => {
 
   // Перемотка на delta секунд: внутри переданных данных двигаем currentTime, иначе перезапуск ffmpeg.
   function seekBy(delta) {
+ if(follower)return;
     if (!currentPlay || playerWrap.hidden) return;
     const dur = totalDuration || streamStart + (player.duration || 0);
     const target = Math.max(0, isFinite(dur) ? Math.min(dur, absTime() + delta) : absTime() + delta);
@@ -895,7 +918,7 @@ const PP = (() => {
         dbg('качество: ' + currentQuality + ' -> ' + q);
         currentQuality = q;
         updateQualityButtons();
-        playHls(currentPlay.id, currentPlay.magnet, currentFile, currentTrack, streamStart, q, currentSubs);
+        playHls(currentPlay.id, currentPlay.magnet, currentFile, currentTrack, absTime(), q, currentSubs);
       });
     });
 
@@ -931,7 +954,7 @@ const PP = (() => {
     }
 
     player.addEventListener('ended', () => {
-      if (autoNextFired) return;
+      if (follower || autoNextFired) return;
       autoNextFired = true;
       playNeighbor(1, true);
     });
@@ -950,6 +973,7 @@ const PP = (() => {
     }
 
     player.addEventListener('timeupdate', updatePlayerUI);
+    player.addEventListener('canplay',()=>{if(follower)autoPlay();});
     player.addEventListener('playing', () => {
       if (trailerActive) { player.pause(); return; }
       playbackReady = true;
@@ -1018,9 +1042,10 @@ const PP = (() => {
   function start(opts) {
     if (!available) return false;
     const o = opts || {};
+ remotePaused=!!o.paused;
     if (!o.id || !o.magnet) return false;
     closeTrailer();
-    if (currentPlay) maybeSaveProgress(true);
+    if (currentPlay) {maybeSaveProgress(true);if(currentPlay.id!==o.id)leave();}
     playbackReady = false;
     lastProgressSend = 0;
     currentPlay = { id: o.id, magnet: o.magnet };
@@ -1050,6 +1075,8 @@ const PP = (() => {
 
   // Остановка: гасим поток и прячем плеер (карточка фильма при этом остаётся на месте).
   function stop(opts) {
+ if(currentPlay)leave();
+ window.dispatchEvent(new Event("playbackstop"));
     closeTrailer();
     const o = opts || {};
     if (currentPlay && !o.keepProgress) maybeSaveProgress(true);
@@ -1103,7 +1130,23 @@ const PP = (() => {
     showNote,
     saveProgress: maybeSaveProgress,
     hide: () => { if (playerWrap) playerWrap.hidden = true; },
-    version: 1,
+    ready: () => playbackReady || player.readyState >= 2,
+    setFollower: value => { follower = value; },
+    setRemotePaused: value => {
+      remotePaused = value;
+      if (value) {
+        player.pause();
+        stage('paused', 'Ведущий поставил просмотр на паузу.');
+      } else if (follower && player.readyState >= 2 && player.paused) autoPlay();
+    },
+    selectSubtitle: ordinal => {
+      if (currentPlay) subsSelect(currentPlay.id, currentPlay.magnet, ordinal, false);
+    },
+    seek: target => {
+      if (target >= streamStart && target <= absBufEnd()) player.currentTime = target - streamStart;
+      else seekTo(target);
+    },
+    version: 2,
   };
 })();
 

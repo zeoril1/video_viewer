@@ -1,0 +1,21 @@
+.playback-extras{margin:1rem 0;padding:1rem;border:1px solid var(--border,#394150);border-radius:12px;background:var(--surface,#161b24);color:var(--text,#eee)}
+.playback-extras [hidden]{display:none!important}
+.playback-extras button,.playback-extras select,.playback-extras input{font:inherit;border:1px solid #687083;border-radius:7px;padding:.55rem;background:#252c38;color:#fff;max-width:100%}
+.playback-extras button{cursor:pointer;margin:.25rem}
+.playback-extras button:focus-visible,.playback-extras input:focus-visible,.playback-extras select:focus-visible,.playback-extras summary:focus-visible{outline:3px solid #8ebcff;outline-offset:3px}
+.playback-extras summary{cursor:pointer;padding:.5rem 0}
+.playback-settings{display:flex;flex-wrap:wrap;gap:1rem;padding:1rem 0}
+.playback-settings label{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap}
+.playback-settings input[type=number]{width:6rem}
+.playback-extras p{margin:.5rem 0;font-size:.95rem;color:#bdc9da}
+#loading-state{padding:.7rem;border-left:3px solid #8ebcff;margin-bottom:1rem}
+.playback-loading{position:absolute;inset:0 0 48px;z-index:5;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;gap:.5rem;background:rgba(10,14,22,.9);color:#fff;overflow:auto}
+.playback-loading[hidden]{display:none}
+.playback-loading p{margin:.3rem;max-width:38rem;color:#c7d3e6;font-size:.95rem}
+.playback-loading button{font:inherit;padding:.45rem .8rem;border:1px solid #687083;background:#252c38;color:#fff;border-radius:7px;cursor:pointer}
+.playback-loading button[hidden]{display:none}
+.playback-loading button:focus-visible{outline:3px solid #8ebcff}
+#room-invite{display:block;margin:.6rem 0}#room-link{display:block;width:100%;box-sizing:border-box;margin-top:.4rem}
+.room-guest #ctrl-play,.room-guest #ctrl-prev,.room-guest #ctrl-next,.room-guest #ctrl-seek-b,.room-guest #ctrl-seek-f{display:none}
+.room-guest #ctrl-bar{pointer-events:none}
+@media(max-width:600px){.playback-settings{display:grid}.playback-extras{padding:.7rem}}
