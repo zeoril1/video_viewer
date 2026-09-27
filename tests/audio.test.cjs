@@ -1,0 +1,29 @@
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+const player = fs.readFileSync(path.join(__dirname, '../web/player.js'), 'utf8');
+const series = fs.readFileSync(path.join(__dirname, '../web/series.js'), 'utf8');
+const offset = series.indexOf('function matchVoiceOrdinal(');
+const match = series.slice(offset, series.indexOf('\n}', offset) + 2);
+const ctx = vm.createContext({ VOICE_ALIASES: {} });
+vm.runInContext(match + '\n' + player.slice(player.indexOf('  function audioOrdinal('), player.indexOf('  async function loadTracks(')), ctx);
+
+test('selected translation survives reordered audio tracks', () => {
+  const selected = { ordinal: 1, title: 'LostFilm', language: 'rus', magnet: 'old' };
+  const items = [{ ordinal: 0, title: 'LostFilm', language: 'ru' }, { ordinal: 1, title: 'Original', language: 'eng' }];
+  assert.equal(ctx.audioOrdinal(items, selected, 'LostFilm', 'new'), 0);
+});
+test('unnamed audio retains its slot within the same release', () => {
+  const items = [{ ordinal: 0, language: 'rus' }, { ordinal: 1, language: 'rus' }];
+  assert.equal(ctx.audioOrdinal(items, { ordinal: 1, language: 'rus', magnet: 'same' }, 'Дорожка 2 RUS', 'same'), 1);
+});
+test('different release uses matching language instead of blindly keeping index', () => {
+  const items = [{ ordinal: 0, language: 'rus' }, { ordinal: 1, language: 'eng' }];
+  assert.equal(ctx.audioOrdinal(items, { ordinal: 1, language: 'rus', magnet: 'old' }, '', 'new'), 0);
+});
+test('missing audio falls back to a valid track or video-only', () => {
+  assert.equal(ctx.audioOrdinal([], null, '', 'm'), -1);
+  assert.equal(ctx.audioOrdinal([{ ordinal: 3 }], null, 'LostFilm', 'm'), 3);
+});

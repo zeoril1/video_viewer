@@ -62,6 +62,8 @@ const PP = (() => {
   const maxStreamRestarts = 3; // перезапуск после простоя ffmpeg (>90 с → 404 на сегмент)
   let streamRestarts = 0;
   let selectedVoice = '';
+  let selectedAudio = null; // Track identity survives reordered/unnamed tracks across episodes.
+  let tracksGeneration = 0;
   let autoVoice = '';          // выбранная озвучка: loadTracks включит её дорожку
   let lastTracksItems = [];
   let currentFile = -1;        // индекс файла (серии) в торренте; -1 — авто
@@ -436,7 +438,30 @@ const PP = (() => {
   }
 
   // Дорожки/субтитры/длительность текущего файла; включает выбранную озвучку (autoVoice).
+  function audioOrdinal(items, preference, voice, magnet) {
+    if (!items.length) return -1;
+    if (items.length === 1) return items[0].ordinal;
+    const normalize = value => String(value || '').trim().toLowerCase();
+    const language = value => ({ru:'rus', en:'eng', ja:'jpn'})[normalize(value)] || normalize(value);
+    if (preference) {
+      const title = normalize(preference.title), lang = language(preference.language);
+      const exact = title && items.filter(tr => normalize(tr.title) === title && (!lang || language(tr.language) === lang));
+      if (exact && exact.length) return (exact.find(tr => tr.ordinal === preference.ordinal) || exact[0]).ordinal;
+    }
+    const matched = matchVoiceOrdinal(items, voice);
+    if (matched != null) return matched;
+    if (preference) {
+      const lang = language(preference.language);
+      const sameLanguage = lang ? items.filter(tr => language(tr.language) === lang) : [];
+      if (sameLanguage.length === 1) return sameLanguage[0].ordinal;
+      const sameSlot = items.find(tr => tr.ordinal === preference.ordinal);
+      if (preference.magnet === magnet && sameSlot && (!lang || language(sameSlot.language) === lang)) return sameSlot.ordinal;
+    }
+    return items[0].ordinal;
+  }
+
   async function loadTracks(id, magnetSrc, file) {
+    const generation = ++tracksGeneration;
     // Заявляем ключ длительности, чтобы fetchDuration не дублировал этот же запрос.
     durationFetch.key = id + '|' + (magnetSrc || '') + '|' + (typeof file === 'number' ? file : -1);
     durationFetch.inflight = true;
@@ -457,7 +482,7 @@ const PP = (() => {
       }
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const data = await res.json();
-      if (!currentPlay || currentPlay.id !== id || currentPlay.magnet !== magnetSrc || currentFile !== file) return;
+      if (generation !== tracksGeneration || !currentPlay || currentPlay.id !== id || currentPlay.magnet !== magnetSrc || currentFile !== file) return;
       totalDuration = data.duration || 0;
       updatePlayerUI();
       // Запрос длительности завершён — fetchDuration в playHls больше не нужен.
@@ -474,41 +499,27 @@ const PP = (() => {
       // (или нулевой) звуковой дорожке блок субтитров не появился бы.
       currentSubtitles = subtitles;
       renderSubtitles(subtitles, id, magnetSrc);
- window.dispatchEvent(new CustomEvent("subtitletracks",{detail:subtitles}));
-      // track — ПОРЯДКОВЫЙ номер аудио (ordinal), а не index потока: у MKV index=0 это
-      // видео, и track=0 дал бы два видеопотока без звука → bufferAppendError. Дефолт —
-      // первый аудио; аудио нет — track=-1 (video-only).
-      if (items.length === 0) {
-        currentTrack = -1;
-      } else if (!items.some((tr) => tr.ordinal === currentTrack)) {
-        currentTrack = items[0].ordinal;
-      }
-      // Выбранная озвучка (autoVoice): включаем её дорожку, перезапуская поток.
-      const av = autoVoice;
+
+      const previousTrack = currentTrack;
+      const ordinal = audioOrdinal(items, selectedAudio, autoVoice || selectedVoice, magnetSrc);
       autoVoice = '';
-      if (!selectedVoice) {
-        const activeTrack = items.find((tr) => tr.ordinal === currentTrack);
-        if (activeTrack) {
+      currentTrack = ordinal;
+      const activeTrack = items.find(tr => tr.ordinal === ordinal);
+      if (activeTrack) {
+        selectedAudio = { ...activeTrack, magnet: magnetSrc };
+        if (!selectedVoice) {
           selectedVoice = titleVoices(activeTrack.title || '')[0] || activeTrack.title || trackButtonLabel(activeTrack);
           notify();
         }
       }
-      if (av && items.length > 1) {
-        const vo = matchVoiceOrdinal(items, av);
-        if (vo != null && vo !== currentTrack && currentPlay) {
-          currentTrack = vo;
-          dbg('tracks: авто-озвучка «' + av + '» -> дорожка #' + vo);
-          renderTracks(items, id, magnetSrc);
-          playHls(currentPlay.id, currentPlay.magnet, currentFile, vo, streamStart, currentQuality, currentSubs);
-          return;
-        }
+      if (items.length <= 1) tracksEl.hidden = true;
+      else renderTracks(items, id, magnetSrc);
+      if (ordinal !== previousTrack) {
+        playHls(id, magnetSrc, file, ordinal, absTime(), currentQuality, currentSubs);
       }
-      if (items.length <= 1) {
-        tracksEl.hidden = true;
-        return;
-      }
-      renderTracks(items, id, magnetSrc);
+      window.dispatchEvent(new CustomEvent('subtitletracks', { detail: subtitles }));
     } catch (e) {
+      if (generation !== tracksGeneration || !currentPlay || currentPlay.id !== id || currentPlay.magnet !== magnetSrc || currentFile !== file) return;
       dbg('tracks: ошибка ' + id + ': ' + e.message);
       // Длительность не получена — ключ сбрасываем, следующий старт запросит её заново.
       durationFetch.inflight = false;
@@ -573,6 +584,8 @@ const PP = (() => {
         document.querySelectorAll('.track-btn').forEach((b) => b.classList.remove('active'));
         btn.classList.add('active');
         selectedVoice = titleVoices(tr.title || '')[0] || tr.title || label;
+        selectedAudio = { ...tr, magnet: magnetSrc };
+        autoVoice = '';
         notify();
         // Смена дорожки сохраняет позицию, серию, качество и субтитры (ordinal аудио).
         playHls(id, magnetSrc, currentFile, tr.ordinal, absTime(), currentQuality, currentSubs);
@@ -676,7 +689,7 @@ const PP = (() => {
     currentFile = index;
     currentQuality = 'source'; // Новая серия всегда начинается в исходном разрешении.
     streamStart = 0;
-    currentTrack = 0;
+    // Keep the current ordinal until metadata maps the chosen audio to the new file.
     // Субтитры новой серии могут отличаться — сброс (селектор перерисует loadTracks).
     currentSubs = -1;
     // Старая длительность могла бы спровоцировать преждевременный автопереход.
@@ -693,7 +706,7 @@ const PP = (() => {
     notify();
     dbg('серия: файл #' + index);
     loadTracks(currentPlay.id, currentPlay.magnet, currentFile);
-    playHls(currentPlay.id, currentPlay.magnet, currentFile, 0, streamStart, currentQuality);
+    playHls(currentPlay.id, currentPlay.magnet, currentFile, currentTrack, streamStart, currentQuality);
  if(typeof window!=='undefined')window.dispatchEvent(new Event('playbackstart'));
   }
 
@@ -711,7 +724,7 @@ const PP = (() => {
  if(follower)return;
     if (!currentPlay) return;
     const prepared=dir>0&&typeof PlaybackExtras!=='undefined'&&PlaybackExtras.next?PlaybackExtras.next():null;
-    if(prepared){start(prepared);return;}
+    if(prepared){start({...prepared, voice:selectedVoice});return;}
     const next = episodeNeighbor(dir);
     if (next) {
       dbg('серия: ' + (dir > 0 ? 'следующая' : 'предыдущая') + ' -> файл #' + next.index);
@@ -1045,6 +1058,10 @@ const PP = (() => {
  remotePaused=!!o.paused;
     if (!o.id || !o.magnet) return false;
     closeTrailer();
+    const keepAudio = currentPlay && currentPlay.id === o.id && (!o.voice || o.voice === selectedVoice);
+    const initialTrack = keepAudio && currentPlay.magnet === o.magnet ? currentTrack : 0;
+    const previousVoice = keepAudio ? selectedVoice : '';
+    if (!keepAudio) selectedAudio = null;
     if (currentPlay) {maybeSaveProgress(true);if(currentPlay.id!==o.id)leave();}
     playbackReady = false;
     lastProgressSend = 0;
@@ -1055,7 +1072,7 @@ const PP = (() => {
     lastFiles = [];
     curSeason = o.season || 0;
     curEpisode = o.ep || 0;
-    selectedVoice = o.voice || (typeof Personal !== 'undefined' ? Personal.preferences().voice : '') || '';
+    selectedVoice = o.voice || previousVoice || (typeof Personal !== 'undefined' ? Personal.preferences().voice : '') || '';
     autoVoice = selectedVoice;
     currentFile = (typeof o.file === 'number' && o.file >= 0) ? o.file : -1;
     durationFetch = { key: '', inflight: false };
@@ -1067,7 +1084,7 @@ const PP = (() => {
     loadTracks(o.id, o.magnet, currentFile);
     const saved = episodeHistoryEntry(o.id, curSeason, curEpisode, o.magnet, currentFile);
     const position = o.pos != null ? o.pos : (saved ? saved.position : 0);
-    playHls(o.id, o.magnet, currentFile, 0, position, o.quality || 'source', -1);
+    playHls(o.id, o.magnet, currentFile, initialTrack, position, o.quality || 'source', -1);
     window.dispatchEvent(new Event('playbackstart'));
     notify();
     return true;
@@ -1101,6 +1118,8 @@ const PP = (() => {
     }
     if (episodesEl) episodesEl.hidden = true;
     lastTracksItems = [];
+    selectedAudio = null;
+    tracksGeneration++;
     currentSubtitles = [];
     totalDuration = 0;
     currentPlay = null;

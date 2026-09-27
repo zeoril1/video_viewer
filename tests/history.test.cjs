@@ -79,17 +79,18 @@ test('failed progress save is retried and does not update local history', async 
 });
 test('switching episode saves the previous file before resetting playback and retains voice', () => {
   const source = player.slice(player.indexOf('  function selectEpisode('), player.indexOf('  function episodeNeighbor('));
-  let savedFile, savedTime;
+  let savedFile, savedTime, playedTrack;
   const ctx = vm.createContext({ currentPlay: { id: 'tt1', magnet: entry.magnet }, currentFile: 6,
-    selectedVoice: 'LostFilm', streamStart: 125, currentQuality: 'source', episodeHistoryEntry: () => ({ position: 87 }),
+    selectedVoice: 'LostFilm', currentTrack: 2, streamStart: 125, currentQuality: 'source', episodeHistoryEntry: () => ({ position: 87 }),
     lastFiles: [{ index: 7, season: 3, episode: 8 }],
     maybeSaveProgress() { savedFile = ctx.currentFile; savedTime = ctx.streamStart; },
-    renderEpisodeList() {}, notify() {}, dbg() {}, loadTracks() {}, playHls() {} });
+    renderEpisodeList() {}, notify() {}, dbg() {}, loadTracks() {}, playHls(id, magnet, file, track) { playedTrack = track; } });
   vm.runInContext(source, ctx);
   ctx.selectEpisode(7);
   assert.equal(savedFile, 6); assert.equal(savedTime, 125);
   assert.equal(ctx.curEpisode, 8); assert.equal(ctx.autoVoice, 'LostFilm');
   assert.equal(ctx.streamStart, 87);
+  assert.equal(playedTrack, 2);
 });
 
 test('unchanged position and a stream that has not started cannot refresh old history', async () => {
@@ -132,7 +133,7 @@ test('each episode keeps its own position, including across releases', async () 
 test('opening an episode restores its position and respects explicit restart from zero', () => {
   const source = player.slice(player.indexOf('  function start(opts)'), player.indexOf('  function stop(opts)'));
   let position;
-  const ctx = vm.createContext({ available: true, currentPlay: null, selectedVoice: '',
+  const ctx = vm.createContext({ available: true, currentPlay: null, selectedVoice: '', currentTrack: 0,
     playerWrap: {}, closeTrailer() {}, updateQualityButtons() {}, loadFiles() {}, loadTracks() {}, notify() {},
     episodeHistoryEntry: () => ({ position: 136 }), maybeSaveProgress() {},
     playHls: (id, magnet, file, track, pos) => { position = pos; },
