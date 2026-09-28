@@ -64,6 +64,7 @@ const PP = (() => {
   let selectedVoice = '';
   let selectedAudio = null; // Track identity survives reordered/unnamed tracks across episodes.
   let tracksGeneration = 0;
+  let pendingPlayback = null;
   let autoVoice = '';          // выбранная озвучка: loadTracks включит её дорожку
   let lastTracksItems = [];
   let currentFile = -1;        // индекс файла (серии) в торренте; -1 — авто
@@ -78,6 +79,7 @@ const PP = (() => {
     window.dispatchEvent(new CustomEvent('playbackstage', { detail: { stage, message } }));
   }
   function autoPlay() {
+    if (pendingPlayback) return;
     if (remotePaused) {
       stage('paused', 'Просмотр на паузе.');
       return;
@@ -244,7 +246,42 @@ const PP = (() => {
   // Запуск HLS-потока файла: дорожка track, смещение start, качество
   // (source|2160|1080|720|480), субтитр subs (-1 — без субтитров). Смена дорожки/качества/
   // субтитра перезапускает ffmpeg; вкл/выкл текущей дорожки делает hls.js (subtitleTrack).
+  // Resolve tracks before opening HLS. Starting a provisional stream and then
+  // restarting it at currentTime can turn an episode transition into a seek.
+  function beginPlayback(id, magnet, file, track, position, quality) {
+    const pending = { id, magnet, file, position, quality };
+    pendingPlayback = pending;
+    playbackReady = false;
+    autoNextFired = true;
+    if (hlsPlayer) { hlsPlayer.destroy(); hlsPlayer = null; }
+    player.pause();
+    player.removeAttribute('src');
+    player.load();
+    streamStart = position;
+    currentTrack = track;
+    currentQuality = quality;
+    currentSubs = -1;
+    stage('preparing', 'Определяем аудиодорожку и субтитры следующего потока.');
+    loadTracks(id, magnet, file).then(ready => {
+      if (pendingPlayback !== pending) return;
+      pendingPlayback = null;
+      if (!ready) {
+        stage('error', 'Не удалось получить дорожки. Повторите запуск или выберите другой источник.');
+        window.dispatchEvent(new Event('playbackfailure'));
+        return;
+      }
+      playHls(id, magnet, file, currentTrack, pending.position, pending.quality, currentSubs);
+    });
+  }
+
   function playHls(id, magnetSrc, file, track, start, quality, subs) {
+    if (pendingPlayback) {
+      pendingPlayback.position = start || 0;
+      pendingPlayback.quality = quality || 'source';
+      streamStart = pendingPlayback.position;
+      currentQuality = pendingPlayback.quality;
+      return;
+    }
  stage('preparing');
     closeTrailer();
     playbackReady = false;
@@ -514,10 +551,11 @@ const PP = (() => {
       }
       if (items.length <= 1) tracksEl.hidden = true;
       else renderTracks(items, id, magnetSrc);
-      if (ordinal !== previousTrack) {
+      if (!pendingPlayback && ordinal !== previousTrack) {
         playHls(id, magnetSrc, file, ordinal, absTime(), currentQuality, currentSubs);
       }
       window.dispatchEvent(new CustomEvent('subtitletracks', { detail: subtitles }));
+      return true;
     } catch (e) {
       if (generation !== tracksGeneration || !currentPlay || currentPlay.id !== id || currentPlay.magnet !== magnetSrc || currentFile !== file) return;
       dbg('tracks: ошибка ' + id + ': ' + e.message);
@@ -533,6 +571,7 @@ const PP = (() => {
       tracksEl.hidden = false;
       tracksTitle.textContent = t('audioTracks');
       tracksList.innerHTML = '<div class="tracks-note">' + t('tracksUnavailable') + '</div>';
+      return false;
     }
   }
 
@@ -631,7 +670,7 @@ const PP = (() => {
     currentSubs = subs;
     if(remember){const tr=currentSubtitles.find(t=>t.ordinal===subs);window.dispatchEvent(new CustomEvent('subtitlechoice',{detail:tr?tr.language:'off'}));}
     renderSubtitles(currentSubtitles, id, magnetSrc);
-    playHls(id, magnetSrc, currentFile, currentTrack, position, currentQuality, subs);
+    if (!pendingPlayback) playHls(id, magnetSrc, currentFile, currentTrack, position, currentQuality, subs);
   }
 
   // ---- Серии текущей раздачи ----
@@ -705,8 +744,7 @@ const PP = (() => {
     renderEpisodeList();
     notify();
     dbg('серия: файл #' + index);
-    loadTracks(currentPlay.id, currentPlay.magnet, currentFile);
-    playHls(currentPlay.id, currentPlay.magnet, currentFile, currentTrack, streamStart, currentQuality);
+    beginPlayback(currentPlay.id, currentPlay.magnet, currentFile, currentTrack, streamStart, currentQuality);
  if(typeof window!=='undefined')window.dispatchEvent(new Event('playbackstart'));
   }
 
@@ -1081,10 +1119,9 @@ const PP = (() => {
     updateQualityButtons();
     // Серии текущей раздачи — для prev/next (фоном: плеер стартует сразу).
     loadFiles();
-    loadTracks(o.id, o.magnet, currentFile);
     const saved = episodeHistoryEntry(o.id, curSeason, curEpisode, o.magnet, currentFile);
     const position = o.pos != null ? o.pos : (saved ? saved.position : 0);
-    playHls(o.id, o.magnet, currentFile, initialTrack, position, o.quality || 'source', -1);
+    beginPlayback(o.id, o.magnet, currentFile, initialTrack, position, o.quality || 'source');
     window.dispatchEvent(new Event('playbackstart'));
     notify();
     return true;
@@ -1092,6 +1129,7 @@ const PP = (() => {
 
   // Остановка: гасим поток и прячем плеер (карточка фильма при этом остаётся на месте).
   function stop(opts) {
+    pendingPlayback = null;
  if(currentPlay)leave();
  window.dispatchEvent(new Event("playbackstop"));
     closeTrailer();
@@ -1149,7 +1187,7 @@ const PP = (() => {
     showNote,
     saveProgress: maybeSaveProgress,
     hide: () => { if (playerWrap) playerWrap.hidden = true; },
-    ready: () => playbackReady || player.readyState >= 2,
+    ready: () => !pendingPlayback && (playbackReady || player.readyState >= 2),
     setFollower: value => { follower = value; },
     setRemotePaused: value => {
       remotePaused = value;

@@ -84,7 +84,7 @@ test('switching episode saves the previous file before resetting playback and re
     selectedVoice: 'LostFilm', currentTrack: 2, streamStart: 125, currentQuality: 'source', episodeHistoryEntry: () => ({ position: 87 }),
     lastFiles: [{ index: 7, season: 3, episode: 8 }],
     maybeSaveProgress() { savedFile = ctx.currentFile; savedTime = ctx.streamStart; },
-    renderEpisodeList() {}, notify() {}, dbg() {}, loadTracks() {}, playHls(id, magnet, file, track) { playedTrack = track; } });
+    renderEpisodeList() {}, notify() {}, dbg() {}, loadTracks() {}, beginPlayback(id, magnet, file, track) { playedTrack = track; } });
   vm.runInContext(source, ctx);
   ctx.selectEpisode(7);
   assert.equal(savedFile, 6); assert.equal(savedTime, 125);
@@ -136,7 +136,7 @@ test('opening an episode restores its position and respects explicit restart fro
   const ctx = vm.createContext({ available: true, currentPlay: null, selectedVoice: '', currentTrack: 0,
     playerWrap: {}, closeTrailer() {}, updateQualityButtons() {}, loadFiles() {}, loadTracks() {}, notify() {},
     episodeHistoryEntry: () => ({ position: 136 }), maybeSaveProgress() {},
-    playHls: (id, magnet, file, track, pos) => { position = pos; },
+    beginPlayback: (id, magnet, file, track, pos) => { position = pos; },
     window: { dispatchEvent() {} }, Event: function () {} });
   vm.runInContext(source, ctx);
   ctx.start({ id: 'tt1', magnet: 'new', file: 0, season: 4, ep: 21 });

@@ -23,12 +23,13 @@ Object.defineProperty(video,'readyState',{get:()=>4});
 video.load=()=>{video.currentTime=0;};
 video.play=async()=>{if(paused){paused=false;video.dispatchEvent(new Event('play'));video.dispatchEvent(new Event('playing'));}};
 video.pause=()=>{if(!paused){paused=true;video.dispatchEvent(new Event('pause'));}};
+window.hlsRequests=[];
 window.Hls=class {
  static Events={MANIFEST_PARSED:'manifest',SUBTITLE_TRACKS_UPDATED:'subs',LEVEL_SWITCHED:'level',FRAG_BUFFERED:'frag',ERROR:'error'};
  static isSupported(){return true;}
  constructor(){this.handlers={};this.subtitleTracks=[];}
  on(name,fn){this.handlers[name]=fn;}
- loadSource(src){window.lastHlsSource=src;}
+ loadSource(src){window.lastHlsSource=src;window.hlsRequests.push(src);}
  attachMedia(){setTimeout(()=>{if(!this.dead&&this.handlers.manifest)this.handlers.manifest();},150);}
  destroy(){this.dead=true;}
 };
@@ -52,7 +53,7 @@ const server=http.createServer((req,res)=>{
  }
  if(u.pathname==='/api/stream/prepare'){prepareCount++;lastPrepare=u.searchParams.get('magnet');res.statusCode=204;return res.end();}
  if(u.pathname.endsWith('/sources'))return json({items:[{magnet:'magnet:?xt=urn:btih:456',title:'Next source'}]});
- if(u.pathname.endsWith('/tracks'))return json({duration:300,codec:'h264',height:720,items:u.searchParams.get('file')==='1'?[{ordinal:0,title:'LostFilm',language:'rus'},{ordinal:1,title:'Original',language:'eng'}]:[{ordinal:0,title:'Original',language:'eng'},{ordinal:1,title:'LostFilm',language:'rus'}],subtitles:[{ordinal:0,language:'rus',title:'Русский'}]});
+ if(u.pathname.endsWith('/tracks'))return setTimeout(()=>json({duration:300,codec:'h264',height:720,items:u.searchParams.get('file')==='1'?[{ordinal:0,title:'LostFilm',language:'rus'},{ordinal:1,title:'Original',language:'eng'}]:[{ordinal:0,title:'Original',language:'eng'},{ordinal:1,title:'LostFilm',language:'rus'}],subtitles:[{ordinal:0,language:'rus',title:'Русский'}]}),350);
  if(u.pathname.startsWith('/api/')){res.statusCode=204;return res.end();}
  if(u.pathname==='/watch.html'){
   let html=fs.readFileSync(path.join(web,'watch.html'),'utf8').replace(/<script\b[^>]*>[\s\S]*?<\/script>/g,'');
@@ -72,6 +73,7 @@ const server=http.createServer((req,res)=>{
   for(const p of [host,guest])p.on('pageerror',e=>errors.push(e.message));
   await host.goto(base+'/watch.html');
   await host.evaluate(()=>PP.start({id:'tt1',magnet:'magnet:?xt=urn:btih:123',file:0,season:1,ep:1,pos:10}));
+  assert.equal(await host.evaluate(()=>window.hlsRequests.length),0,'HLS must wait for track metadata');
   await host.waitForFunction(()=>document.getElementById('loading-state').hidden);
   await host.evaluate(()=>window.dispatchEvent(new CustomEvent('playbackstage',{detail:{stage:'error',message:'Сервер занят'}})));
   assert.match(await host.locator('#loading-detail').textContent(),/Сервер занят/);
@@ -94,9 +96,15 @@ const server=http.createServer((req,res)=>{
   await host.waitForFunction(()=>document.getElementById('prepare-status').textContent.includes('подготовлено'));
   await host.evaluate(()=>video.dispatchEvent(new Event('timeupdate')));assert.equal(prepareCount,1);
   await host.locator('#tracks-list .track-btn').filter({hasText:'LostFilm'}).click();
+  const launchesBeforeNext=await host.evaluate(()=>window.hlsRequests.length);
   await host.evaluate(()=>PP.playNeighbor(1,true));
+  assert.equal(await host.evaluate(()=>window.hlsRequests.length),launchesBeforeNext,'No provisional stream for next episode');
+  await host.evaluate(()=>{video.currentTime=25;}); // Simulate stale media time while metadata is pending.
   await host.waitForFunction(()=>!video.paused&&PP.state().episode===2&&document.querySelector('#tracks-list .active')?.textContent.includes('LostFilm'));
   assert.equal(await host.evaluate(()=>new URL(window.lastHlsSource,location.href).searchParams.get('track')),'0');
+  assert.equal(await host.evaluate(()=>window.hlsRequests.length),launchesBeforeNext+1,'Audio and subtitles must be selected in one launch');
+  assert.equal(await host.evaluate(()=>new URL(window.lastHlsSource,location.href).searchParams.get('start')),null,'New episode starts at zero, not stale currentTime');
+  assert.equal(await host.evaluate(()=>new URL(window.lastHlsSource,location.href).searchParams.get('subs')),'0');
   await host.evaluate(()=>{video.currentTime=200;video.dispatchEvent(new Event('timeupdate'));});
   await host.waitForFunction(()=>document.getElementById('prepare-status').textContent.includes('подготовлено'));
   assert.equal(prepareCount,2);assert.equal(lastPrepare,'magnet:?xt=urn:btih:456');
