@@ -158,6 +158,7 @@ func NewServer(cfg Config) http.Handler {
 	// Админ-эндпоинты (список записей с пустыми полями, редактирование, обновление из TMDB, лог прогресса) — только для роли admin.
 	registerAdminRoutes(mux, cfg)
 	registerDiscover(mux, cfg)
+	registerWatchOrder(mux, cfg, svc)
 
 	return httpx.LogMiddleware(mux)
 }

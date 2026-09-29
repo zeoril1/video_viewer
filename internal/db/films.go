@@ -135,6 +135,9 @@ type Film struct {
 
 // EnsureSchema создаёт таблицу films, если её нет, и применяет миграции (новые колонки локализации) к существующим.
 func (r *Repo) EnsureSchema(ctx context.Context) error {
+	if _, err := r.conn.ExecContext(ctx, watchOrderSchema); err != nil {
+		return err
+	}
 	if _, err := r.conn.ExecContext(ctx, seriesSchema); err != nil {
 		return err
 	}

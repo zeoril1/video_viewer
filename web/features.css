@@ -268,3 +268,13 @@ button:focus-visible {
     font-size: 32px;
   }
 }
+.watch-order-list { padding-left: 2rem; max-height: 32rem; overflow: auto; }
+.watch-order-list li { padding: .7rem .8rem; border-bottom: 1px solid #ffffff18; }
+.watch-order-list small { display: block; opacity: .7; margin-top: .3rem; }
+.watch-order-list .auth-btn { margin-top: .5rem; }
+.watch-order-current { background: #659dff20; border-radius: .5rem; }
+.watch-order-heading { font-weight: 600; }
+#film-watch-order details { margin: 1rem 0; }
+#film-watch-order summary { cursor: pointer; }
+#film-watch-order a { overflow-wrap: anywhere; color: #ceddff; }
+#film-watch-order a:focus-visible { outline: 2px solid #ceddff; outline-offset: 3px; }

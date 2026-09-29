@@ -25,6 +25,7 @@ const FilmFeatures = (() => {
   }
   function render(it) {
     if (!it) return;
+    if (typeof WatchOrder !== "undefined") WatchOrder.load(it);
     const box = document.getElementById("film-personal");
     if (!box) return;
     const id = it.imdb_id || it.id,

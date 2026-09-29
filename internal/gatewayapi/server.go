@@ -63,6 +63,7 @@ func NewServer(cfg Config) http.Handler {
 	mux.HandleFunc("/api/personal/", proxyTo(cfg.AuthURL))
 	mux.HandleFunc("/api/discover/", proxyTo(cfg.CatalogURL))
 	mux.HandleFunc("GET /api/films/{id}/explore", proxyTo(cfg.CatalogURL))
+	mux.HandleFunc("GET /api/films/{id}/watch-order", proxyTo(cfg.CatalogURL))
 	mux.HandleFunc("/api/history", proxyTo(cfg.AuthURL))
 	mux.HandleFunc("/api/history/", proxyTo(cfg.AuthURL))
 
