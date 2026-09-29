@@ -77,8 +77,8 @@ async function fetchPage(page, append) {
   const q = searchEl.value.trim();
   const params = new URLSearchParams({ page: String(page), per_page: String(PER_PAGE) });
   if (q) params.set('q', q);
-  // Секцию шлём всегда, кроме «Все» — вкладки фильтруют выдачу поиска по разделу.
-  if (currentSection !== 'all') params.set('section', currentSection);
+  // Explicit 'all' also works with servers that mishandle an omitted section.
+  params.set('section', currentSection);
   if (currentGenre) params.set('genre', currentGenre);
   if (currentSection !== 'popular') params.set('sort', currentSort);
   if (currentCollection) params.set('collection', currentCollection);
@@ -323,7 +323,7 @@ function enrichCardWhenVisible(it, card) {
 // ---- «Продолжить просмотр» (история текущего пользователя) ----
 
 function renderContinue() {
-  if (!VV.user || !watchHistory.length) {
+  if (searchEl.value.trim() || !VV.user || !watchHistory.length) {
     continueSec.hidden = true;
     continueList.innerHTML = '';
     return;
@@ -391,16 +391,20 @@ function resumeItem(e) {
 
 // ---- Разделы, жанры, сортировка ----
 
+let metaGeneration = 0;
 async function refreshMeta() {
+  const generation = ++metaGeneration;
   const params = new URLSearchParams();
   const q = searchEl.value.trim();
   if (q) params.set('q', q);
+  params.set('released', onlyReleased ? '1' : '0');
   if (currentGenre) params.set('genre', currentGenre);
 
   try {
     const res = await fetch('/api/catalog/meta?' + params.toString());
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
+    if (generation !== metaGeneration) return;
     metaKinds = data.sections || {};
     metaGenres = data.genres || [];
     renderSections(metaKinds);
@@ -518,6 +522,7 @@ sortEl.addEventListener('change', () => {
 releasedEl.addEventListener('change', () => {
   onlyReleased = releasedEl.checked;
   fetchPage(1);
+  refreshMeta();
 });
 
 // ---- Поиск: серверный поиск по каталогу → IMDb (on-demand) ----
@@ -525,6 +530,10 @@ releasedEl.addEventListener('change', () => {
 let searchTimer = null;
 searchEl.addEventListener('input', () => {
   clearTimeout(searchTimer);
+  catalogGen++;
+  metaGeneration++;
+  loadingMore = false;
+  renderContinue();
   const q = searchEl.value.trim();
   if (!q) {
     fetchPage(1);
@@ -532,6 +541,7 @@ searchEl.addEventListener('input', () => {
     return;
   }
   // Ищем по всему каталогу: вкладки потом отфильтруют результат.
+  currentCollection = '';
   if (currentSection !== 'all') {
     currentSection = 'all';
     renderSections(metaKinds);

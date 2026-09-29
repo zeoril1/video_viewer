@@ -305,8 +305,9 @@ func sortTitle(it CatalogItem) string {
 
 // Meta отдаёт статистику каталога для фильтров: счётчики записей по секциям (с учётом активных q и genre)
 // и полный отсортированный список жанров.
-func (s *catalogService) Meta(ctx context.Context, q, genre string) (map[string]int, []string) {
-	key := strings.TrimSpace(q) + "\x00" + genre
+func (s *catalogService) Meta(ctx context.Context, q, genre string, released ...bool) (map[string]int, []string) {
+	onlyReleased := len(released) > 0 && released[0]
+	key := strings.TrimSpace(q) + "\x00" + genre + "\x00" + strconv.FormatBool(onlyReleased)
 	s.cacheMu.Lock()
 	if e, ok := s.metaCache[key]; ok && time.Since(e.at) < catalogCacheTTL {
 		kinds, genres := e.kinds, e.genres
@@ -336,6 +337,9 @@ func (s *catalogService) Meta(ctx context.Context, q, genre string) (map[string]
 		if genre != "" && !hasGenre(it, genre) {
 			continue
 		}
+		if onlyReleased && !isReleased(it) {
+			continue
+		}
 		kinds[sectionForItem(it)]++
 	}
 
@@ -349,6 +353,9 @@ func (s *catalogService) Meta(ctx context.Context, q, genre string) (map[string]
 					continue
 				}
 				if genre != "" && !hasGenre(it, genre) {
+					continue
+				}
+				if onlyReleased && !isReleased(it) {
 					continue
 				}
 				kinds["popular"]++
@@ -499,6 +506,9 @@ func isAnime(it CatalogItem) bool {
 // matchesSection проверяет, что запись относится к секции section; используется в SearchPage и при фильтрации
 // внешних (on-demand) результатов, чтобы вкладки работали и во время поиска.
 func matchesSection(it CatalogItem, section string) bool {
+	if section == "" || section == "all" {
+		return true
+	}
 	switch section {
 	case "anime":
 		return isAnime(it)
