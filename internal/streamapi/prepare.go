@@ -10,8 +10,8 @@ import (
 	"github.com/zeoril1/video_viewer/internal/torrents"
 )
 
-// Read only the beginning without WantFile (which requests the entire file).
-// Reader priorities disappear on cancellation; the shared torrent cache remains.
+// Download the selected next episode only. Foreground readers retain their
+// higher piece priorities; cancellation removes this request's file demand.
 func prepareHandler(mgr *torrents.Manager) http.HandlerFunc {
 	slots := make(chan struct{}, 2)
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -26,7 +26,7 @@ func prepareHandler(mgr *torrents.Manager) http.HandlerFunc {
 			http.Error(w, "Подготовка отложена: сервер занят.", 503)
 			return
 		}
-		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(r.Context(), 6*time.Minute)
 		defer cancel()
 		item := catalog.Item{ID: "prepare", Magnet: r.URL.Query().Get("magnet")}
 		index := fileParam(r)
@@ -51,17 +51,35 @@ func prepareHandler(mgr *torrents.Manager) http.HandlerFunc {
 			http.Error(w, "invalid file", 400)
 			return
 		}
-		mgr.ApplyDownloadPriorities(item)
+		unwant := mgr.WantFile(item, index)
+		defer unwant()
+		mgr.Keep(item.Magnet, 10*time.Minute)
 		reader := files[index].NewReader()
-		defer reader.Close()
 		reader.SetContext(ctx)
 		reader.SetReadahead(4 << 20)
 		_, err = io.CopyN(io.Discard, reader, min(files[index].Length(), 8<<20))
+		reader.Close()
 		if err != nil {
 			http.Error(w, "preparation interrupted", 504)
 			return
 		}
-		mgr.Keep(item.Magnet, 5*time.Minute)
+		// Warm the beginning first, then leave the whole file at normal priority.
+		// Do not hold an urgent reader at the head while the foreground is playing.
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for files[index].BytesCompleted() < files[index].Length() {
+			select {
+			case <-ctx.Done():
+				http.Error(w, "preparation interrupted", 504)
+				return
+			case <-ticker.C:
+				if mgr.DiskPressure() {
+					http.Error(w, "preparation deferred: disk pressure", 503)
+					return
+				}
+			}
+		}
+		mgr.Keep(item.Magnet, 10*time.Minute)
 		w.WriteHeader(204)
 	}
 }

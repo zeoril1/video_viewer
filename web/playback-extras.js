@@ -125,24 +125,24 @@ const PlaybackExtras = (() => {
   video.textTracks.addEventListener('addtrack', applyCues);
   video.addEventListener('timeupdate', applyCues);
 
-  let preparation = null, preparedKey = '', readyNext = null;
-  function cancelPreparation() { if (preparation) preparation.abort(); preparation=null; readyNext=null; el('prepare-status').textContent=''; }
+  let preparation = null, preparedKey = '', readyNext = null, retryAt = 0;
+  function cancelPreparation() { if (preparation) preparation.abort(); preparation=null; readyNext=null; preparedKey='';retryAt=0;el('prepare-status').textContent=''; }
   el('prepare-next').onchange = () => { preferences.prepare=el('prepare-next').checked;if(!preferences.prepare)cancelPreparation();savePreferences(); };
   window.addEventListener('playbackstart', () => {cancelPreparation();preparedKey='';});
   window.addEventListener('playbackstop', cancelPreparation);
   window.addEventListener('pagehide', cancelPreparation);
   video.addEventListener('timeupdate', async () => {
     const s=PP.state();
-    if (!preferences.prepare || video.paused || !s.duration || s.duration-s.position>120 || !s.season || !s.episode || document.body.classList.contains('room-guest')) return;
+    if (!preferences.prepare || video.paused || !s.duration || s.duration-s.position>300 || !s.season || !s.episode || document.body.classList.contains('room-guest')) return;
     const count=seasonEpisodeCount(s.id,s.season);
     const season=count&&s.episode>=count?s.season+1:s.season, episode=count&&s.episode>=count?1:s.episode+1;
     let next=PP.files().find(f=>f.season===season && f.episode===episode);
     let source={magnet:s.magnet,title:PP.release()};
     const key=s.id+'|'+s.magnet+'|'+s.file;
-    if (key===preparedKey || preparation) return;
+    if (key===preparedKey || preparation || Date.now()<retryAt) return;
     preparedKey=key;
     const controller=new AbortController();preparation=controller;
-    const timer=setTimeout(()=>controller.abort(),32000);
+    const timer=setTimeout(()=>controller.abort(),390000);
     el('prepare-status').textContent='Подготавливаем следующую серию…';
     try {
       if(!next){
@@ -157,12 +157,17 @@ const PlaybackExtras = (() => {
         }
       }
       if(!next)throw new Error('next episode unavailable');
+      if(preparation!==controller || controller.signal.aborted)return;
+      // Make the chosen source available immediately: auto-next must not wait
+      // for the entire background download to finish before reusing it.
+      readyNext={key,id:s.id,magnet:source.magnet,release:source.title,file:next.index,season,ep:episode,voice:s.voice,pos:0};
+      el('prepare-status').textContent='Скачивается следующая серия…';
       const q=new URLSearchParams({magnet:source.magnet,file:next.index});
       const response=await fetch('/api/stream/prepare?'+q,{method:'POST',signal:controller.signal});
       if (preparation!==controller) return;
-      if(response.ok)readyNext={key,id:s.id,magnet:source.magnet,release:source.title,file:next.index,season,ep:episode,voice:s.voice,pos:0};
-      el('prepare-status').textContent=response.ok?'Начало следующей серии подготовлено.':'Подготовка отложена. Следующая серия запустится обычным способом.';
-    } catch (_) { if(preparation===controller)el('prepare-status').textContent='Подготовка отложена.'; }
+      if(!response.ok)throw new Error('preparation deferred');
+      el('prepare-status').textContent='Видео следующей серии подготовлено.';
+    } catch (_) { if(preparation===controller){preparedKey='';retryAt=Date.now()+30000;el('prepare-status').textContent='Загрузка следующей серии отложена. Повторим через 30 секунд.';} }
     finally {clearTimeout(timer);if(preparation===controller)preparation=null;}
   });
   return {loading, next:()=>{const s=PP.state();return readyNext&&readyNext.key===s.id+'|'+s.magnet+'|'+s.file?readyNext:null;}};

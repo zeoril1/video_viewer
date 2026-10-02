@@ -51,9 +51,9 @@ const server=http.createServer((req,res)=>{
   }
   return json({state,updated,revision,server_time:Date.now()});
  }
- if(u.pathname==='/api/stream/prepare'){prepareCount++;lastPrepare=u.searchParams.get('magnet');res.statusCode=204;return res.end();}
+ if(u.pathname==='/api/stream/prepare'){prepareCount++;lastPrepare=u.searchParams.get('magnet');res.statusCode=204;if(prepareCount===1)return;return res.end();}
  if(u.pathname.endsWith('/sources'))return json({items:[{magnet:'magnet:?xt=urn:btih:456',title:'Next source'}]});
- if(u.pathname.endsWith('/tracks'))return setTimeout(()=>json({duration:300,codec:'h264',height:720,items:u.searchParams.get('file')==='1'?[{ordinal:0,title:'LostFilm',language:'rus'},{ordinal:1,title:'Original',language:'eng'}]:[{ordinal:0,title:'Original',language:'eng'},{ordinal:1,title:'LostFilm',language:'rus'}],subtitles:[{ordinal:0,language:'rus',title:'Русский'}]}),350);
+ if(u.pathname.endsWith('/tracks'))return setTimeout(()=>json({duration:900,codec:'h264',height:720,items:u.searchParams.get('file')==='1'?[{ordinal:0,title:'LostFilm',language:'rus'},{ordinal:1,title:'Original',language:'eng'}]:[{ordinal:0,title:'Original',language:'eng'},{ordinal:1,title:'LostFilm',language:'rus'}],subtitles:[{ordinal:0,language:'rus',title:'Русский'}]}),350);
  if(u.pathname.startsWith('/api/')){res.statusCode=204;return res.end();}
  if(u.pathname==='/watch.html'){
   let html=fs.readFileSync(path.join(web,'watch.html'),'utf8').replace(/<script\b[^>]*>[\s\S]*?<\/script>/g,'');
@@ -92,8 +92,10 @@ const server=http.createServer((req,res)=>{
   await host.locator('#subtitle-position').selectOption('top');
   assert.equal(await host.evaluate(()=>video.textTracks[0].cues[0].line),10);
   assert.equal(await host.evaluate(()=>Personal.data.data.size),130);
-  await host.evaluate(()=>{video.currentTime=200;video.dispatchEvent(new Event('timeupdate'));});
-  await host.waitForFunction(()=>document.getElementById('prepare-status').textContent.includes('подготовлено'));
+  await host.evaluate(()=>{video.currentTime=599-(PP.state().position-video.currentTime);video.dispatchEvent(new Event('timeupdate'));});
+  assert.equal(prepareCount,0,'No prefetch before the last five minutes');
+  await host.evaluate(()=>{video.currentTime=600;video.dispatchEvent(new Event('timeupdate'));});
+  await host.waitForFunction(()=>PlaybackExtras.next()!==null && document.getElementById('prepare-status').textContent.includes('Скачивается'));
   await host.evaluate(()=>video.dispatchEvent(new Event('timeupdate')));assert.equal(prepareCount,1);
   await host.locator('#tracks-list .track-btn').filter({hasText:'LostFilm'}).click();
   const launchesBeforeNext=await host.evaluate(()=>window.hlsRequests.length);
@@ -105,7 +107,7 @@ const server=http.createServer((req,res)=>{
   assert.equal(await host.evaluate(()=>window.hlsRequests.length),launchesBeforeNext+1,'Audio and subtitles must be selected in one launch');
   assert.equal(await host.evaluate(()=>new URL(window.lastHlsSource,location.href).searchParams.get('start')),null,'New episode starts at zero, not stale currentTime');
   assert.equal(await host.evaluate(()=>new URL(window.lastHlsSource,location.href).searchParams.get('subs')),'0');
-  await host.evaluate(()=>{video.currentTime=200;video.dispatchEvent(new Event('timeupdate'));});
+  await host.evaluate(()=>{video.currentTime=600;video.dispatchEvent(new Event('timeupdate'));});
   await host.waitForFunction(()=>document.getElementById('prepare-status').textContent.includes('подготовлено'));
   assert.equal(prepareCount,2);assert.equal(lastPrepare,'magnet:?xt=urn:btih:456');
   await host.evaluate(()=>PP.playNeighbor(1,true));
