@@ -55,7 +55,7 @@ func TestWatchOrderCollectionAndCache(t *testing.T) {
 	}))
 	defer provider.Close()
 	cfg := Config{TMDB: tmdb.NewClient("test", "", provider.URL)}
-	svc := newCatalogService(nil, nil, nil, nil)
+	svc := newCatalogService(nil, nil, nil)
 	svc.allCache = []catalogEntry{}
 	svc.allCachedAt = time.Now()
 	mux := http.NewServeMux()
@@ -166,7 +166,7 @@ func TestAnimeOrderCyclesAndWrongAdaptations(t *testing.T) {
 
 func TestWatchOrderUnavailableAndInvalidID(t *testing.T) {
 	mux := http.NewServeMux()
-	registerWatchOrder(mux, Config{}, newCatalogService(nil, nil, nil, nil))
+	registerWatchOrder(mux, Config{}, newCatalogService(nil, nil, nil))
 	res := httptest.NewRecorder()
 	mux.ServeHTTP(res, httptest.NewRequest("GET", "/api/films/tt1/watch-order", nil))
 	if res.Code != 503 {

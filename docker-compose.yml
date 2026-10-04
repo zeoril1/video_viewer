@@ -80,8 +80,6 @@ services:
       JACKETT_URL: ${JACKETT_URL:-http://jackett:9117}
       JACKETT_API_KEY: ${JACKETT_API_KEY:-}
       JACKETT_INDEXER: ${JACKETT_INDEXER:-rutracker-ru}
-    volumes:
-      - ./data:/app/data   # каталог (catalog.json) — правите без пересборки образа
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8081/api/health >/dev/null || exit 1"]
       interval: 10s
@@ -108,12 +106,7 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-    depends_on:
-      catalog:
-        condition: service_healthy
     environment:
-      # Для резолва магнет-ссылки по id (/api/stream/{id} без ?magnet=).
-      CATALOG_URL: ${CATALOG_URL:-http://catalog:8081}
       # Дисковый спул скачанных кусков (вместо RAM): временный каталог, файлы
       # создаются по одному на серию/файл торрента (место выделяется только
       # под то, что качается) и удаляются после просмотра. Пустая

@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/zeoril1/video_viewer/internal/catalog"
 	"github.com/zeoril1/video_viewer/internal/db"
 	"github.com/zeoril1/video_viewer/internal/imdb"
 	"github.com/zeoril1/video_viewer/internal/tmdb"
@@ -45,25 +44,22 @@ type CatalogItem struct {
 	DirectorRU    string   `json:"director_ru,omitempty"`
 	ActorsRU      []string `json:"actors_ru,omitempty"`
 	PeoplePending bool     `json:"people_pending,omitempty"`
-	Source        string   `json:"source"` // "imdb", "tmdb" или "magnet"
-	HasMagnet     bool     `json:"has_magnet"`
+	Source        string   `json:"source"` // "imdb", "tmdb"
 }
 
-// catalogEntry — внутреннее представление записи с магнет-ссылкой.
+// catalogEntry — внутреннее представление записи каталога.
 type catalogEntry struct {
-	item   CatalogItem
-	magnet string
+	item CatalogItem
 }
 
 // catalogCacheTTL — время жизни кэша каталога и меты: без него /api/catalog/meta на каждый клик по вкладкам/жанрам сканировал бы таблицу films.
 const catalogCacheTTL = 30 * time.Second
 
-// catalogService объединяет записи локального каталога (магнеты), фильмы БД (IMDb + TMDB) и on-demand внешнего поиска.
+// catalogService объединяет фильмы БД (IMDb + TMDB) и on-demand внешнего поиска.
 type catalogService struct {
-	jsonCat *catalog.Catalog
-	db      *db.Repo
-	imdb    *imdb.Client // может быть nil — внешний поиск отключён
-	tm      *tmdb.Client // может быть nil
+	db   *db.Repo
+	imdb *imdb.Client // может быть nil — внешний поиск отключён
+	tm   *tmdb.Client // может быть nil
 
 	// Кэш с TTL: allCache — объединённый каталог, metaCache — результаты Meta по ключу "q|genre".
 	cacheMu     sync.Mutex
@@ -78,9 +74,8 @@ type metaCacheEntry struct {
 	at     time.Time
 }
 
-func newCatalogService(jsonCat *catalog.Catalog, repo *db.Repo, im *imdb.Client, tm *tmdb.Client) *catalogService {
+func newCatalogService(repo *db.Repo, im *imdb.Client, tm *tmdb.Client) *catalogService {
 	return &catalogService{
-		jsonCat:   jsonCat,
 		db:        repo,
 		imdb:      im,
 		tm:        tm,
@@ -98,7 +93,7 @@ func (s *catalogService) All(ctx context.Context) []catalogEntry {
 	}
 	s.cacheMu.Unlock()
 
-	var out []catalogEntry
+	out := make([]catalogEntry, 0)
 
 	if s.db != nil {
 		// Лёгкая выборка без описаний — они догружаются при открытии фильма (GET /api/films/{id}).
@@ -114,20 +109,6 @@ func (s *catalogService) All(ctx context.Context) []catalogEntry {
 		}
 	}
 
-	for _, it := range s.jsonCat.Items {
-		out = append(out, catalogEntry{
-			item: CatalogItem{
-				ID:        it.ID,
-				Title:     it.Title,
-				Poster:    it.Poster,
-				Category:  it.Category,
-				Size:      it.Size,
-				Source:    "magnet",
-				HasMagnet: true,
-			},
-			magnet: it.Magnet,
-		})
-	}
 	log.Printf("catalog: all: %d записей", len(out))
 
 	s.cacheMu.Lock()
@@ -669,15 +650,6 @@ func kindsForSection(section string) map[string]bool {
 	default:
 		return nil // all / other
 	}
-}
-
-// FindMagnet ищет магнет-ссылку по id только в локальном каталоге (data/catalog.json):
-// магнеты фильмов БД живут в таблице sources (колонка films.magnet удалена как legacy) — в самой БД магнета нет.
-func (s *catalogService) FindMagnet(ctx context.Context, id string) (string, bool) {
-	if it, ok := s.jsonCat.Get(id); ok && it.Magnet != "" {
-		return it.Magnet, true
-	}
-	return "", false
 }
 
 func dbFilmToEntry(f db.Film) catalogEntry {

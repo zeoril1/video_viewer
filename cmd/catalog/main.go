@@ -1,5 +1,4 @@
-// catalog — микросервис каталога: объединённый каталог (IMDb + TMDB +
-// локальные магнеты), детали фильмов, поиск источников (раздач) через
+// catalog — микросервис каталога: объединённый каталог (IMDb + TMDB), детали фильмов, поиск источников (раздач) через
 // Jackett. Фоново синхронизирует чарты IMDb/TMDB и локализует каталог.
 // Владеет PostgreSQL (таблицы films/sources).
 package main
@@ -15,7 +14,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/zeoril1/video_viewer/internal/catalog"
 	"github.com/zeoril1/video_viewer/internal/catalogapi"
 	"github.com/zeoril1/video_viewer/internal/db"
 	"github.com/zeoril1/video_viewer/internal/httpx"
@@ -31,7 +29,6 @@ func main() {
 
 	var (
 		addr            = flag.String("addr", ":8081", "HTTP listen address")
-		catalogPath     = flag.String("catalog", "data/catalog.json", "path to the catalog JSON file")
 		dsn             = flag.String("dsn", os.Getenv("DATABASE_URL"), "PostgreSQL DSN (или env DATABASE_URL)")
 		imdbInterval    = flag.Duration("imdb-interval", sync.DefaultInterval, "IMDb charts sync interval")
 		imdbScrape      = flag.Bool("imdb-scrape", true, "parse official IMDb chart pages")
@@ -66,14 +63,6 @@ func main() {
 		log.Printf("proxy: %d static proxies configured", n)
 	}
 
-	cat, err := catalog.Load(*catalogPath)
-	if err != nil {
-		log.Fatalf("load catalog: %v", err)
-	}
-	log.Printf("catalog loaded: %d items", len(cat.Items))
-
-	// PostgreSQL (нужен для IMDb-каталога; без него — только локальные
-	// магнет-ссылки). Ретраи: при старте стека БД может быть ещё не готова.
 	var repo *db.Repo
 	if *dsn != "" {
 		conn, err := db.OpenRetry(ctx, *dsn, 12, 5*time.Second)
@@ -156,7 +145,6 @@ func main() {
 		*addr, repo != nil, imdbClient != nil, tmdbClient != nil, jackettProv != nil, *jackettIndexer)
 
 	handler := catalogapi.NewServer(catalogapi.Config{
-		Catalog: cat,
 		DB:      repo,
 		IMDB:    imdbClient,
 		TMDB:    tmdbClient,

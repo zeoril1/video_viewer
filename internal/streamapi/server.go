@@ -1,11 +1,9 @@
 // Package streamapi — HTTP-сервис стриминга (микросервис stream): торрент-клиент,
 // стриминг с поддержкой Range, список файлов торрента, HLS-транскодинг (ffmpeg).
-// БД не использует: магнет берёт из query-параметра либо резолвит по id через
-// catalog-сервис.
+// БД не использует: магнет выбранной раздачи берёт из query-параметра.
 package streamapi
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"runtime"
@@ -17,19 +15,12 @@ import (
 	"github.com/zeoril1/video_viewer/internal/torrents"
 )
 
-// MagnetResolver — резолв магнет-ссылки по id: в проде клиент catalog-сервиса,
-// nil — /api/stream/{id} без ?magnet= отдаёт 404.
-type MagnetResolver interface {
-	FindMagnet(ctx context.Context, id string) (string, bool)
-}
-
 // Config — зависимости HTTP-сервиса стриминга.
 type Config struct {
 	MaxSessions               int
 	MaxHLSBytes, MinFreeBytes int64
 	Torrents                  *torrents.Manager
-	Addr                      string         // адрес прослушивания (для внутреннего URL ffmpeg)
-	Resolver                  MagnetResolver // опциональный резолв магнета по id (catalog-сервис)
+	Addr                      string // адрес прослушивания (для внутреннего URL ffmpeg)
 	// TMDB — опциональный клиент TMDB (nil — файлы раскладываются только по именам):
 	// нужен, чтобы приводить сезоны трекера к TMDB (сборники нумеруют серии сквозняком).
 	TMDB *tmdb.Client
@@ -54,8 +45,7 @@ func NewServer(cfg Config) (http.Handler, func()) {
 	go hls.watchResources()
 	mux.HandleFunc("POST /api/stream/prepare", prepareHandler(cfg.Torrents))
 
-	// GET /api/stream/{id} — стриминг с поддержкой Range; необязательный magnet=...
-	// задаёт конкретную раздачу, иначе магнет резолвится по id через catalog-сервис.
+	// GET /api/stream/{id} — стриминг с поддержкой Range; magnet задаёт раздачу.
 	mux.HandleFunc("GET /api/stream/", func(w http.ResponseWriter, r *http.Request) {
 		id := strings.TrimPrefix(r.URL.Path, "/api/stream/")
 		if id == "" || strings.Contains(id, "/") {
@@ -64,16 +54,8 @@ func NewServer(cfg Config) (http.Handler, func()) {
 		}
 		m := strings.TrimSpace(r.URL.Query().Get("magnet"))
 		if m == "" {
-			if cfg.Resolver == nil {
-				http.NotFound(w, r)
-				return
-			}
-			var ok bool
-			m, ok = cfg.Resolver.FindMagnet(r.Context(), id)
-			if !ok {
-				http.NotFound(w, r)
-				return
-			}
+			http.Error(w, "magnet is required", http.StatusBadRequest)
+			return
 		}
 		handleStream(cfg.Torrents, catalog.Item{ID: id, Magnet: m}, cfg.Readahead)(w, r)
 	})

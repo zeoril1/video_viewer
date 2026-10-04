@@ -125,24 +125,11 @@ New-NetFirewallRule -DisplayName "Video Viewer 8080" -Direction Inbound -Protoco
 - **Имена людей на языке сайта:** TMDB отдаёт режиссёра/актёров на языке запроса, поэтому пары «оригинал → русский» складываются в отдельную таблицу `person_names` (`internal/db/people.go`), а API отдаёт их полями `director_ru`/`actors_ru` (интерфейс на английском показывает исходное написание из `films.director`/`actors`). Пары забираются по `tmdb_id` фильма: фоном при открытии карточки (поле `people_pending` в ответе просит клиента переспросить её через пару секунд) и разово по всему каталогу — `go run ./cmd/backfill -people` (нужны `DATABASE_URL` и `TMDB_API_KEY`/`TMDB_ACCESS_TOKEN`).
 - Кинопоиск **отключён** (лимиты токена + антибот), пакет `internal/kinopoisk/` удалён. Рейтинг в карточке: IMDb → TMDB.
 
-Флаги catalog: `-catalog`, `-dsn` (env `DATABASE_URL`), `-imdb-interval` (синхронизация чартов, `24h`), `-imdb-scrape`, `-jackett-url/-api-key/-indexer`, `-proxy-static/-timeout/-max-attempts`, `-localize-interval`, `-localize-workers`, `-tmdb-url`.
+Флаги catalog: `-dsn` (env `DATABASE_URL`), `-imdb-interval` (синхронизация чартов, `24h`), `-imdb-scrape`, `-jackett-url/-api-key/-indexer`, `-proxy-static/-timeout/-max-attempts`, `-localize-interval`, `-localize-workers`, `-tmdb-url`.
 
-## Как добавить видео
+Каталог фильмов наполняется из IMDb/TMDB, источники для просмотра находятся через Jackett.
 
-Запись в `data/catalog.json` (трекеры в магнете обязательны, иначе торрент не найдёт пиров):
-
-```json
-{
-  "id": "my-video",
-  "title": "Название видео",
-  "magnet": "magnet:?xt=urn:btih:INFO_HASH&dn=name&tr=http://tracker...",
-  "poster": "https://example.com/poster.jpg",
-  "category": "movies",
-  "size": "1.4 GB"
-}
-```
-
-`id` — уникальный, используется в URL стрима; `poster`, `category`, `size`, `added_at` — опциональны. Перезапустите сервер (`docker compose restart`). При compose `./data` и `./web` смонтированы в контейнеры — правятся без пересборки образа. Статика фронтенда отдаётся с `Cache-Control: no-cache` (браузер перепроверяет файлы и получает 304), поэтому правки `web/` подхватываются обычным F5, без хард-рефреша.
+Статика `web/` смонтирована в gateway; изменения подхватываются после обновления страницы.
 
 ## API (основное)
 
@@ -182,10 +169,9 @@ internal/
   iptvapi/           # HTTP-хендлеры iptv (каналы, программа, live-прокси/ffmpeg)
   gatewayapi/        # reverse-proxy + health
   iptv/              # разбор M3U/M3U8, Xtream Codes и XMLTV
-  catalog/ db/ client/ httpx/          # каталог, PostgreSQL, межсервисные клиенты, утилиты
+  catalog/ db/ httpx/                 # торрент-запись, PostgreSQL, HTTP-утилиты
   imdb/ tmdb/ wikidata/ sync/ magnet/  # источники данных и фоновая синхронизация
   torrents/ proxy/                     # in-memory торрент-клиент, пул HTTP-прокси
-data/catalog.json    # статический каталог магнетов
 web/                 # фронтенд (статика, отдельные страницы)
 ```
 

@@ -5,12 +5,10 @@ import (
 	"fmt"
 	"testing"
 	"time"
-
-	"github.com/zeoril1/video_viewer/internal/catalog"
 )
 
 func TestSearchAllIncludesAnimationAndMatchesCounts(t *testing.T) {
-	svc := newCatalogService(&catalog.Catalog{}, nil, nil, nil)
+	svc := newCatalogService(nil, nil, nil)
 	for i := 0; i < 9; i++ {
 		item := CatalogItem{ID: fmt.Sprint(i), TitleRU: "Атака титанов", Kind: "feature", Year: 2015}
 		if i < 7 {
@@ -36,7 +34,7 @@ func TestSearchAllIncludesAnimationAndMatchesCounts(t *testing.T) {
 }
 
 func TestMetaReleaseFilterHasIndependentCache(t *testing.T) {
-	svc := newCatalogService(&catalog.Catalog{}, nil, nil, nil)
+	svc := newCatalogService(nil, nil, nil)
 	svc.allCache = []catalogEntry{
 		{item: CatalogItem{ID: "released", Title: "Film", Kind: "feature", Year: 2000}},
 		{item: CatalogItem{ID: "future", Title: "Film", Kind: "feature", Year: time.Now().Year() + 5, ReleaseDate: time.Now().AddDate(5, 0, 0).Format("2006-01-02")}},

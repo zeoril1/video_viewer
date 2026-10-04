@@ -1,6 +1,5 @@
-// Package catalogapi — HTTP-сервис каталога (микросервис catalog): объединённый каталог (IMDb + TMDB +
-// локальные магнеты), детали фильмов, поиск источников (раздач) через Jackett. Владеет PostgreSQL
-// (films/sources). /api/internal/films/{id}/magnet используется stream-сервисом для резолва магнета.
+// Package catalogapi — HTTP-сервис каталога (микросервис catalog): объединённый каталог (IMDb + TMDB), детали фильмов, поиск источников (раздач) через Jackett. Владеет PostgreSQL
+// (films/sources).
 package catalogapi
 
 import (
@@ -9,9 +8,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
-	"strings"
 
-	"github.com/zeoril1/video_viewer/internal/catalog"
 	"github.com/zeoril1/video_viewer/internal/db"
 	"github.com/zeoril1/video_viewer/internal/httpx"
 	"github.com/zeoril1/video_viewer/internal/imdb"
@@ -21,11 +18,10 @@ import (
 
 // Config — зависимости HTTP-сервиса каталога.
 type Config struct {
-	Catalog *catalog.Catalog // локальные магнеты из data/catalog.json
-	DB      *db.Repo         // PostgreSQL; может быть nil (режим без БД)
-	IMDB    *imdb.Client     // может быть nil
-	TMDB    *tmdb.Client     // может быть nil
-	Magnet  magnet.Provider  // поиск источников (Jackett Torznab); может быть nil
+	DB     *db.Repo        // PostgreSQL; может быть nil (режим без БД)
+	IMDB   *imdb.Client    // может быть nil
+	TMDB   *tmdb.Client    // может быть nil
+	Magnet magnet.Provider // поиск источников (Jackett Torznab); может быть nil
 	// Context — родительский контекст приложения для фоновых задач (поиск источников): при отмене задания останавливаются.
 	Context context.Context
 }
@@ -33,12 +29,12 @@ type Config struct {
 // NewServer собирает HTTP-обработчики каталога в один mux.
 func NewServer(cfg Config) http.Handler {
 	mux := http.NewServeMux()
-	svc := newCatalogService(cfg.Catalog, cfg.DB, cfg.IMDB, cfg.TMDB)
+	svc := newCatalogService(cfg.DB, cfg.IMDB, cfg.TMDB)
 	// Фоновый поиск источников (раздач): медленный Jackett не блокирует HTTP-запросы —
 	// результаты отдаются из кэша и обновляются в фоне.
 	sourcesMgr := newSourcesManager(cfg)
 
-	// GET /api/catalog — объединённый каталог (IMDb + локальные магнеты).
+	// GET /api/catalog — объединённый каталог (IMDb + TMDB).
 	// Параметры: q (поиск), section (movie/series/...), genre, sort
 	// (year|rating|title; по умолчанию year; не применяется для popular),
 	// released (1 — только вышедшие, по умолчанию 0 — все),
@@ -136,18 +132,6 @@ func NewServer(cfg Config) http.Handler {
 	// GET /api/films/{imdbID}/sources — доступные варианты для просмотра (живой поиск на трекере в фоне).
 	mux.HandleFunc("GET /api/films/{id}/sources", func(w http.ResponseWriter, r *http.Request) {
 		handleFilmSources(cfg, sourcesMgr, r.PathValue("id"))(w, r)
-	})
-
-	// GET /api/internal/films/{id}/magnet — внутренний эндпоинт для stream-сервиса:
-	// магнет-ссылка по id записи (каталог или БД); наружу через gateway не проксируется.
-	mux.HandleFunc("GET /api/internal/films/{id}/magnet", func(w http.ResponseWriter, r *http.Request) {
-		m, ok := svc.FindMagnet(r.Context(), strings.TrimSpace(r.PathValue("id")))
-		if !ok {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		_ = json.NewEncoder(w).Encode(map[string]any{"magnet": m})
 	})
 
 	// GET /api/health — проверка живости.

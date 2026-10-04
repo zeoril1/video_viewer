@@ -43,9 +43,7 @@ WORKDIR /app
 
 COPY --from=build /out/app /app/app
 
-# Фолбэк-копии статики/каталога (в compose перекрываются volume-ами):
-#   gateway — web/; catalog — data/ (data/catalog.json)
+# Статика gateway (в compose перекрывается volume).
 COPY web /app/web
-COPY data /app/data
 
 CMD ["/app/app"]

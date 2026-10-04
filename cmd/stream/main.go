@@ -1,6 +1,6 @@
 // stream — микросервис стриминга: торрент-клиент (in-memory), стриминг
 // с поддержкой Range, список файлов торрента, HLS-транскодинг (ffmpeg).
-// Без БД: магнет-ссылку берёт из query-параметра или (по id) через catalog.
+// Без БД: магнет-ссылку берёт из query-параметра выбранной раздачи.
 package main
 
 import (
@@ -12,7 +12,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/zeoril1/video_viewer/internal/client"
 	"github.com/zeoril1/video_viewer/internal/httpx"
 	"github.com/zeoril1/video_viewer/internal/streamapi"
 	"github.com/zeoril1/video_viewer/internal/tmdb"
@@ -29,7 +28,6 @@ func main() {
 		minFree     = flag.Int64("min-free-bytes", 2<<30, "minimum free disk space")
 		addr        = flag.String("addr", ":8082", "HTTP listen address")
 		port        = flag.Int("port", 0, "torrent client listen port (0 = random)")
-		catalogURL  = flag.String("catalog-url", envOr("CATALOG_URL", "http://127.0.0.1:8081"), "catalog-service base URL (для резолва магнета по id)")
 		// spoolDir — каталог дискового спула скачанных кусков (по файлу на
 		// серию; файлы удаляются после просмотра). Пусто — данные в RAM.
 		spoolDir = flag.String("spool-dir", envOr("STREAM_DATA_DIR", ""), "каталог для временного дискового спула, по файлу на серию (пусто — данные в RAM)")
@@ -66,17 +64,6 @@ func main() {
 	}
 	defer mgr.Close()
 
-	// Резолв магнет-ссылки по id через catalog-сервис (nil — отключено:
-	// /api/stream/{id} без ?magnet= вернёт 404).
-	resolver := client.NewCatalogClient(*catalogURL)
-	if resolver == nil {
-		log.Printf("warn: CATALOG_URL не задан — резолв магнета по id отключён (нужен явный ?magnet=)")
-	} else {
-		log.Printf("catalog client: %s", *catalogURL)
-	}
-
-	log.Printf("config: addr=%s torrent_port=%d catalog=%v", *addr, *port, resolver != nil)
-
 	// TMDB опционален: нужен, чтобы раскладывать файлы сериалов по сезонам
 	// TMDB (у трекеров своя нарезка, сборники нумеруют серии сквозняком);
 	// без ключей сезон берётся из имени файла.
@@ -96,7 +83,6 @@ func main() {
 		MinFreeBytes: *minFree,
 		Torrents:     mgr,
 		Addr:         *addr,
-		Resolver:     resolver,
 		Readahead:    *readahead,
 		TMDB:         tmdbClient,
 	})
