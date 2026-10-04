@@ -1,5 +1,18 @@
 'use strict';
 
+// Keep original URLs in catalogue/history; only image requests use our server.
+function posterSrc(url) {
+  if (!url) return '';
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol === 'https:' && ['image.tmdb.org', 'm.media-amazon.com',
+      'images-na.ssl-images-amazon.com', 'ia.media-imdb.com'].includes(parsed.hostname)) {
+      return '/api/poster?url=' + encodeURIComponent(url);
+    }
+  } catch (_) {}
+  return url;
+}
+
 /* Общий модуль всех страниц сайта (index/film/watch/iptv/login): язык, авторизация,
  * история просмотра, диагностика, утилиты. Подключается ПЕРВЫМ скриптом на каждой
  * странице; страничные модули (catalog.js/film.js/watch.js/...) пользуются его

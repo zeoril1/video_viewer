@@ -10,6 +10,23 @@ import (
 	"testing"
 )
 
+func TestPosterProxiedToCatalog(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/poster" || r.URL.Query().Get("url") != "https://image.tmdb.org/t/p/w500/a.jpg" {
+			t.Error(r.URL)
+		}
+		w.Header().Set("Content-Type", "image/jpeg")
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+		w.Write([]byte("poster"))
+	}))
+	defer upstream.Close()
+	w := httptest.NewRecorder()
+	NewServer(Config{WebDir: t.TempDir(), CatalogURL: upstream.URL}).ServeHTTP(w, httptest.NewRequest("GET", "/api/poster?url=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2Fa.jpg", nil))
+	if w.Code != 200 || w.Body.String() != "poster" || w.Header().Get("Cache-Control") != "public, max-age=86400" {
+		t.Fatal(w.Code, w.Body.String())
+	}
+}
+
 func TestFilesPostBodyProxied(t *testing.T) {
 	called := false
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

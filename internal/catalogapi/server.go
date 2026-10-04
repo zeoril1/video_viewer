@@ -29,6 +29,7 @@ type Config struct {
 // NewServer собирает HTTP-обработчики каталога в один mux.
 func NewServer(cfg Config) http.Handler {
 	mux := http.NewServeMux()
+	mux.Handle("GET /api/poster", newPosterProxy())
 	svc := newCatalogService(cfg.DB, cfg.IMDB, cfg.TMDB)
 	// Фоновый поиск источников (раздач): медленный Jackett не блокирует HTTP-запросы —
 	// результаты отдаются из кэша и обновляются в фоне.

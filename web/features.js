@@ -13,7 +13,7 @@ const FeatureUI = (() => {
     a.addEventListener("click", () => storeItem(it));
     if (it.poster || it.poster_url) {
       const img = el("img");
-      img.src = it.poster || it.poster_url;
+      img.src = posterSrc(it.poster || it.poster_url);
       img.alt = "";
       img.loading = "lazy";
       a.append(img);

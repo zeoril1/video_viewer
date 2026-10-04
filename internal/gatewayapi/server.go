@@ -33,6 +33,7 @@ func NewServer(cfg Config) http.Handler {
 	mux := http.NewServeMux()
 
 	// ---- Каталог (catalog-сервис) ----
+	mux.HandleFunc("GET /api/poster", proxyTo(cfg.CatalogURL))
 	mux.HandleFunc("GET /api/catalog", proxyTo(cfg.CatalogURL))
 	mux.HandleFunc("GET /api/catalog/meta", proxyTo(cfg.CatalogURL))
 	mux.HandleFunc("GET /api/films/{id}", proxyTo(cfg.CatalogURL))

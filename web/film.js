@@ -582,8 +582,10 @@ function updateResumeBtn(it) {
 function showDetails(it) {
   if (typeof FilmFeatures !== 'undefined') { FilmFeatures.render(it); FilmFeatures.explore(it); }
   detailsEl.hidden = false;
-  detailsPoster.src = it.poster_url || it.poster || '';
-  detailsPoster.hidden = !detailsPoster.src;
+  const poster = posterSrc(it.poster_url || it.poster || '');
+  detailsPoster.hidden = !poster;
+  if (poster) detailsPoster.src = poster;
+  else detailsPoster.removeAttribute('src');
 
   detailsTitle.textContent = dispTitle(it);
   detailsRating.textContent = fmtRating(it);

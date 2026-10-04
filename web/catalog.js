@@ -156,11 +156,12 @@ function posterImgHtml(url) {
   if (url.indexOf(TMDB_IMG) === 0) {
     const path = url.slice(TMDB_IMG.length).split('/').slice(1).join('/');
     const at = (w) => TMDB_IMG + w + '/' + path;
-    attrs = ` src="${escapeHtml(at('w342'))}"` +
-      ` srcset="${escapeHtml(at('w200'))} 200w, ${escapeHtml(at('w342'))} 342w, ${escapeHtml(at('w500'))} 500w"` +
+    attrs = ` src="${escapeHtml(posterSrc(at('w342')))}"` +
+      ` srcset="${escapeHtml(posterSrc(at('w185')))} 185w, ${escapeHtml(posterSrc(at('w342')))} 342w, ${escapeHtml(posterSrc(at('w500')))} 500w"` +
+      ` data-poster-fallback="${escapeHtml(posterSrc(url))}"` +
       ` sizes="(max-width: 700px) 50vw, (max-width: 1100px) 33vw, 260px"`;
   } else {
-    attrs = ` src="${escapeHtml(url)}"`;
+    attrs = ` src="${escapeHtml(posterSrc(url))}"`;
   }
   return `<img${attrs} alt="" loading="lazy" decoding="async" />`;
 }
@@ -170,8 +171,21 @@ function posterImgHtml(url) {
 function markPosterLoaded(scope) {
   const img = scope.querySelector('.thumb img');
   if (!img) return;
+  // If a resized candidate fails, retry the original URL once without srcset.
+  const retryOriginal = () => {
+    const fallback = img.dataset.posterFallback;
+    if (!fallback) return;
+    delete img.dataset.posterFallback;
+    img.removeAttribute('srcset');
+    img.removeAttribute('sizes');
+    img.src = fallback;
+  };
+  img.addEventListener('error', retryOriginal, { once: true });
   if (img.complete && img.naturalWidth > 0) img.classList.add('loaded');
-  else img.addEventListener('load', () => img.classList.add('loaded'), { once: true });
+  else {
+    img.addEventListener('load', () => img.classList.add('loaded'), { once: true });
+    if (img.complete && img.naturalWidth === 0) retryOriginal();
+  }
 }
 
 function makeCard(it) {
