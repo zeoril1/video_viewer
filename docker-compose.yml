@@ -232,8 +232,6 @@ services:
       IPTV_URL: ${IPTV_URL:-http://iptv:8084}
     ports:
       - "8090:8080"        # веб-интерфейс / API (единственный публичный HTTP-порт)
-    volumes:
-      - ./web:/app/web     # фронтенд — правите без пересборки образа
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/api/health >/dev/null || exit 1"]
       interval: 10s
