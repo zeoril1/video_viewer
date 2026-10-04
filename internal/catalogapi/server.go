@@ -117,7 +117,8 @@ func NewServer(cfg Config) http.Handler {
 	// GET /api/catalog/meta — статистика каталога (секции с количеством записей и список жанров).
 	// Параметры q и genre пересчитывают счётчики секций под активные фильтры.
 	mux.HandleFunc("GET /api/catalog/meta", func(w http.ResponseWriter, r *http.Request) {
-		kinds, genres := svc.Meta(r.Context(), r.URL.Query().Get("q"), r.URL.Query().Get("genre"))
+		released := r.URL.Query().Get("released")
+		kinds, genres := svc.Meta(r.Context(), r.URL.Query().Get("q"), r.URL.Query().Get("genre"), released != "" && released != "0")
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		if err := json.NewEncoder(w).Encode(map[string]any{
 			"sections": kinds,
@@ -156,6 +157,8 @@ func NewServer(cfg Config) http.Handler {
 
 	// Админ-эндпоинты (список записей с пустыми полями, редактирование, обновление из TMDB, лог прогресса) — только для роли admin.
 	registerAdminRoutes(mux, cfg)
+	registerDiscover(mux, cfg)
+	registerWatchOrder(mux, cfg, svc)
 
 	return httpx.LogMiddleware(mux)
 }

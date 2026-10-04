@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Вход — Video Viewer</title>
+  <link rel="stylesheet" href="style.css?v=21" />
+  <link rel="stylesheet" href="tv.css?v=1" />
+  <link rel="stylesheet" href="features.css?v=1" />
+</head>
+<body data-page="login">
+  <header class="topbar">
+    <a class="logo" href="/">🎬 Video Viewer</a>
+    <div class="lang-switch" role="group" aria-label="Язык / Language">
+      <button id="lang-ru" class="lang-btn" data-lang="ru" type="button">RU</button>
+      <button id="lang-en" class="lang-btn" data-lang="en" type="button">EN</button>
+    </div>
+    <div class="user-area" id="user-area" hidden>
+      <a id="admin-link" class="auth-btn" href="/admin.html" hidden>🛠 Админ</a>
+      <span id="user-name" class="user-name"></span>
+      <button id="auth-logout" class="auth-btn" type="button">Выйти</button>
+    </div>
+    <a class="auth-btn" href="/" data-i18n="catalog">Каталог</a>
+    <a id="auth-open" class="auth-btn auth-btn-primary" href="/login.html" hidden>Войти</a>
+  </header>
+
+  <main class="page page-narrow">
+    <div class="page-card auth-card">
+      <div class="modal-head">
+        <h2 id="auth-title" data-i18n="login">Войти</h2>
+        <a class="close" href="/" aria-label="Закрыть">&times;</a>
+      </div>
+      <div class="auth-body">
+        <div class="auth-tabs" role="tablist">
+          <button id="auth-tab-login" class="auth-tab active" type="button" role="tab" data-i18n="login">Вход</button>
+          <button id="auth-tab-register" class="auth-tab" type="button" role="tab" data-i18n="register">Регистрация</button>
+        </div>
+        <p><a class="auth-btn" href="/device.html">Войти на телевизоре по коду</a></p>
+        <form id="auth-form" class="auth-form" autocomplete="on">
+          <label class="auth-field">
+            <span data-i18n="username">Логин</span>
+            <input id="auth-username" name="username" type="text" autocomplete="username" required />
+          </label>
+          <label class="auth-field">
+            <span data-i18n="password">Пароль</span>
+            <input id="auth-password" name="password" type="password" autocomplete="current-password" required />
+          </label>
+          <p id="auth-error" class="auth-error" hidden></p>
+          <button id="auth-submit" class="auth-submit" type="submit">Войти</button>
+        </form>
+      </div>
+    </div>
+  </main>
+
+  <script src="shared.js?v=2"></script>
+  <script src="personal.js?v=1"></script>
+  <script src="features.js?v=1"></script>
+  <script src="login.js?v=1"></script>
+  <script src="tv.js?v=2"></script>
+</body>
+</html>

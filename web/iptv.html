@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>IPTV — Video Viewer</title>
+  <link rel="stylesheet" href="style.css?v=21" />
+  <link rel="stylesheet" href="tv.css?v=1" />
+  <link rel="stylesheet" href="iptv.css?v=2" />
+  <link rel="stylesheet" href="features.css?v=1" />
+</head>
+<body data-page="iptv">
+  <header class="topbar">
+    <a class="logo" href="/">🎬 Video Viewer</a>
+    <div class="lang-switch" role="group" aria-label="Язык / Language">
+      <button id="lang-ru" class="lang-btn" data-lang="ru" type="button">RU</button>
+      <button id="lang-en" class="lang-btn" data-lang="en" type="button">EN</button>
+    </div>
+    <div class="user-area" id="user-area" hidden>
+      <a id="admin-link" class="auth-btn" href="/admin.html" hidden>🛠 Админ</a>
+      <span id="user-name" class="user-name"></span>
+      <button id="auth-logout" class="auth-btn" type="button">Выйти</button>
+    </div>
+    <a class="auth-btn" href="/" data-i18n="catalog">Каталог</a>
+    <a id="auth-open" class="auth-btn auth-btn-primary" href="/login.html" hidden>Войти</a>
+  </header>
+
+  <main id="iptv-view" class="iptv">
+    <div class="iptv-head">
+      <h2 class="iptv-title" data-i18n="iptvTitle">IPTV</h2>
+      <input id="iptv-search" class="search" type="search" placeholder="Поиск канала..." autocomplete="off" />
+      <button id="iptv-refresh" class="auth-btn" type="button" title="Обновить список">⟳</button>
+      <button id="iptv-admin-open" class="auth-btn" type="button" title="Плейлисты" hidden>⚙</button>
+    </div>
+
+    <div id="iptv-feature-tools" class="feature-toolbar"></div>
+    <p id="feature-status" class="feature-message" role="status" hidden></p>
+    <section id="iptv-guide" class="feature-section" hidden></section>
+    <div id="iptv-groups" class="src-chips iptv-groups"></div>
+    <p id="iptv-empty" class="empty" hidden></p>
+    <div id="iptv-grid" class="grid iptv-grid"></div>
+
+    <!-- Плеер канала -->
+    <div id="iptv-player-wrap" class="iptv-player" hidden>
+      <video id="iptv-player" playsinline></video>
+      <div class="iptv-player-bar">
+        <button id="iptv-play" class="ctrl-btn" type="button" aria-label="Play/Pause">⏸</button>
+        <span class="iptv-live">LIVE</span>
+        <img id="iptv-plogo" class="iptv-plogo" alt="" hidden />
+        <span id="iptv-pname" class="iptv-pname"></span>
+        <span id="iptv-pnow" class="iptv-pnow"></span>
+        <button id="iptv-pmute" class="ctrl-btn" type="button" aria-label="Mute">🔊</button>
+        <input id="iptv-pvolume" class="ctrl-volume" type="range" min="0" max="1" step="0.05" value="1" aria-label="Volume" />
+        <button id="iptv-pepg" class="ctrl-btn" type="button" title="Программа передач">🕒</button>
+        <button id="iptv-pfull" class="ctrl-btn" type="button" aria-label="Fullscreen">⛶</button>
+        <button id="iptv-pclose" class="ctrl-btn" type="button" aria-label="Стоп">✕</button>
+      </div>
+      <p id="iptv-pnote" class="player-error" hidden></p>
+    </div>
+
+    <!-- Программа передач канала -->
+    <div id="iptv-epg" class="iptv-epg" hidden>
+      <div class="iptv-epg-head">
+        <span id="iptv-epg-title"></span>
+        <button id="iptv-epg-close" class="close" type="button">&times;</button>
+      </div>
+      <div id="iptv-epg-list" class="ep-list"></div>
+    </div>
+
+    <!-- Плейлисты (только админ): добавить/обновить/удалить -->
+    <div id="iptv-admin" class="iptv-admin" hidden>
+      <div class="iptv-epg-head">
+        <span data-i18n="iptvPlaylists">Плейлисты IPTV</span>
+        <button id="iptv-admin-close" class="close" type="button">&times;</button>
+      </div>
+      <div id="iptv-admin-list" class="iptv-admin-list"></div>
+      <form id="iptv-form" class="iptv-form" autocomplete="off">
+        <input id="iptv-f-name" placeholder="Название" required />
+        <select id="iptv-f-kind">
+          <option value="m3u">M3U-ссылка</option>
+          <option value="xtream">Xtream Codes</option>
+        </select>
+        <input id="iptv-f-url" placeholder="URL плейлиста или адрес панели" required />
+        <input id="iptv-f-user" placeholder="Логин (для Xtream)" />
+        <input id="iptv-f-pass" type="password" placeholder="Пароль (для Xtream)" />
+        <input id="iptv-f-epg" placeholder="URL телепрограммы XMLTV (необязательно)" />
+        <button type="submit" class="resume-btn"><span data-i18n="iptvSave">Сохранить и обновить</span></button>
+      </form>
+    </div>
+  </main>
+
+  <script src="vendor/hls.min.js"></script>
+  <script src="shared.js?v=2"></script>
+  <script src="personal.js?v=1"></script>
+  <script src="features.js?v=1"></script>
+  <script src="iptv.js?v=2"></script>
+  <script src="iptv-features.js?v=1"></script>
+  <script src="tv.js?v=2"></script>
+</body>
+</html>

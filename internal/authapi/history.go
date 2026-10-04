@@ -46,7 +46,13 @@ func (h *historyHandler) list(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	items, err := h.repo.ListWatchHistory(r.Context(), u.ID, historyLimit)
+	var items []db.HistoryEntry
+	var err error
+	if filmID := strings.TrimSpace(r.URL.Query().Get("film_id")); filmID != "" {
+		items, err = h.repo.ListEpisodeHistory(r.Context(), u.ID, filmID)
+	} else {
+		items, err = h.repo.ListWatchHistory(r.Context(), u.ID, historyLimit)
+	}
 	if err != nil {
 		log.Printf("history: list: %v", err)
 		http.Error(w, "db error", http.StatusInternalServerError)
@@ -57,6 +63,7 @@ func (h *historyHandler) list(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("history: list %s -> %d записей", u.Username, len(items))
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
 	_ = json.NewEncoder(w).Encode(map[string]any{"items": items})
 }
 
@@ -67,6 +74,7 @@ func (h *historyHandler) save(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
+		Voice    string  `json:"voice"`
 		FilmID   string  `json:"film_id"`
 		Magnet   string  `json:"magnet"`
 		File     int     `json:"file"`
@@ -91,6 +99,7 @@ func (h *historyHandler) save(w http.ResponseWriter, r *http.Request) {
 		body.Position = 0
 	}
 	if err := h.repo.SaveWatchProgress(r.Context(), u.ID, db.WatchProgress{
+		Voice:    body.Voice,
 		FilmID:   body.FilmID,
 		Magnet:   body.Magnet,
 		File:     body.File,

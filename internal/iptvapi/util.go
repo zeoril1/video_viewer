@@ -57,6 +57,9 @@ func fetchStream(ctx context.Context, hc *http.Client, url, ua, referer string) 
 		resp.Body.Close()
 		return nil, fmt.Errorf("http %s", resp.Status)
 	}
+	// Заголовок Date — единственный внешний источник времени: по нему сервис
+	// выясняет расхождение системных часов (см. clock.go).
+	serviceClock.observe(resp.Header)
 	br := bufio.NewReaderSize(resp.Body, 8192)
 	magic, err := br.Peek(2)
 	if err != nil && err != io.EOF {

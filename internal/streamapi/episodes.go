@@ -31,22 +31,41 @@ var (
 	// Разделитель между сезоном и серией бывает любой: «s01e05», «S14.E01»,
 	// «S02 E10», «S3-E2» — иначе файлы вида «Realnye.pacany.S14.E01.mkv»
 	// оставались без сезона и все попадали в первый сезон.
-	epSxxExxRe = regexp.MustCompile(`(?i)[sS](\d{1,2})[\s._-]*[eE](\d{1,3})`)
-	epSeasonRe = regexp.MustCompile(`(?i)(?:сезон|season)\s*(\d{1,2})`)
-	epNumRe    = regexp.MustCompile(`(?i)(?:серия|эпизод|episode|\bep\b|\be\b)\s*\.?\s*(\d{1,3})`)
-	epTrailRe  = regexp.MustCompile(`(?:^|[^0-9])(\d{1,3})\s*$`)
+	epSxxExxRe             = regexp.MustCompile(`(?i)[sS](\d{1,2})[\s._-]*[eE](\d{1,3})`)
+	epSeasonRe             = regexp.MustCompile(`(?i)(?:сезон|season)\s*(\d{1,2})`)
+	epNumRe                = regexp.MustCompile(`(?i)(?:серия|эпизод|episode|\bep\b|\be\b)\s*\.?\s*(\d{1,3})`)
+	epTrailRe              = regexp.MustCompile(`(?:^|[^0-9])(\d{1,3})\s*$`)
+	epLeadingRe            = regexp.MustCompile(`^\s*(\d{1,3})(?:[.\s_-]+|$)`)
+	epFolderSeasonRe       = regexp.MustCompile(`(?i)(?:\bseason|сезон|\bs)[\s._-]*(\d{1,2})\b`)
+	epFolderSeasonSuffixRe = regexp.MustCompile(`(?i)\b(\d{1,2})[\s._-]*(?:сезон|season)(?:$|[\s._-])`)
 )
 
 // episodeOf извлекает (сезон, серию) из имени файла: явный SxxExx → «сезон N» + номер → номер в конце имени.
 func episodeOf(name string) (season, ep int) {
-	base := strings.TrimSuffix(filepath.Base(name), path.Ext(name))
+	name = strings.ReplaceAll(name, `\`, "/")
+	base := strings.TrimSuffix(path.Base(name), path.Ext(name))
 	if m := epSxxExxRe.FindStringSubmatch(base); m != nil {
 		return atoiOr(m[1], 0), atoiOr(m[2], 0)
 	}
 	if m := epSeasonRe.FindStringSubmatch(base); m != nil {
 		season = atoiOr(m[1], 0)
 	}
+	if season == 0 {
+		folders := strings.Split(path.Dir(name), "/")
+		for i := len(folders) - 1; i >= 0; i-- {
+			m := epFolderSeasonRe.FindStringSubmatch(folders[i])
+			if m == nil {
+				m = epFolderSeasonSuffixRe.FindStringSubmatch(folders[i])
+			}
+			if m != nil {
+				season = atoiOr(m[1], 0)
+				break
+			}
+		}
+	}
 	if m := epNumRe.FindStringSubmatch(base); m != nil {
+		ep = atoiOr(m[1], 0)
+	} else if m := epLeadingRe.FindStringSubmatch(base); m != nil {
 		ep = atoiOr(m[1], 0)
 	} else if m := epTrailRe.FindStringSubmatch(base); m != nil {
 		ep = atoiOr(m[1], 0)

@@ -4,13 +4,14 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const app = fs.readFileSync(path.join(__dirname, '../web/app.js'), 'utf8');
+const app = fs.readFileSync(path.join(__dirname, '../web/film.js'), 'utf8');
 const source = app.slice(app.indexOf('let sourcesRequest = null;'), app.indexOf('function updateSourceLabels'));
 
 function setup() {
   const pending = [];
   const rendered = [];
   const ctx = vm.createContext({
+    PP: { playing: () => false }, wantSeason: 0, wantEp: 0,
     AbortController, Date, currentItem: { id: 'a' }, relPref: {}, voicePref: {}, filmSeasonEps: {}, seriesEpisodes: {},
     sourcesRelWrap: {}, sourcesEl: {}, sourcesEmpty: {}, sourcesTitle: {}, sourcesSeasonWrap: {}, sourcesAudioWrap: {}, sourcesEpisodesWrap: {},
     t: s => s, dbg() {}, syncWatchBtn() {}, sleep: async () => {},
@@ -21,6 +22,21 @@ function setup() {
   return { ctx, pending, rendered };
 }
 const ready = id => ({ ok: true, json: async () => ({ status: 'ready', items: [{ magnet: id }] }) });
+
+test('cached sources render and autoplay while the background search continues', async () => {
+  const { ctx, pending, rendered } = setup();
+  let started = false;
+  ctx.startWanted = async () => { started = true; return true; };
+  const task = ctx.loadSources(ctx.currentItem, { play: true });
+  pending[0].resolve({ ok: true, json: async () => ({ status: 'searching', items: [{ magnet: 'cached' }] }) });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(rendered, ['a']);
+  assert.equal(started, true);
+  assert.equal(pending.length, 2);
+  pending[1].resolve(ready('new'));
+  await task;
+  assert.deepEqual(rendered, ['a', 'a']);
+});
 
 test('late response from previous film cannot replace current sources', async () => {
   const { ctx, pending, rendered } = setup();

@@ -16,6 +16,21 @@ const seriesSchema = `CREATE TABLE IF NOT EXISTS series_seasons (
  refreshed_at TIMESTAMPTZ
 )`
 
+// CachedSeriesSeasons never waits for a network refresh or locks its row.
+func (r *Repo) CachedSeriesSeasons(ctx context.Context, id int64) ([]tmdb.SeasonInfo, error) {
+	var raw []byte
+	err := r.conn.QueryRowContext(ctx, `SELECT seasons FROM series_seasons WHERE tmdb_id=$1`, id).Scan(&raw)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var seasons []tmdb.SeasonInfo
+	err = json.Unmarshal(raw, &seasons)
+	return seasons, err
+}
+
 // SeriesSeasons обновляет метаданные по запросу, не чаще раза в 24 часа: блокировка строки (FOR UPDATE)
 // не даёт параллельным запросам карточек обновлять один сериал, а неудачное обновление сохраняет
 // последние успешные данные и метку времени.

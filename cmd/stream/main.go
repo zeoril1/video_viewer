@@ -23,9 +23,13 @@ func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
 	var (
-		addr       = flag.String("addr", ":8082", "HTTP listen address")
-		port       = flag.Int("port", 0, "torrent client listen port (0 = random)")
-		catalogURL = flag.String("catalog-url", envOr("CATALOG_URL", "http://127.0.0.1:8081"), "catalog-service base URL (для резолва магнета по id)")
+		maxSessions = flag.Int("max-sessions", 4, "maximum concurrent HLS processes")
+		maxCache    = flag.Int64("cache-bytes", 40<<30, "maximum logical spool size in bytes")
+		maxHLS      = flag.Int64("hls-bytes", 8<<30, "maximum HLS output bytes (one-second watchdog)")
+		minFree     = flag.Int64("min-free-bytes", 2<<30, "minimum free disk space")
+		addr        = flag.String("addr", ":8082", "HTTP listen address")
+		port        = flag.Int("port", 0, "torrent client listen port (0 = random)")
+		catalogURL  = flag.String("catalog-url", envOr("CATALOG_URL", "http://127.0.0.1:8081"), "catalog-service base URL (для резолва магнета по id)")
 		// spoolDir — каталог дискового спула скачанных кусков (по файлу на
 		// серию; файлы удаляются после просмотра). Пусто — данные в RAM.
 		spoolDir = flag.String("spool-dir", envOr("STREAM_DATA_DIR", ""), "каталог для временного дискового спула, по файлу на серию (пусто — данные в RAM)")
@@ -41,16 +45,21 @@ func main() {
 		tmdbURL = flag.String("tmdb-url", tmdb.DefaultBaseURL, "TMDB API v3 base URL")
 	)
 	flag.Parse()
+	if *maxSessions < 1 || *maxCache < 1 || *maxHLS < 1 || *minFree < 0 {
+		log.Fatal("invalid resource limits")
+	}
 
 	// Контекст приложения для graceful shutdown.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	mgr, err := torrents.NewManager(torrents.Config{
-		ListenPort: *port,
-		SpoolDir:   *spoolDir,
-		CacheTTL:   *cacheTTL,
-		MaxCached:  *cacheMax,
+		MaxCacheBytes: *maxCache,
+		MinFreeBytes:  *minFree,
+		ListenPort:    *port,
+		SpoolDir:      *spoolDir,
+		CacheTTL:      *cacheTTL,
+		MaxCached:     *cacheMax,
 	})
 	if err != nil {
 		log.Fatalf("create torrent manager: %v", err)
@@ -82,11 +91,14 @@ func main() {
 	}
 
 	handler, stopHLS := streamapi.NewServer(streamapi.Config{
-		Torrents:  mgr,
-		Addr:      *addr,
-		Resolver:  resolver,
-		Readahead: *readahead,
-		TMDB:      tmdbClient,
+		MaxSessions:  *maxSessions,
+		MaxHLSBytes:  *maxHLS,
+		MinFreeBytes: *minFree,
+		Torrents:     mgr,
+		Addr:         *addr,
+		Resolver:     resolver,
+		Readahead:    *readahead,
+		TMDB:         tmdbClient,
 	})
 
 	// При shutdown останавливаем ffmpeg-сессии (иначе процессы осиротеют).

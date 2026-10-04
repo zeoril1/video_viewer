@@ -28,6 +28,10 @@ func TestSeriesSeasonsDailyCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	repo := NewRepo(conn)
+	missing, err := repo.CachedSeriesSeasons(ctx, 46005)
+	if err != nil || len(missing) != 0 {
+		t.Fatalf("missing cache: %v %v", missing, err)
+	}
 	calls := 0
 	fail := false
 	fetch := func(context.Context, int64) ([]tmdb.SeasonInfo, error) {
@@ -50,6 +54,10 @@ func TestSeriesSeasonsDailyCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	fail = true
+	persisted, err := repo.CachedSeriesSeasons(ctx, 46005)
+	if err != nil || len(persisted) != 1 || persisted[0].Episodes != 11 || calls != 1 {
+		t.Fatalf("stale cache read: %v %v calls=%d", persisted, err, calls)
+	}
 	stale, err := repo.SeriesSeasons(ctx, 46005, fetch)
 	if err == nil || len(stale) != 1 || stale[0].Episodes != 11 {
 		t.Fatalf("stale fallback: %v %v", stale, err)

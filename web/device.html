@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Вход на ТВ — Video Viewer</title>
+    <link rel="stylesheet" href="style.css?v=21" />
+    <link rel="stylesheet" href="features.css?v=1" />
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="logo" href="/">🎬 Video Viewer</a>
+      <div id="user-area" hidden>
+        <span id="user-name"></span
+        ><button id="auth-logout" class="auth-btn">Выйти</button>
+      </div>
+      <a id="auth-open" class="auth-btn" href="/login.html">Войти</a>
+    </header>
+    <main class="feature-page">
+      <h1 id="device-title">Вход на телевизоре</h1>
+      <p
+        id="feature-status"
+        class="feature-message"
+        role="status"
+        aria-live="polite"
+      ></p>
+      <section id="device-display">
+        <button id="device-start" class="auth-btn">Получить код</button>
+        <div id="device-code" class="device-code" aria-live="polite"></div>
+        <p id="device-instructions"></p>
+      </section>
+      <form id="device-approve" class="feature-form" hidden>
+        <label
+          >Код с экрана телевизора<input
+            name="code"
+            autocomplete="off"
+            autocapitalize="characters"
+            minlength="8"
+            maxlength="9"
+            pattern="[a-fA-F0-9-]{8,9}"
+            required /></label
+        ><button class="auth-btn">Подтвердить вход на телевизоре</button>
+      </form>
+    </main>
+    <script src="shared.js?v=2"></script>
+    <script src="personal.js?v=1"></script>
+    <script src="features.js?v=1"></script>
+    <script src="device.js?v=1"></script>
+  </body>
+</html>

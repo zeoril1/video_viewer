@@ -39,8 +39,18 @@ type subtitleTrack struct {
 	Title    string `json:"title"`
 }
 
+func selectSubtitle(items []subtitleTrack, ordinal int) (subtitleTrack, error) {
+	for _, item := range items {
+		if item.Ordinal == ordinal && isTextSubtitleCodec(item.Codec) {
+			return item, nil
+		}
+	}
+	return subtitleTrack{}, fmt.Errorf("subtitle track %d not found", ordinal)
+}
+
 // hlsSession — запущенный ffmpeg-процесс HLS (видео копируется или перекодируется, звук — в AAC).
 type hlsSession struct {
+	done     chan struct{}
 	id       string
 	magnet   string
 	file     int // индекс файла в торренте (серия); -1 — авто
@@ -67,14 +77,18 @@ type hlsSession struct {
 const maxProbeCache = 256
 
 type hlsManager struct {
-	mu         sync.Mutex
-	sessions   map[string]*hlsSession
-	launches   map[string]uint64
-	nextLaunch uint64
-	selfBase   string
-	dataDir    string
-	probeCache map[string]probeResult
-	probeOrder []string // порядок вставки ключей probeCache (для эвикции LRU-подобной)
+	probes                     chan struct{}
+	slots                      chan struct{}
+	done                       chan struct{}
+	maxDiskBytes, minFreeBytes int64
+	mu                         sync.Mutex
+	sessions                   map[string]*hlsSession
+	launches                   map[string]uint64
+	nextLaunch                 uint64
+	selfBase                   string
+	dataDir                    string
+	probeCache                 map[string]probeResult
+	probeOrder                 []string // порядок вставки ключей probeCache (для эвикции LRU-подобной)
 }
 
 // probeResult — результат ffprobe торрента (дорожки + длительность + видео).
@@ -96,14 +110,29 @@ type probeResult struct {
 }
 
 func newHLSManager(selfBase string) *hlsManager {
-	dir, err := os.MkdirTemp("", "video-viewer-hls")
+	root := os.Getenv("HLS_WORK_ROOT")
+	if root != "" {
+		if err := os.MkdirAll(root, 0755); err == nil {
+			entries, _ := os.ReadDir(root)
+			owned := regexp.MustCompile(`^video-viewer-hls[0-9]+$`)
+			for _, entry := range entries {
+				if entry.IsDir() && owned.MatchString(entry.Name()) {
+					_ = os.RemoveAll(filepath.Join(root, entry.Name()))
+				}
+			}
+		}
+	}
+	dir, err := os.MkdirTemp(root, "video-viewer-hls")
 	if err != nil {
 		dir = os.TempDir()
 	}
 	return &hlsManager{
+		slots:      make(chan struct{}, 4),
+		done:       make(chan struct{}),
 		sessions:   make(map[string]*hlsSession),
 		launches:   make(map[string]uint64),
 		selfBase:   selfBase,
+		probes:     make(chan struct{}, 4),
 		dataDir:    dir,
 		probeCache: make(map[string]probeResult),
 	}
@@ -158,6 +187,14 @@ func (m *hlsManager) tracks(ctx context.Context, id, magnet string, file int) (p
 	}
 	m.mu.Unlock()
 
+	if m.probes != nil {
+		select {
+		case m.probes <- struct{}{}:
+			defer func() { <-m.probes }()
+		default:
+			return probeResult{}, errResources
+		}
+	}
 	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "ffprobe",
@@ -291,6 +328,14 @@ func (m *hlsManager) videoStartProbe(ctx context.Context, id, magnet string, fil
 	}
 	m.mu.Unlock()
 
+	if m.probes != nil {
+		select {
+		case m.probes <- struct{}{}:
+			defer func() { <-m.probes }()
+		default:
+			return 0, false
+		}
+	}
 	pctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(pctx, "ffprobe", "-v", "error",
@@ -351,22 +396,40 @@ func (m *hlsManager) ensure(ctx context.Context, id, magnet string, file, track,
 	// в Go нереентерабельны (иначе вешались все HLS-запросы при start=0).
 	m.mu.Unlock()
 
-	// Проверяем subs по кэшу ffprobe: невалидный номер уронит ffmpeg
-	// (-map 0:s:N не найдёт поток). Нет пробы — доверяем параметру.
-	subsLabel := ""
-	if subs >= 0 {
-		key := probeKey(id, magnet, file)
-		m.mu.Lock()
-		pr, ok := m.probeCache[key]
-		m.mu.Unlock()
-		if ok {
-			if subs >= len(pr.Subtitles) {
-				log.Printf("hls: ensure %s: субтитр %d не найден — без субтитров", id, subs)
-				subs = -1
-			} else {
-				subsLabel = subtitleLabel(pr.Subtitles[subs])
-			}
+	if !m.diskAvailable() {
+		return nil, errResources
+	}
+	reserved := false
+	if m.slots != nil {
+		select {
+		case m.slots <- struct{}{}:
+			reserved = true
+		default:
+			return nil, errResources
 		}
+	}
+	handedOff := false
+	defer func() {
+		if reserved && !handedOff {
+			<-m.slots
+		}
+	}()
+
+	// subs — номер в отфильтрованном списке текстовых дорожек API.
+	// Маппим по глобальному Index: перед текстом в файле могут идти PGS/DVDSUB.
+	subsLabel := ""
+	subsMap := ""
+	if subs >= 0 {
+		pr, err := m.tracks(ctx, id, magnet, file)
+		if err != nil {
+			return nil, fmt.Errorf("probe subtitles: %w", err)
+		}
+		selected, err := selectSubtitle(pr.Subtitles, subs)
+		if err != nil {
+			return nil, err
+		}
+		subsLabel = subtitleLabel(selected)
+		subsMap = fmt.Sprintf("0:%d", selected.Index)
 	}
 
 	// Зондируем ВНЕ лока: ffprobe может идти секунды и заблокировал бы HLS.
@@ -417,7 +480,7 @@ func (m *hlsManager) ensure(ctx context.Context, id, magnet string, file, track,
 	// поэтому задаём var_stream_map s:0,sgroup:subtitle и -master_pl_name.
 	hasSubs := subs >= 0
 	if hasSubs {
-		args = append(args, "-map", fmt.Sprintf("0:s:%d", subs))
+		args = append(args, "-map", subsMap)
 	}
 	if h := qualityHeight(quality); h > 0 {
 		// Понижение качества (H.264, высота ≤ исходной). Важно для HDR/10-бит: без
@@ -459,7 +522,7 @@ func (m *hlsManager) ensure(ctx context.Context, id, magnet string, file, track,
 		log.Printf("ffmpeg %s track=%d: start failed: %v", id, track, err)
 		return nil, err
 	}
-	s := &hlsSession{id: id, magnet: magnet, file: file, track: track, subs: subs, subsLabel: subsLabel, start: start, quality: quality, dir: dir, playlist: playlist, cmd: cmd, lastUsed: time.Now()}
+	s := &hlsSession{done: make(chan struct{}), id: id, magnet: magnet, file: file, track: track, subs: subs, subsLabel: subsLabel, start: start, quality: quality, dir: dir, playlist: playlist, cmd: cmd, lastUsed: time.Now()}
 	if !m.publishSession(ctx, key, generation, s) {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
@@ -467,8 +530,13 @@ func (m *hlsManager) ensure(ctx context.Context, id, magnet string, file, track,
 		return nil, context.Canceled
 	}
 
+	handedOff = true
 	go func() {
 		werr := cmd.Wait()
+		if reserved {
+			<-m.slots
+		}
+		close(s.done)
 		m.mu.Lock()
 		s.exited = true
 		s.exitErr = werr
@@ -483,6 +551,9 @@ func (m *hlsManager) ensure(ctx context.Context, id, magnet string, file, track,
 func (s *hlsSession) stop() {
 	if s.cmd != nil && s.cmd.Process != nil {
 		_ = s.cmd.Process.Kill()
+	}
+	if s.done != nil {
+		<-s.done
 	}
 	_ = os.RemoveAll(s.dir)
 }
@@ -537,7 +608,11 @@ func (m *hlsManager) status() int {
 // cleanup периодически останавливает давно не использованные сессии.
 func (m *hlsManager) cleanup() {
 	for {
-		time.Sleep(30 * time.Second)
+		select {
+		case <-m.done:
+			return
+		case <-time.After(30 * time.Second):
+		}
 		cutoff := time.Now().Add(-90 * time.Second)
 		// Останавливаем без лока: RemoveAll может быть медленным и заблокировал бы HLS.
 		var stale []*hlsSession
@@ -625,7 +700,7 @@ func (m *hlsManager) servePlaylist(w http.ResponseWriter, r *http.Request) {
 	}
 	s, err := m.ensure(r.Context(), id, magnet, file, track, subs, start, quality, r.URL.Query().Get("session"))
 	if err != nil {
-		http.Error(w, "hls start failed: "+err.Error(), http.StatusInternalServerError)
+		resourceError(w, err)
 		return
 	}
 	// С субтитрами ждём master-плейлист (ffmpeg создаёт его после первого сегмента).

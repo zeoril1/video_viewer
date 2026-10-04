@@ -102,6 +102,13 @@ func StreamQuality(name string, isHLS bool) int {
 	if strings.Contains(low, "not 24/7") {
 		q -= 150
 	}
+	// «Архив» — это перемотка, а не живой эфир: у одного tvg-id в плейлистах
+	// рядом стоят «Звезда», «Звезда HD» и «Звезда (Архив)», и каналом должен
+	// остаться прямой поток. Архивный вариант не выбрасываем — он годится как
+	// запасной, но в списке проигрывает живому.
+	if strings.Contains(low, "архив") || strings.Contains(low, "archive") {
+		q -= 300
+	}
 	if strings.Contains(low, "geo-blocked") || strings.Contains(low, "geoblocked") {
 		q -= 400
 	}

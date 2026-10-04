@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,7 +19,7 @@ import (
 // epgWindowBack/epgWindowForward — окно программы, которое держим в БД:
 // немного назад (для «сейчас идёт») и на двое суток вперёд.
 const (
-	epgWindowBack    = 6 * time.Hour
+	epgWindowBack    = 7 * 24 * time.Hour
 	epgWindowForward = 48 * time.Hour
 )
 
@@ -109,22 +110,39 @@ func (s *Server) fetchPlaylistChannels(ctx context.Context, pl db.IPTVPlaylist) 
 
 // toDBChannels переводит каналы парсера в записи БД, подставляя общие
 // заголовки плейлиста, если у канала своих нет.
+//
+// ext_id — ключ канала в плейлисте (UNIQUE(playlist_id, ext_id)), а в M3U им
+// служит tvg-id, который НЕ уникален: один канал идёт несколькими потоками
+// (SD/HD/«Архив») и все они несут один tvg-id. Без нумерации потоки затирали
+// бы друг друга — в базе оставался последний из них (обычно «Архив»), а
+// остальные каналы терялись. Дубли нумеруем («zvezda#2»), показ дублей всё
+// равно схлопывает их по dedup_key и выбирает лучший вариант потока.
 func toDBChannels(list []iptv.Channel, pl db.IPTVPlaylist) []db.IPTVChannel {
 	out := make([]db.IPTVChannel, 0, len(list))
+	seen := make(map[string]bool, len(list))
 	for _, c := range list {
 		ua, ref := channelHeaders(c.UA, c.Referer, pl.UA, pl.Referer)
+		ext := strings.TrimSpace(c.ExtID)
+		if ext != "" {
+			base := ext
+			for i := 2; seen[ext]; i++ {
+				ext = base + "#" + strconv.Itoa(i)
+			}
+			seen[ext] = true
+		}
 		out = append(out, db.IPTVChannel{
-			PlaylistID: pl.ID,
-			ExtID:      c.ExtID,
-			Name:       strings.TrimSpace(c.Name),
-			Group:      strings.TrimSpace(c.Group),
-			Logo:       strings.TrimSpace(c.Logo),
-			EPGID:      strings.TrimSpace(c.EPGID),
-			StreamURL:  c.URL,
-			IsHLS:      c.IsHLS,
-			UA:         ua,
-			Referer:    ref,
-			Num:        c.Num,
+			PlaylistID:  pl.ID,
+			CatchupDays: c.CatchupDays, CatchupSource: c.CatchupSource, CatchupMode: c.CatchupMode,
+			ExtID:     ext,
+			Name:      strings.TrimSpace(c.Name),
+			Group:     strings.TrimSpace(c.Group),
+			Logo:      strings.TrimSpace(c.Logo),
+			EPGID:     strings.TrimSpace(c.EPGID),
+			StreamURL: c.URL,
+			IsHLS:     c.IsHLS,
+			UA:        ua,
+			Referer:   ref,
+			Num:       c.Num,
 		})
 	}
 	return out
@@ -254,7 +272,7 @@ func (s *Server) SyncEPG(ctx context.Context, pl db.IPTVPlaylist) (int, error) {
 		return 0, err
 	}
 
-	now := time.Now()
+	now := s.now()
 	from, to := now.Add(-epgWindowBack), now.Add(epgWindowForward)
 	byKey := make(map[string][]db.IPTVProgram, len(wanted))
 	for _, p := range progs {
@@ -274,7 +292,7 @@ func (s *Server) SyncEPG(ctx context.Context, pl db.IPTVPlaylist) (int, error) {
 		saved += len(list)
 	}
 	// Чистим совсем старые передачи, чтобы таблица не росла.
-	if n, err := s.cfg.DB.PruneIPTVPrograms(ctx, now.Add(-48*time.Hour)); err == nil && n > 0 {
+	if n, err := s.cfg.DB.PruneIPTVPrograms(ctx, now.Add(-epgWindowBack)); err == nil && n > 0 {
 		log.Printf("iptv: удалено устаревших передач: %d", n)
 	}
 	return saved, nil

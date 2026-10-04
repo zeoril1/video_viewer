@@ -25,9 +25,11 @@ type MagnetResolver interface {
 
 // Config — зависимости HTTP-сервиса стриминга.
 type Config struct {
-	Torrents *torrents.Manager
-	Addr     string         // адрес прослушивания (для внутреннего URL ffmpeg)
-	Resolver MagnetResolver // опциональный резолв магнета по id (catalog-сервис)
+	MaxSessions               int
+	MaxHLSBytes, MinFreeBytes int64
+	Torrents                  *torrents.Manager
+	Addr                      string         // адрес прослушивания (для внутреннего URL ffmpeg)
+	Resolver                  MagnetResolver // опциональный резолв магнета по id (catalog-сервис)
 	// TMDB — опциональный клиент TMDB (nil — файлы раскладываются только по именам):
 	// нужен, чтобы приводить сезоны трекера к TMDB (сборники нумеруют серии сквозняком).
 	TMDB *tmdb.Client
@@ -43,7 +45,14 @@ func NewServer(cfg Config) (http.Handler, func()) {
 
 	// HLS-транскодинг (ffmpeg): звук в браузере и выбор звуковой дорожки.
 	hls := newHLSManager(selfBase(cfg.Addr))
+	if cfg.MaxSessions > 0 {
+		hls.slots = make(chan struct{}, cfg.MaxSessions)
+	}
+	hls.maxDiskBytes = cfg.MaxHLSBytes
+	hls.minFreeBytes = cfg.MinFreeBytes
 	go hls.cleanup()
+	go hls.watchResources()
+	mux.HandleFunc("POST /api/stream/prepare", prepareHandler(cfg.Torrents))
 
 	// GET /api/stream/{id} — стриминг с поддержкой Range; необязательный magnet=...
 	// задаёт конкретную раздачу, иначе магнет резолвится по id через catalog-сервис.
@@ -80,6 +89,23 @@ func NewServer(cfg Config) (http.Handler, func()) {
 
 	// GET /api/films/{id}/files — видеофайлы торрента с сезонами/сериями (селектор серий): ?magnet=...
 	mux.HandleFunc("GET /api/films/{id}/files", func(w http.ResponseWriter, r *http.Request) {
+		handleTorrentFiles(cfg.Torrents, cfg.TMDB)(w, r)
+	})
+	mux.HandleFunc("POST /api/films/{id}/files", func(w http.ResponseWriter, r *http.Request) {
+		var params struct {
+			Magnet string `json:"magnet"`
+			Title  string `json:"title"`
+			TMDB   string `json:"tmdb"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&params); err != nil {
+			http.Error(w, "invalid file request", http.StatusBadRequest)
+			return
+		}
+		q := r.URL.Query()
+		q.Set("magnet", params.Magnet)
+		q.Set("title", params.Title)
+		q.Set("tmdb", params.TMDB)
+		r.URL.RawQuery = q.Encode()
 		handleTorrentFiles(cfg.Torrents, cfg.TMDB)(w, r)
 	})
 
@@ -138,6 +164,7 @@ func NewServer(cfg Config) (http.Handler, func()) {
 
 	return httpx.LogMiddleware(mux), func() {
 		// Останавливаем все ffmpeg-сессии, чтобы не оставить осиротевшие процессы.
+		close(hls.done)
 		hls.stopAll()
 	}
 }

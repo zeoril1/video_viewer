@@ -32,20 +32,24 @@ type IPTVPlaylist struct {
 
 // IPTVChannel — канал плейлиста (клиентская часть: stream_url не отдаём).
 type IPTVChannel struct {
-	ID         int64
-	PlaylistID int64
-	ExtID      string
-	Name       string
-	NameRU     string // русское название из справочника iptv-org ("" — нет)
-	Group      string
-	Logo       string
-	EPGID      string
-	StreamURL  string // внутреннее поле: адрес потока у провайдера
-	IsHLS      bool
-	UA         string
-	Referer    string
-	Num        int
-	EPGKey     string // ключ сопоставления с программами XMLTV
+	CatchupDays   int
+	CatchupSource string
+	CatchupMode   string
+	IsArchive     bool // transient playback flag; never persisted
+	ID            int64
+	PlaylistID    int64
+	ExtID         string
+	Name          string
+	NameRU        string // русское название из справочника iptv-org ("" — нет)
+	Group         string
+	Logo          string
+	EPGID         string
+	StreamURL     string // внутреннее поле: адрес потока у провайдера
+	IsHLS         bool
+	UA            string
+	Referer       string
+	Num           int
+	EPGKey        string // ключ сопоставления с программами XMLTV
 	// DedupKey — ключ канала: одинаковый у дублей из разных плейлистов и у вариантов потока (см. iptv.ChannelKey).
 	DedupKey string
 	// Quality — оценка варианта потока: из дублей в списке остаётся лучший.
@@ -119,6 +123,9 @@ ALTER TABLE iptv_channels ADD COLUMN IF NOT EXISTS grp_all   TEXT NOT NULL DEFAU
 ALTER TABLE iptv_channels ADD COLUMN IF NOT EXISTS name_ru   TEXT NOT NULL DEFAULT '';
 ALTER TABLE iptv_channels ADD COLUMN IF NOT EXISTS dedup_key TEXT NOT NULL DEFAULT '';
 ALTER TABLE iptv_channels ADD COLUMN IF NOT EXISTS quality   INT NOT NULL DEFAULT 0;
+ALTER TABLE iptv_channels ADD COLUMN IF NOT EXISTS catchup_days INT NOT NULL DEFAULT 0;
+ALTER TABLE iptv_channels ADD COLUMN IF NOT EXISTS catchup_source TEXT NOT NULL DEFAULT '';
+ALTER TABLE iptv_channels ADD COLUMN IF NOT EXISTS catchup_mode TEXT NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS idx_iptv_channels_dedup ON iptv_channels (dedup_key);
 CREATE TABLE IF NOT EXISTS iptv_programs (
 	id       BIGSERIAL PRIMARY KEY,
@@ -251,8 +258,8 @@ func (r *Repo) ReplaceIPTVChannels(ctx context.Context, playlistID int64, chans 
 	stmt, err := tx.PrepareContext(ctx, `
 		INSERT INTO iptv_channels
 			(playlist_id, ext_id, name, grp, grp_all, name_ru, dedup_key, quality, logo, epg_id, stream_url,
-			 is_hls, user_agent, referrer, num, updated_at)
-		VALUES ($1, $2, $3, $4, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, now())
+			 is_hls, user_agent, referrer, num, catchup_days, catchup_source, catchup_mode, updated_at)
+		VALUES ($1, $2, $3, $4, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, now())
 		ON CONFLICT (playlist_id, ext_id) DO UPDATE SET
 			name       = EXCLUDED.name,
 			grp        = EXCLUDED.grp,
@@ -267,6 +274,7 @@ func (r *Repo) ReplaceIPTVChannels(ctx context.Context, playlistID int64, chans 
 			user_agent = EXCLUDED.user_agent,
 			referrer   = EXCLUDED.referrer,
 			num        = EXCLUDED.num,
+ catchup_days = EXCLUDED.catchup_days, catchup_source = EXCLUDED.catchup_source, catchup_mode = EXCLUDED.catchup_mode,
 			updated_at = now()
 		RETURNING (xmax = 0) AS is_insert`)
 	if err != nil {
@@ -282,7 +290,7 @@ func (r *Repo) ReplaceIPTVChannels(ctx context.Context, playlistID int64, chans 
 		extIDs = append(extIDs, c.ExtID)
 		var isInsert bool
 		if err := stmt.QueryRowContext(ctx, playlistID, c.ExtID, c.Name, c.Group, c.NameRU,
-			c.DedupKey, c.Quality, c.Logo, c.EPGID, c.StreamURL, c.IsHLS, c.UA, c.Referer, c.Num).Scan(&isInsert); err != nil {
+			c.DedupKey, c.Quality, c.Logo, c.EPGID, c.StreamURL, c.IsHLS, c.UA, c.Referer, c.Num, c.CatchupDays, c.CatchupSource, c.CatchupMode).Scan(&isInsert); err != nil {
 			return 0, 0, fmt.Errorf("upsert iptv channel %q: %w", c.Name, err)
 		}
 		if isInsert {
@@ -314,13 +322,13 @@ func (r *Repo) ReplaceIPTVChannels(ctx context.Context, playlistID int64, chans 
 }
 
 const channelCols = `id, playlist_id, ext_id, name, grp, logo, epg_id, stream_url, is_hls,
-	user_agent, referrer, num, epg_key, name_ru, dedup_key, quality, updated_at`
+	user_agent, referrer, num, epg_key, name_ru, dedup_key, quality, updated_at, catchup_days, catchup_source, catchup_mode`
 
 // channelColsMerged — как channelCols, но группа канала объединена по всем плейлистам
 // (см. MergeIPTVChannelGroups): один канал лежит в разных категориях, и находить его нужно в каждой.
 const channelColsMerged = `id, playlist_id, ext_id, name,
 	COALESCE(NULLIF(grp_all, ''), grp) AS grp, logo, epg_id, stream_url, is_hls,
-	user_agent, referrer, num, epg_key, name_ru, dedup_key, quality, updated_at`
+	user_agent, referrer, num, epg_key, name_ru, dedup_key, quality, updated_at, catchup_days, catchup_source, catchup_mode`
 
 // channelKeyExpr — ключ канала в SQL; пустой dedup_key (строки до первого синка с русскими названиями) считаем уникальным по id.
 const channelKeyExpr = `COALESCE(NULLIF(dedup_key, ''), '#' || id::text)`
@@ -335,7 +343,7 @@ func scanChannel(row interface{ Scan(...any) error }) (IPTVChannel, error) {
 	var c IPTVChannel
 	err := row.Scan(&c.ID, &c.PlaylistID, &c.ExtID, &c.Name, &c.Group, &c.Logo, &c.EPGID,
 		&c.StreamURL, &c.IsHLS, &c.UA, &c.Referer, &c.Num, &c.EPGKey, &c.NameRU, &c.DedupKey,
-		&c.Quality, &c.UpdatedAt)
+		&c.Quality, &c.UpdatedAt, &c.CatchupDays, &c.CatchupSource, &c.CatchupMode)
 	return c, err
 }
 
@@ -483,6 +491,31 @@ func (r *Repo) CountIPTVChannels(ctx context.Context, playlistID int64) (int, er
 	return n, err
 }
 
+// IPTVChannelCounts — число каналов БЕЗ дублей по каждому плейлисту. Дедупликация та же, что в
+// ListIPTVChannels, поэтому в панели плейлистов число совпадает с числом карточек на экране,
+// а playlist.channel_count — это число записей плейлиста (варианты SD/HD/«Архив» одного канала
+// считаются в нём отдельно).
+func (r *Repo) IPTVChannelCounts(ctx context.Context) (map[int64]int, error) {
+	rows, err := r.conn.QueryContext(ctx,
+		`SELECT playlist_id, count(DISTINCT `+channelKeyExpr+`) FROM iptv_channels GROUP BY playlist_id`)
+	if err != nil {
+		return nil, fmt.Errorf("число каналов по плейлистам: %w", err)
+	}
+	defer rows.Close()
+	out := map[int64]int{}
+	for rows.Next() {
+		var (
+			id int64
+			n  int
+		)
+		if err := rows.Scan(&id, &n); err != nil {
+			return nil, err
+		}
+		out[id] = n
+	}
+	return out, rows.Err()
+}
+
 // nameKeyExpr — ключ НАЗВАНИЯ в dedup_key: вторая часть ключа канала после «|» (см. iptv.ChannelKey);
 // без «|» ключом названия является весь dedup_key — так выглядит канал без tvg-id.
 const nameKeyExpr = `CASE WHEN position('|' IN dedup_key) > 0
@@ -544,8 +577,21 @@ func (r *Repo) ReplaceIPTVPrograms(ctx context.Context, chKey string, progs []IP
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM iptv_programs WHERE ch_key = $1`, chKey); err != nil {
-		return err
+	// Replace only the imported window. Providers commonly stop publishing past
+	// programmes, which must remain available for catch-up until the retention job.
+	if len(progs) > 0 {
+		from, to := progs[0].Start, progs[0].Stop
+		for _, p := range progs {
+			if p.Start.Before(from) {
+				from = p.Start
+			}
+			if p.Stop.After(to) {
+				to = p.Stop
+			}
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM iptv_programs WHERE ch_key=$1 AND start_at >= $2 AND start_at < $3`, chKey, from, to); err != nil {
+			return err
+		}
 	}
 	stmt, err := tx.PrepareContext(ctx, `
 		INSERT INTO iptv_programs (ch_key, start_at, stop_at, title, descr, category)
