@@ -144,6 +144,9 @@ func (r *Repo) EnsureSchema(ctx context.Context) error {
 	if _, err := r.conn.ExecContext(ctx, schema); err != nil {
 		return err
 	}
+	if _, err := r.conn.ExecContext(ctx, adminRefreshSchema); err != nil {
+		return err
+	}
 	if _, err := r.conn.ExecContext(ctx, "ALTER TABLE films ADD COLUMN IF NOT EXISTS title_ru TEXT"); err != nil {
 		return err
 	}

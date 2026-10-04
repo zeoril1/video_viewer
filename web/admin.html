@@ -21,7 +21,7 @@
   <main class="admin-main">
     <div class="admin-tabs">
       <button id="tab-missing" class="section-btn active" type="button">Пустые поля</button>
-      <button id="tab-notfound" class="section-btn" type="button">Не найдены на TMDB</button>
+      <button id="tab-notfound" class="section-btn" type="button">Не удалось обновить</button>
     </div>
 
     <div class="admin-controls">
@@ -29,6 +29,8 @@
       <button id="refresh-all" class="section-btn" type="button">Обновить все (из TMDB)</button>
       <span id="admin-count" class="admin-count"></span>
     </div>
+
+    <p class="admin-count">IMDb-рейтинг не обязателен. Для будущих релизов рейтинги не проверяются. Неудачные обновления откладываются на 7 дней; повтор вручную доступен в отдельной таблице. Обновление — 4 потока.</p>
 
     <p id="admin-deny" class="empty" hidden>Нет доступа. Страница доступна только администратору.</p>
 
@@ -48,8 +50,7 @@
               <col style="width:6%">
               <col style="width:5%">
               <col style="width:6%">
-              <col style="width:3.5%">
-              <col style="width:4%">
+                            <col style="width:4%">
               <col style="width:4.5%">
               <col style="width:6%">
               <col style="width:7%">
@@ -68,7 +69,6 @@
                 <th>Название (RU)</th>
                 <th>Тип</th>
                 <th>Дата</th>
-                <th>Рейтинг IMDB</th>
                 <th>Рейтинг TMDB</th>
                 <th>TMDB id</th>
                 <th>Жанры</th>
@@ -96,6 +96,8 @@
               <col style="width:12%">
               <col style="width:8%">
               <col style="width:12%">
+              <col style="width:20%">
+              <col style="width:14%">
               <col style="width:18%">
             </colgroup>
             <thead>
@@ -107,6 +109,8 @@
                 <th>Дата</th>
                 <th>Год</th>
                 <th>TMDB id</th>
+                <th>Причина</th>
+                <th>Вернётся в очередь</th>
                 <th>Действия</th>
               </tr>
             </thead>
@@ -117,6 +121,6 @@
     </div>
   </main>
 
-  <script src="admin.js?v=3"></script>
+  <script src="admin.js?v=4"></script>
 </body>
 </html>

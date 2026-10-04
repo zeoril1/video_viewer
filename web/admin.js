@@ -11,7 +11,7 @@ const refreshAllBtn = document.getElementById('refresh-all');
 const clearLogBtn = document.getElementById('clear-log');
 const logoutBtn = document.getElementById('admin-logout');
 
-// Вкладки: «Пустые поля» и «Не найдены на TMDB».
+// Вкладки: «Пустые поля» и «Не удалось обновить».
 const tabMissing = document.getElementById('tab-missing');
 const tabNotfound = document.getElementById('tab-notfound');
 const notfoundWrap = document.getElementById('notfound-wrap');
@@ -73,11 +73,12 @@ async function pollLogs() {
     const res = await fetch('/api/admin/logs?after=' + lastSeq);
     if (res.ok) {
       const d = await res.json();
+      refreshAllBtn.disabled = !!d.running;
       for (const ln of d.lines || []) {
         logLine(ln.kind, '[' + ln.at + '] ' + ln.msg);
         lastSeq = ln.seq;
         // После обновления фильма сразу обновляем таблицы — отметки «не найден»/пустые поля.
-        if (/обновление \S+: (готово|error)/.test(ln.msg)) scheduleReload();
+        if ((/^обновление /.test(ln.msg) && ln.kind !== 'info') || /массовое обновление: (завершено|прервано)/.test(ln.msg)) scheduleReload();
       }
     }
   } catch (e) {}
@@ -88,7 +89,7 @@ async function pollLogs() {
 async function loadFilms() {
   logLine('info', 'Загружаю список записей с пустыми полями...');
   try {
-    const res = await fetch('/api/admin/films/missing?limit=200');
+    const res = await fetch('/api/admin/films/missing');
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const d = await res.json();
     renderFilms(d.items || []);
@@ -104,23 +105,24 @@ function renderFilms(items) {
   bodyEl.innerHTML = '';
   if (!items.length) {
     const tr = document.createElement('tr');
-    tr.innerHTML = '<td colspan="17" class="admin-empty">Нет записей с пустыми полями.</td>';
+    tr.innerHTML = '<td colspan="16" class="admin-empty">Нет записей с пустыми полями.</td>';
     bodyEl.appendChild(tr);
     return;
   }
-  for (const it of items) bodyEl.appendChild(makeRow(it));
+  const fragment = document.createDocumentFragment();
+  for (const it of items) fragment.appendChild(makeRow(it));
+  bodyEl.appendChild(fragment);
 }
 
 function makeRow(it) {
   const tr = document.createElement('tr');
   tr.dataset.id = it.imdb_id;
   tr.innerHTML = `
-    <td class="admin-id">${attr(it.imdb_id || '')}</td>
+    <td class="admin-id">${attr(it.imdb_id || '')}<input type="hidden" data-f="rating" value="${Number(it.rating) || 0}" /></td>
     <td><input data-f="title" value="${attr(it.title)}" /></td>
     <td><input data-f="title_ru" value="${attr(it.title_ru)}" /></td>
     <td><input data-f="kind" value="${attr(it.kind)}" /></td>
     <td><input data-f="release_date" value="${attr(it.release_date)}" placeholder="YYYY-MM-DD" /></td>
-    <td><input data-f="rating" type="number" step="0.1" value="${it.rating || ''}" /></td>
     <td><input data-f="rating_tmdb" type="number" step="0.1" value="${it.rating_tmdb || ''}" /></td>
     <td><input data-f="tmdb_id" value="${attr(it.tmdb_id)}" /></td>
     <td><input data-f="genres" value="${attr((it.genres || []).join(', '))}" /></td>
@@ -173,7 +175,7 @@ function showTab(name) {
 
 function updateCount() {
   if (currentTab === 'notfound') {
-    countEl.textContent = 'Не найдены на TMDB: ' + notFoundCount;
+    countEl.textContent = 'Не удалось обновить: ' + notFoundCount;
   } else {
     countEl.textContent = 'Записей с пустыми полями: ' + missingCount;
   }
@@ -182,7 +184,7 @@ function updateCount() {
 // ---- Список «не найдены на TMDB» ----
 async function loadNotFound() {
   try {
-    const res = await fetch('/api/admin/films/notfound?limit=200');
+    const res = await fetch('/api/admin/films/notfound');
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const d = await res.json();
     notFoundCount = d.total || 0;
@@ -197,7 +199,7 @@ function renderNotFound(items) {
   notfoundBody.innerHTML = '';
   if (!items.length) {
     const tr = document.createElement('tr');
-    tr.innerHTML = '<td colspan="8" class="admin-empty">Нет записей, помеченных как не найденные на TMDB.</td>';
+    tr.innerHTML = '<td colspan="10" class="admin-empty">Нет записей с отложенным обновлением.</td>';
     notfoundBody.appendChild(tr);
     return;
   }
@@ -215,9 +217,11 @@ function makeNotFoundRow(it) {
     <td>${attr(it.release_date)}</td>
     <td>${it.year || ''}</td>
     <td>${attr(it.tmdb_id)}</td>
+    <td>${attr(it.refresh_error)}</td>
+    <td>${attr(it.retry_at ? new Date(it.retry_at).toLocaleString('ru-RU') : '')}</td>
     <td class="admin-actions">
       <button class="btn-refresh" type="button">Обновить</button>
-      <button class="btn-unmark" type="button">Снять отметку</button>
+      <button class="btn-unmark" type="button">Вернуть в очередь</button>
     </td>
   `;
   tr.querySelector('.btn-refresh').addEventListener('click', () => refreshRow(tr));
@@ -234,7 +238,7 @@ async function unmarkRow(tr) {
       body: JSON.stringify({ not_found: false }),
     });
     if (!res.ok) throw new Error('HTTP ' + res.status);
-    logLine('ok', 'Снята отметка «не найден на TMDB»: ' + id);
+    logLine('ok', 'Возвращено в очередь: ' + id);
     tr.remove();
     notFoundCount = Math.max(0, notFoundCount - 1);
     updateCount();
@@ -245,12 +249,12 @@ async function unmarkRow(tr) {
 }
 
 function scheduleReload() {
-  if (reloadTimer) clearTimeout(reloadTimer);
+  if (reloadTimer) return;
   reloadTimer = setTimeout(() => {
     reloadTimer = null;
     loadFilms();
     loadNotFound();
-  }, 400);
+  }, 5000);
 }
 
 // ---- Действия со строкой ----
@@ -278,6 +282,7 @@ function refreshRow(tr) {
   btn.disabled = true;
   logLine('info', 'Запущено обновление ' + id + ' из TMDB');
   fetch('/api/admin/films/' + encodeURIComponent(id) + '/refresh', { method: 'POST' })
+    .then(async (res) => { if (!res.ok) throw new Error(await res.text()); })
     .catch((e) => logLine('error', 'Не удалось запустить обновление ' + id + ': ' + e.message))
     .finally(() => { btn.disabled = false; });
 }
@@ -286,8 +291,8 @@ refreshAllBtn.addEventListener('click', () => {
   refreshAllBtn.disabled = true;
   logLine('info', 'Запущено массовое обновление всех записей из TMDB');
   fetch('/api/admin/refresh-all', { method: 'POST' })
-    .catch((e) => logLine('error', 'Не удалось запустить массовое обновление: ' + e.message))
-    .finally(() => { refreshAllBtn.disabled = false; });
+    .then(async (res) => { if (!res.ok) throw new Error(await res.text()); })
+    .catch((e) => { logLine('error', 'Не удалось запустить массовое обновление: ' + e.message); refreshAllBtn.disabled = false; });
 });
 
 reloadBtn.addEventListener('click', () => { loadFilms(); loadNotFound(); });
