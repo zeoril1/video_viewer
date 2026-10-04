@@ -64,6 +64,40 @@ test('без структуры TMDB (want = 0) проверка ничего н
   assert.equal(fit.count, 293);
 });
 
+test('раздача без серий нужного сезона не получает приоритет частичной', () => {
+  const ctx = setup();
+  ctx.rememberSeasonFit('wrong', 2, ctx.releaseSeasonFit(files(1, counter(1, 25)), 2, 12));
+  const ordered = ctx.probeOrder([
+    { magnet: 'wrong', season: 0, seeds: 100 },
+    { magnet: 'season2', season: 2, seeds: 8 },
+  ], 2);
+  assert.equal(ordered[0].magnet, 'season2');
+});
+
+test('запуск второго сезона не теряет подходящий источник из-за шести раздач высокого качества', async () => {
+  const ctx = setup();
+  ctx.document = { querySelector: () => null };
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../web/personal.js'), 'utf8'), ctx);
+  const film = fs.readFileSync(path.join(__dirname, '../web/film.js'), 'utf8');
+  vm.runInContext(film.slice(film.indexOf('async function playEpisode('), film.indexOf('// Фильм: играем лучшую раздачу')), ctx);
+  const wrong = Array.from({ length: 6 }, (_, i) => ({ magnet: 'wrong' + i, season: 0, quality: '2160', seeds: 100 }));
+  let played;
+  Object.assign(ctx, {
+    lastSourceItems: [...wrong, { magnet: 'season2', season: 2, quality: '1080', seeds: 8 }],
+    voicePref: {}, playToken: 0, episodeProbeLimit: 6,
+    seasonReleaseSources: items => items, pickSeasonSource: items => items[0],
+    fetchFiles: async (id, magnet) => files(magnet === 'season2' ? 2 : 1, counter(1, 12)),
+    dbg() {}, flashFilmNote() {}, t: s => s,
+    renderSeasonChips() {}, renderEpisodeGrid() {}, renderSeasonVoices() {},
+    PP: { available: false }, openWatch: (id, src, file, season, ep) => { played = { src, season, ep }; },
+  });
+  ctx.filmSeasonEps.tt2560140 = { 1: 25, 2: 12 };
+  assert.equal(await ctx.playEpisode('tt2560140', 2, 1), true);
+  assert.equal(played.src.magnet, 'season2');
+  assert.equal(played.season, 2);
+  assert.equal(played.ep, 1);
+});
+
 test('probeOrder ставит подходящую раздачу впереди сборника', () => {
   const ctx = setup();
   const seasonPack = { magnet: 'pack', title: 'Реальные пацаны [S01] WEB-DL 1080p', season: 1 };

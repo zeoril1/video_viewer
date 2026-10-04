@@ -23,6 +23,21 @@ function setup() {
 }
 const ready = id => ({ ok: true, json: async () => ({ status: 'ready', items: [{ magnet: id }] }) });
 
+test('cached sources render and autoplay while the background search continues', async () => {
+  const { ctx, pending, rendered } = setup();
+  let started = false;
+  ctx.startWanted = async () => { started = true; return true; };
+  const task = ctx.loadSources(ctx.currentItem, { play: true });
+  pending[0].resolve({ ok: true, json: async () => ({ status: 'searching', items: [{ magnet: 'cached' }] }) });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(rendered, ['a']);
+  assert.equal(started, true);
+  assert.equal(pending.length, 2);
+  pending[1].resolve(ready('new'));
+  await task;
+  assert.deepEqual(rendered, ['a', 'a']);
+});
+
 test('late response from previous film cannot replace current sources', async () => {
   const { ctx, pending, rendered } = setup();
   const first = ctx.loadSources(ctx.currentItem);

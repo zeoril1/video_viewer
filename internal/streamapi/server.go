@@ -91,6 +91,23 @@ func NewServer(cfg Config) (http.Handler, func()) {
 	mux.HandleFunc("GET /api/films/{id}/files", func(w http.ResponseWriter, r *http.Request) {
 		handleTorrentFiles(cfg.Torrents, cfg.TMDB)(w, r)
 	})
+	mux.HandleFunc("POST /api/films/{id}/files", func(w http.ResponseWriter, r *http.Request) {
+		var params struct {
+			Magnet string `json:"magnet"`
+			Title  string `json:"title"`
+			TMDB   string `json:"tmdb"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&params); err != nil {
+			http.Error(w, "invalid file request", http.StatusBadRequest)
+			return
+		}
+		q := r.URL.Query()
+		q.Set("magnet", params.Magnet)
+		q.Set("title", params.Title)
+		q.Set("tmdb", params.TMDB)
+		r.URL.RawQuery = q.Encode()
+		handleTorrentFiles(cfg.Torrents, cfg.TMDB)(w, r)
+	})
 
 	// GET /api/films/{imdbID}/tracks — звуковые дорожки торрента (ffprobe).
 	mux.HandleFunc("GET /api/films/{id}/tracks", func(w http.ResponseWriter, r *http.Request) {

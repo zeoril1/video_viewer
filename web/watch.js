@@ -4,7 +4,7 @@
  * для ФИЛЬМОВ. Сериалы играются прямо на карточке (/film.html) — там тот же плеер
  * (player.js), только без перехода на отдельную страницу. */
 
-const wParams = new URLSearchParams(location.search);
+const wParams = playbackPageParams();
 const watchId = (wParams.get('id') || '').trim();
 const magnet = wParams.get('magnet') || '';
 const releaseTitle = wParams.get('rt') || '';
@@ -41,7 +41,7 @@ function setWatchTitle() {
 // Адрес страницы держим в актуальном виде: перезагрузка (F5) откроет ту же серию.
 function syncUrl() {
   if (!watchId) return;
-  const p = new URLSearchParams(location.search);
+  const p = new URLSearchParams(wParams);
   const st = PP.state();
   if (st.magnet) p.set('magnet', st.magnet);
   if (PP.release()) p.set('rt', PP.release());
@@ -50,7 +50,7 @@ function syncUrl() {
   if (st.episode) p.set('ep', String(st.episode));
   p.delete('pos'); // позиция уже учтена потоком — в адресе она только мешала бы
   try {
-    history.replaceState(null, '', location.pathname + '?' + p.toString());
+    savePlaybackPage(p);
   } catch (e) { /* file:// или запрет history — не критично */ }
 }
 

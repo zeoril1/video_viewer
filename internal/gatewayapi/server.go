@@ -42,6 +42,7 @@ func NewServer(cfg Config) http.Handler {
 
 	// ---- Стриминг (stream-сервис) ----
 	mux.HandleFunc("GET /api/films/{id}/files", proxyTo(cfg.StreamURL))
+	mux.HandleFunc("POST /api/films/{id}/files", proxyTo(cfg.StreamURL))
 	mux.HandleFunc("GET /api/films/{id}/tracks", proxyTo(cfg.StreamURL))
 	mux.HandleFunc("GET /api/films/{id}/hls.m3u8", proxyTo(cfg.StreamURL))
 	mux.HandleFunc("GET /api/films/{id}/hls/stop", proxyTo(cfg.StreamURL))

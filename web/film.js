@@ -34,7 +34,7 @@ const resumeBtn = document.getElementById('resume-btn');
 const filmNote = document.getElementById('film-note');
 
 // Что просят открыть из URL (переход «следующая серия в другой раздаче», ссылка из истории).
-const filmParams = new URLSearchParams(location.search);
+const filmParams = playbackPageParams();
 const filmId = (filmParams.get('id') || '').trim();
 let wantSeason = parseInt(filmParams.get('season') || '0', 10) || 0;
 let wantEp = parseInt(filmParams.get('ep') || '0', 10) || 0;
@@ -115,9 +115,8 @@ async function loadSources(it, opts) {
   let netErrors = 0;
   let lastKey = ''; // ключ последней отрисовки — перерисовываем при изменении
   // Автозапуск (переход со страницы просмотра «следующая серия» или из истории):
-  // ждём готовности поиска, но если он затянулся — пробуем по уже найденному.
+  // используем сохранённые источники сразу, не дожидаясь фонового поиска.
   // Список растёт по мере обхода трекеров, поэтому повторяем только при новых данных.
-  const playDelay = Date.now() + 15000;
   let playTries = 0;
   let lastTryItems = -1;
 
@@ -169,11 +168,11 @@ async function loadSources(it, opts) {
     }
 
     // Автозапуск: открываем просмотр сразу, как только нашлось что играть.
-    if (want.play && items.length && (ready || Date.now() >= playDelay)
+    if (want.play && items.length
         && (playTries === 0 || items.length > lastTryItems)) {
       playTries++;
       lastTryItems = items.length;
-      if (await startWanted(id)) return;
+      if (await startWanted(id)) want.play = false;
     }
 
     if (ready) {
@@ -189,7 +188,7 @@ async function loadSources(it, opts) {
     }
 
     const sec = Math.max(0, Math.round((deadline - Date.now()) / 1000));
-    sourcesTitle.textContent = t('searchingSources') + ' (' + sec + ' с)';
+    sourcesTitle.textContent = items.length ? t('sourcesTitle') : t('searchingSources') + ' (' + sec + ' с)';
     await sleep(4000);
   }
 
@@ -371,7 +370,7 @@ function renderEpisodeGrid(id) {
     btn.type = 'button';
     btn.className = 'ep-btn' + (ep === selectedEpisode ? ' active' : '');
     btn.textContent = t('episodeLabel') + ' ' + ep;
-    btn.disabled = !eps.includes(ep);
+    btn.disabled = !eps.includes(ep) && !(can > 0 && seasonReleaseSources(lastSourceItems, selectedSeason).length);
     btn.addEventListener('click', () => onPickEpisode(ep));
     sourcesEpisodes.appendChild(btn);
   });
@@ -382,7 +381,9 @@ async function onPickEpisode(ep) {
   const id = lastSourceId;
   const items = lastSourceItems;
   if (!id || !items || !items.length) return;
-  if (!((seriesEpisodes[id] && seriesEpisodes[id].bySeason[selectedSeason]) || []).includes(ep)) return;
+  const known = ((seriesEpisodes[id] && seriesEpisodes[id].bySeason[selectedSeason]) || []).includes(ep);
+  if (!known && !(ep > 0 && ep <= seasonEpisodeCount(id, selectedSeason)
+      && seasonReleaseSources(items, selectedSeason).length)) return;
   selectedEpisode = ep;
   renderEpisodeGrid(id);
   await playEpisode(id, selectedSeason, ep);
@@ -415,9 +416,10 @@ async function playEpisode(id, season, ep) {
   let fb = null; // запасной вариант: сезон есть, а нужной серии в раздаче нет
   // Раздачи без сидов — ПОСЛЕДНИМИ: иначе плеер ждёт метаданные до таймаута
   // (среди них «мёртвые» заявители редких озвучек TVShows/Novamedia/Jaskier).
-  cands = probeOrder(cands, season);
+  // Настройки ограничивают качество/размер, но не должны вытеснять нужный сезон.
+  cands = probeOrder(Personal.rank(cands, voice), season);
   cands = cands.filter((s) => (s.seeds || 0) > 0).concat(cands.filter((s) => !((s.seeds || 0) > 0)));
-  cands = Personal.rank(cands, voice).slice(0, episodeProbeLimit);
+  cands = cands.slice(0, episodeProbeLimit);
   for (const c of cands) {
     if (!c || !c.magnet) continue;
     const fs = (await fetchFiles(id, c.magnet, c.title)) || [];
@@ -443,7 +445,7 @@ async function playEpisode(id, season, ep) {
       continue;
     }
     // Сезон покрыт частично — запоминаем как последний шанс и ищем раздачу с нужной серией.
-    if (!fb) {
+    if (!ep && !fb) {
       const any = fs.find((x) => x.season === season) || fs.find((x) => (x.season || 0) === 0) || fs[0];
       if (any) fb = { c, fs, f: any };
     }
@@ -718,7 +720,7 @@ function syncFilmUrl(st) {
     p.delete('file');
   }
   try {
-    history.replaceState(null, '', location.pathname + '?' + p.toString());
+    savePlaybackPage(p);
   } catch (e) { /* file:// или запрет history — не критично */ }
 }
 

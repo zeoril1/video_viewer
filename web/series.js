@@ -92,7 +92,7 @@ function releaseSeasonFit(files, season, want) {
 function seasonFitRank(magnet, season) {
   const fit = knownSeasonFit(magnet, season);
   if (!fit || !fit.want) return 1;
-  if (!fit.fits) return 0;
+  if (!fit.fits || fit.count === 0) return 0;
   return fit.full ? 3 : 2;
 }
 
@@ -212,10 +212,12 @@ async function ensureSeasonEpisodes(id, season, items) {
 async function fetchFiles(id, magnet, title, options) {
   try {
     const tmdb = (currentItem && currentItem.tmdb_id) || '';
-    const qs = '?magnet=' + encodeURIComponent(magnet)
-      + (title ? '&title=' + encodeURIComponent(title) : '')
-      + (tmdb ? '&tmdb=' + encodeURIComponent(tmdb) : '');
-    const res = await fetch(`/api/films/${encodeURIComponent(id)}/files${qs}`, options);
+    const res = await fetch(`/api/films/${encodeURIComponent(id)}/files`, {
+      ...options,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ magnet, title: title || '', tmdb: String(tmdb) }),
+    });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
     return data.files || [];

@@ -6,8 +6,30 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestFilesPostBodyProxied(t *testing.T) {
+	called := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		var body map[string]string
+		if r.Method != http.MethodPost || r.URL.RawQuery != "" || json.NewDecoder(r.Body).Decode(&body) != nil || body["magnet"] != "magnet:test" {
+			t.Errorf("file request body was not preserved")
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	h := NewServer(Config{WebDir: t.TempDir(), StreamURL: upstream.URL})
+	r := httptest.NewRequest(http.MethodPost, "/api/films/tt1/files", strings.NewReader(`{"magnet":"magnet:test","tmdb":"123"}`))
+	r.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if !called || w.Code != http.StatusOK {
+		t.Fatalf("files POST: called=%v status=%d", called, w.Code)
+	}
+}
 
 // Статика фронтенда отдаётся с Cache-Control: no-cache — иначе браузер
 // (и WebView Android-приставки) кэширует app.js эвристически по

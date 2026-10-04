@@ -578,6 +578,31 @@ function loadStoredItem(id) {
 
 // Просмотр запускается на отдельной странице /watch.html: собираем ссылку с
 // параметрами раздачи (сезон/серия/позиция/дорожка).
+function playbackPageUrl(path, params) {
+  const id = params.get('id');
+  if (!id || params.has('room')) return path + '?' + params.toString();
+  try { sessionStorage.setItem('vv:navigate:' + path + ':' + id, params.toString()); } catch (e) {}
+  return path + '?id=' + encodeURIComponent(id);
+}
+
+function savePlaybackPage(params) {
+  const state = Object.assign({}, history.state, { playback: params.toString() });
+  history.replaceState(state, '', location.pathname + '?id=' + encodeURIComponent(params.get('id')));
+}
+
+function playbackPageParams() {
+  const params = new URLSearchParams(location.search);
+  const id = params.get('id');
+  if (!id || params.has('room')) return params;
+  const key = 'vv:navigate:' + location.pathname + ':' + id;
+  let pending = '';
+  try { pending = sessionStorage.getItem(key) || ''; sessionStorage.removeItem(key); } catch (e) {}
+  const saved = new URLSearchParams(pending || (history.state && history.state.playback) || '');
+  const result = params.size === 1 && saved.get('id') === id ? saved : params;
+  try { savePlaybackPage(result); } catch (e) {}
+  return result;
+}
+
 function watchUrl(id, opts) {
   const o = opts || {};
   const p = new URLSearchParams();
@@ -592,10 +617,15 @@ function watchUrl(id, opts) {
   if (o.subs >= 0) p.set('subs', String(o.subs));
   if (o.voice) p.set('voice', o.voice);
   if (o.autoplay) p.set('autoplay', '1');
-  return '/watch.html?' + p.toString();
+  return playbackPageUrl('/watch.html', p);
 }
 
 function go(url) {
+  const target = new URL(url, location.href);
+  if (target.origin === location.origin && ['/film.html', '/watch.html'].includes(target.pathname)
+      && target.searchParams.size > 1 && !target.searchParams.has('room')) {
+    url = playbackPageUrl(target.pathname, target.searchParams);
+  }
   location.href = url;
 }
 
