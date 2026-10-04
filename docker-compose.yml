@@ -35,8 +35,6 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-video_viewer}
       POSTGRES_USER: ${POSTGRES_USER:-video_viewer}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-video_viewer}
-    ports:
-      - "5432:5432"        # PostgreSQL — доступ для pgAdmin 4 / внешних клиентов
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -240,7 +238,7 @@ services:
       AUTH_URL: ${AUTH_URL:-http://auth:8083}
       IPTV_URL: ${IPTV_URL:-http://iptv:8084}
     ports:
-      - "8080:8080"        # веб-интерфейс / API (единственный публичный HTTP-порт)
+      - "8090:8080"        # веб-интерфейс / API (единственный публичный HTTP-порт)
     volumes:
       - ./web:/app/web     # фронтенд — правите без пересборки образа
     healthcheck:
