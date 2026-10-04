@@ -64,6 +64,12 @@ services:
       jackett:
         condition: service_started
     environment:
+      HTTP_PROXY: http://gluetun:8888
+      HTTPS_PROXY: http://gluetun:8888
+      NO_PROXY: localhost,127.0.0.1,db,jackett,catalog,stream,auth,iptv,192.168.88.0/24
+      http_proxy: http://gluetun:8888
+      https_proxy: http://gluetun:8888
+      no_proxy: localhost,127.0.0.1,db,jackett,catalog,stream,auth,iptv,192.168.88.0/24
       DATABASE_URL: ${DATABASE_URL:-postgres://video_viewer:video_viewer@db:5432/video_viewer?sslmode=disable}
       # Ключи TMDB (api.themoviedb.org). Задайте в .env рядом с
       # docker-compose.yml (TMDB_API_KEY / TMDB_ACCESS_TOKEN) или в окружении.
