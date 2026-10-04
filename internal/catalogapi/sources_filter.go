@@ -142,6 +142,10 @@ func newTitleMatcher(titles []string) *titleMatcher {
 
 // filter выбрасывает раздачи, которые относятся к ДРУГОМУ фильму.
 func (m *titleMatcher) filter(filmID string, items []sourceItem) []sourceItem {
+	return m.filterWithLog(filmID, items, true)
+}
+
+func (m *titleMatcher) filterWithLog(filmID string, items []sourceItem, verbose bool) []sourceItem {
 	if m == nil || len(m.norm) == 0 || len(items) == 0 {
 		return items
 	}
@@ -151,7 +155,9 @@ func (m *titleMatcher) filter(filmID string, items []sourceItem) []sourceItem {
 			out = append(out, it)
 			continue
 		}
-		log.Printf("sources: %s: отброшена чужая раздача %q", filmID, it.Title)
+		if verbose {
+			log.Printf("sources: %s: отброшена чужая раздача %q", filmID, it.Title)
+		}
 	}
 	return out
 }

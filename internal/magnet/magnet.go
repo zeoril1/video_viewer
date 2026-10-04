@@ -8,10 +8,11 @@ const userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 
 
 // Result — найденная раздача на трекере.
 type Result struct {
-	Title  string
-	Magnet string
-	Size   string
-	Seeds  int
+	Provider string
+	Title    string
+	Magnet   string
+	Size     string
+	Seeds    int
 }
 
 // Provider — поисковик магнет-ссылок (например, через Jackett Torznab).
