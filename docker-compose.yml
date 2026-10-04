@@ -87,7 +87,7 @@ services:
       JACKETT_API_KEY: ${JACKETT_API_KEY:-}
       JACKETT_INDEXER: ${JACKETT_INDEXER:-rutracker-ru}
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8081/api/health >/dev/null || exit 1"]
+      test: ["CMD-SHELL", "wget -Y off -qO- http://127.0.0.1:8081/api/health >/dev/null || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 15
