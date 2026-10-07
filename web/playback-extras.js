@@ -20,6 +20,7 @@ const PlaybackExtras = (() => {
     <p id="preferences-status" role="status"></p>
   </div></details>
   <p id="prepare-status" role="status"></p>
+  <p id="prepare-analysis-status" role="status"></p>
   <div class="watch-room"><button type="button" id="room-create">Смотреть вместе</button>
     <button type="button" id="room-leave" hidden>Выйти из комнаты</button>
     <label id="room-invite" hidden>Ссылка для приглашения <input id="room-link" readonly></label>
@@ -125,50 +126,147 @@ const PlaybackExtras = (() => {
   video.textTracks.addEventListener('addtrack', applyCues);
   video.addEventListener('timeupdate', applyCues);
 
-  let preparation = null, preparedKey = '', readyNext = null, retryAt = 0;
-  function cancelPreparation() { if (preparation) preparation.abort(); preparation=null; readyNext=null; preparedKey='';retryAt=0;el('prepare-status').textContent=''; }
-  el('prepare-next').onchange = () => { preferences.prepare=el('prepare-next').checked;if(!preferences.prepare)cancelPreparation();savePreferences(); };
-  window.addEventListener('playbackstart', () => {cancelPreparation();preparedKey='';});
-  window.addEventListener('playbackstop', cancelPreparation);
-  window.addEventListener('pagehide', cancelPreparation);
-  video.addEventListener('timeupdate', async () => {
-    const s=PP.state();
-    if (!preferences.prepare || video.paused || !s.duration || s.duration-s.position>300 || !s.season || !s.episode || document.body.classList.contains('room-guest')) return;
-    const count=seasonEpisodeCount(s.id,s.season);
-    const season=count&&s.episode>=count?s.season+1:s.season, episode=count&&s.episode>=count?1:s.episode+1;
-    let next=PP.files().find(f=>f.season===season && f.episode===episode);
-    let source={magnet:s.magnet,title:PP.release()};
-    const key=s.id+'|'+s.magnet+'|'+s.file;
-    if (key===preparedKey || preparation || Date.now()<retryAt) return;
-    preparedKey=key;
-    const controller=new AbortController();preparation=controller;
-    const timer=setTimeout(()=>controller.abort(),390000);
-    el('prepare-status').textContent='Подготавливаем следующую серию…';
+  let preparation = null, preparedKey = '', readyNext = null, retryAt = 0, retryTimer = null, stopped = false;
+  let analysisRetryKey = '', analysisRetries = 0;
+  const preparationKey = s => [s.id,s.magnet,s.file,s.season,s.episode].join('|');
+  function cancelPreparation() {
+    if (preparation) preparation.controller.abort();
+    if (retryTimer) clearTimeout(retryTimer);
+    preparation=null; retryTimer=null; readyNext=null; preparedKey=''; retryAt=0;
+    analysisRetryKey='';analysisRetries=0;
+    el('prepare-status').textContent=''; el('prepare-analysis-status').textContent='';
+  }
+  function eligible(s) {
+    return !stopped && preferences.prepare && s.id && s.magnet && Number.isInteger(s.file) && s.file >= 0
+      && s.season > 0 && s.episode > 0 && (s.active ?? PP.playing())
+      && !(PP.isFollower ? PP.isFollower() : document.body.classList.contains('room-guest'));
+  }
+  function wait(milliseconds, signal) {
+    return new Promise((resolve,reject) => {
+      if (signal.aborted) {reject(new Error('cancelled'));return;}
+      const aborted = () => {clearTimeout(timer);reject(new Error('cancelled'));};
+      const timer = setTimeout(() => {signal.removeEventListener('abort',aborted);resolve();},milliseconds);
+      signal.addEventListener('abort',aborted,{once:true});
+    });
+  }
+  function current(task) {return preparation===task && !task.controller.signal.aborted && eligible(PP.state()) && preparationKey(PP.state())===task.key;}
+  function scheduleRetry() {
+    preparedKey='';retryAt=Date.now()+30000;
+    if(retryTimer)clearTimeout(retryTimer);
+    retryTimer=setTimeout(()=>{retryTimer=null;updatePreparation();},30000);
+  }
+  async function downloadStatus(magnet,file,signal) {
+    const controller=new AbortController(),abort=()=>controller.abort();
+    signal.addEventListener('abort',abort,{once:true});
+    if(signal.aborted)controller.abort();
+    const timeout=setTimeout(abort,10000);
     try {
-      if(!next){
-        const response=await fetch('/api/films/'+encodeURIComponent(s.id)+'/sources',{signal:controller.signal});
-        if(!response.ok)throw new Error('sources unavailable');
-        const data=await response.json();
-        for(const candidate of Personal.rank(data.items||data.sources||[],s.voice).slice(0,3)){
-          if(controller.signal.aborted)throw new Error('cancelled');
-          const files=await fetchFiles(s.id,candidate.magnet,candidate.title,{signal:controller.signal});
-          next=(files||[]).find(f=>f.season===season&&f.episode===episode);
-          if(next){source=candidate;break;}
+      const response=await fetch('/api/stream/download-status?'+new URLSearchParams({magnet,file}),{signal:controller.signal});
+      if(!response.ok)throw new Error('download status unavailable');
+      return await response.json();
+    } finally {clearTimeout(timeout);signal.removeEventListener('abort',abort);}
+  }
+  async function followDownload(source,next,task,signal) {
+    try {
+      while(current(task)&&!signal.aborted){
+        const data=await downloadStatus(source.magnet,next.index,signal);
+        if(!current(task)||signal.aborted)return;
+        if(data.complete===true){
+          el('prepare-status').textContent='Следующая серия скачана.';
+          el('prepare-analysis-status').textContent='Распознаём повторяющиеся заставки и титры…';return;
         }
+        await wait(3000,signal);
       }
-      if(!next)throw new Error('next episode unavailable');
-      if(preparation!==controller || controller.signal.aborted)return;
-      // Make the chosen source available immediately: auto-next must not wait
-      // for the entire background download to finish before reusing it.
-      readyNext={key,id:s.id,magnet:source.magnet,release:source.title,file:next.index,season,ep:episode,voice:s.voice,pos:0};
-      el('prepare-status').textContent='Скачивается следующая серия…';
-      const q=new URLSearchParams({magnet:source.magnet,file:next.index});
-      const response=await fetch('/api/stream/prepare?'+q,{method:'POST',signal:controller.signal});
-      if (preparation!==controller) return;
+    } catch (_) { /* Progress display is optional; the prepare request owns the result. */ }
+  }
+  async function prepareFollowing(s,task) {
+    const signal=task.controller.signal;
+    const count=seasonEpisodeCount(s.id,s.season);
+    const reuse=task.analysisOnly && readyNext && readyNext.key===task.key;
+    const season=reuse?readyNext.season:count&&s.episode>=count?s.season+1:s.season;
+    const episode=reuse?readyNext.ep:count&&s.episode>=count?1:s.episode+1;
+    let next=reuse?{index:readyNext.file,season,episode}:PP.files().find(f=>f.season===season&&f.episode===episode);
+    let source=reuse?{magnet:readyNext.magnet,title:readyNext.release}:{magnet:s.magnet,title:PP.release()};
+    if(!next){
+      el('prepare-status').textContent='Ищем следующую серию…';
+      const response=await fetch('/api/films/'+encodeURIComponent(s.id)+'/sources',{signal});
+      if(!response.ok)throw new Error('sources unavailable');
+      const data=await response.json();
+      for(const candidate of Personal.rank(data.items||data.sources||[],s.voice).slice(0,3)){
+        if(!current(task))return;
+        try {
+          const files=await fetchFiles(s.id,candidate.magnet,candidate.title,{signal});
+          next=(files||[]).find(f=>f.season===season&&f.episode===episode);
+        } catch (_) {if(!current(task))return;continue;}
+        if(next){source=candidate;break;}
+      }
+    }
+    if(!current(task))return;
+    if(!next)throw new Error('next episode unavailable');
+    // Auto-next can reuse the exact chosen file while its download continues.
+    if(!reuse)readyNext={key:task.key,id:s.id,magnet:source.magnet,release:source.title,file:next.index,season,ep:episode,voice:s.voice,pos:0};
+    el('prepare-status').textContent=reuse?'Видео следующей серии подготовлено.':'Скачивается следующая серия…';
+    el('prepare-analysis-status').textContent=reuse?'Повторяем распознавание пропусков…':'После загрузки ищем повторяющиеся заставки и титры.';
+    const q=new URLSearchParams({magnet:source.magnet,file:next.index,id:s.id,season,episode,
+      previous_magnet:s.magnet,previous_file:s.file,previous_season:s.season,previous_episode:s.episode});
+    const timeout=setTimeout(()=>task.controller.abort(),3600000);
+    const progress=new AbortController(),cancelProgress=()=>progress.abort();
+    signal.addEventListener('abort',cancelProgress,{once:true});
+    if(!reuse)followDownload(source,next,task,progress.signal);
+    try {
+      const response=await fetch('/api/stream/prepare?'+q,{method:'POST',signal});
+      if(!current(task))return;
       if(!response.ok)throw new Error('preparation deferred');
+      const data=response.status===204?{}:await response.json();
+      if(!current(task))return;
       el('prepare-status').textContent='Видео следующей серии подготовлено.';
-    } catch (_) { if(preparation===controller){preparedKey='';retryAt=Date.now()+30000;el('prepare-status').textContent='Загрузка следующей серии отложена. Повторим через 30 секунд.';} }
-    finally {clearTimeout(timer);if(preparation===controller)preparation=null;}
-  });
-  return {loading, next:()=>{const s=PP.state();return readyNext&&readyNext.key===s.id+'|'+s.magnet+'|'+s.file?readyNext:null;}};
+      const messages={ready:'Отметки пропусков сохранены для следующих просмотров.',not_found:'Повторяющиеся участки не найдены. Видео готово.',
+        unavailable:'Видео готово. Распознать пропуски пока не удалось.',disabled:'Видео готово. Распознавание пропусков выключено на сервере.'};
+      el('prepare-analysis-status').textContent=messages[data.analysis_status]||'';
+      if(data.analysis_status==='unavailable' && analysisRetries<2){
+        analysisRetryKey=task.key;scheduleRetry();
+        el('prepare-analysis-status').textContent+=' Повторим распознавание через 30 секунд.';
+      }else analysisRetryKey='';
+      window.dispatchEvent(new CustomEvent('segmentsrefresh',{detail:{identity:{...s}}}));
+    } finally {progress.abort();signal.removeEventListener('abort',cancelProgress);clearTimeout(timeout);}
+  }
+  async function runPreparation(s,task) {
+    try {
+      if(task.analysisOnly){analysisRetries++;await prepareFollowing(s,task);return;}
+      while(current(task)){
+        el('prepare-status').textContent='Ждём завершения загрузки текущей серии…';
+        const data=await downloadStatus(s.magnet,s.file,task.controller.signal);
+        if(!current(task))return;
+        if(data.complete===true){await prepareFollowing(s,task);return;}
+        if(data.total>0&&data.downloaded>=0)el('prepare-status').textContent='Скачивается текущая серия: '+Math.min(100,Math.floor(data.downloaded/data.total*100))+'%. Затем начнётся загрузка следующей.';
+        await wait(3000,task.controller.signal);
+      }
+    } catch (_) {
+      if(preparation===task && eligible(PP.state()) && preparationKey(PP.state())===task.key){
+        if(task.analysisOnly){
+          el('prepare-status').textContent='Видео следующей серии подготовлено.';
+          el('prepare-analysis-status').textContent='Видео готово. Распознать пропуски пока не удалось.';
+          if(analysisRetries<2){scheduleRetry();el('prepare-analysis-status').textContent+=' Повторим распознавание через 30 секунд.';}
+          else analysisRetryKey='';
+        }else{scheduleRetry();el('prepare-status').textContent='Подготовка следующей серии отложена. Повторим через 30 секунд.';}
+      }
+    } finally {if(preparation===task)preparation=null;}
+  }
+  function updatePreparation() {
+    const s=PP.state(),key=preparationKey(s);
+    if(!eligible(s)){cancelPreparation();return;}
+    if(preparation&&preparation.key!==key || readyNext&&readyNext.key!==key || preparedKey&&preparedKey!==key)cancelPreparation();
+    if(preparation || preparedKey===key || Date.now()<retryAt)return;
+    preparedKey=key;
+    const task={key,controller:new AbortController(),analysisOnly:analysisRetryKey===key&&!!readyNext};preparation=task;
+    runPreparation({...s},task);
+  }
+  el('prepare-next').onchange=()=>{preferences.prepare=el('prepare-next').checked;updatePreparation();savePreferences();};
+  window.addEventListener('playbackstart',()=>{cancelPreparation();stopped=false;updatePreparation();});
+  window.addEventListener('playbackstop',()=>{stopped=true;cancelPreparation();});
+  window.addEventListener('pagehide',()=>{stopped=true;cancelPreparation();});
+  for(const event of ['playbackchange','playbackrole','personalchange'])window.addEventListener(event,updatePreparation);
+  video.addEventListener('timeupdate',updatePreparation);
+  video.addEventListener('playing',updatePreparation);
+  return {loading,next:()=>readyNext&&readyNext.key===preparationKey(PP.state())?readyNext:null};
 })();

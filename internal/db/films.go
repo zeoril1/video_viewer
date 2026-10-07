@@ -141,6 +141,9 @@ func (r *Repo) EnsureSchema(ctx context.Context) error {
 	if _, err := r.conn.ExecContext(ctx, seriesSchema); err != nil {
 		return err
 	}
+	if _, err := r.conn.ExecContext(ctx, segmentAnalysisSchema); err != nil {
+		return err
+	}
 	if _, err := r.conn.ExecContext(ctx, schema); err != nil {
 		return err
 	}

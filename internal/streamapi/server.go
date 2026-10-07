@@ -4,6 +4,7 @@
 package streamapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"runtime"
@@ -17,6 +18,9 @@ import (
 
 // Config — зависимости HTTP-сервиса стриминга.
 type Config struct {
+	Context                   context.Context
+	AnalysisStoreURL          string
+	DisableSegmentAnalysis    bool
 	MaxSessions               int
 	MaxHLSBytes, MinFreeBytes int64
 	Torrents                  *torrents.Manager
@@ -43,7 +47,9 @@ func NewServer(cfg Config) (http.Handler, func()) {
 	hls.minFreeBytes = cfg.MinFreeBytes
 	go hls.cleanup()
 	go hls.watchResources()
-	mux.HandleFunc("POST /api/stream/prepare", prepareHandler(cfg.Torrents))
+	analyzer := newEpisodeAnalyzer(hls, cfg)
+	mux.HandleFunc("POST /api/stream/prepare", prepareHandler(cfg.Torrents, analyzer))
+	mux.HandleFunc("GET /api/stream/download-status", downloadStatusHandler(cfg.Torrents))
 
 	// GET /api/stream/{id} — стриминг с поддержкой Range; magnet задаёт раздачу.
 	mux.HandleFunc("GET /api/stream/", func(w http.ResponseWriter, r *http.Request) {
@@ -145,6 +151,7 @@ func NewServer(cfg Config) (http.Handler, func()) {
 	})
 
 	return httpx.LogMiddleware(mux), func() {
+		analyzer.cancel()
 		// Останавливаем все ffmpeg-сессии, чтобы не оставить осиротевшие процессы.
 		close(hls.done)
 		hls.stopAll()

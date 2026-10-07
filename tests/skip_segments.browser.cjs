@@ -73,7 +73,9 @@ async function fixture(options = {}) {
           subtitles: [], codec: 'h264', height: 1080, segments: file === 0 ? fixture.chapters : [],
           media_key: 'segments.' + 'a'.repeat(40) + '.' + file };
       } else if (pathname.endsWith('/segments')) {
-        data = { status: fixture.external.length ? 'ready' : 'not_found', segments: fixture.external };
+        const key=url.searchParams.get('media_key');
+        const segments=key?.endsWith('.0')?fixture.external:[];
+        data = { status: segments.length ? 'ready' : 'not_found', media_key:key, segments };
       } else if (pathname.startsWith('/api/rooms/') && !pathname.endsWith('/leave')) {
         data = { state: fixture.host, server_time: Date.now(), updated: Date.now(), participants: [] };
       }
@@ -202,6 +204,24 @@ test('external suggestions require confirmation even when automatic mode is sele
     await f.page.waitForFunction(() => PP.state().position === 40 && !fixture.media.paused);
     assert.deepEqual(f.errors, []);
   } finally { await f.context.close(); }
+});
+
+test('stored audio matches automatically skip for the exact file and load again when playback restarts', async () => {
+  const f=await fixture({external:[{type:'intro',start:10,end:40,source:'audio_match',auto_skip:true}],
+    files:[{index:0,season:1,episode:1},{index:1,season:1,episode:2}]});
+  try {
+    await f.page.waitForFunction(()=>document.getElementById('skip-segments-source-status').textContent.includes('Сохранённые'));
+    await mode(f.page,'intro','auto');await position(f.page,15,20);
+    await f.page.waitForFunction(()=>PP.state().position===40&&!fixture.media.paused);
+    await f.page.evaluate(({magnet,filmID})=>{PP.stop();PP.start({id:filmID,magnet,file:0,season:1,ep:1,pos:15});},{magnet,filmID});
+    await f.page.waitForFunction(()=>PP.state().position===40&&PP.ready()&&!fixture.media.paused);
+    await f.page.evaluate(()=>PP.playNeighbor(1,true));
+    await f.page.waitForFunction(()=>PP.state().file===1&&PP.ready()&&!fixture.media.paused);
+    await position(f.page,15,20);
+    assert.equal(await f.page.evaluate(()=>PP.state().position),15);
+    assert.equal(await f.page.locator('#skip-segment').isVisible(),false);
+    assert.deepEqual(f.errors,[]);
+  }finally{await f.context.close();}
 });
 
 test('credit blocks preserve the intervening scene and terminal skip saves completion before advancing', async () => {

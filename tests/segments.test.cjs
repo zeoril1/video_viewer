@@ -91,6 +91,48 @@ test('external candidates cannot auto skip until their own boundaries are confir
   h.el('skip-segments-close').dispatch('click');h.video.dispatch('timeupdate');assert.deepEqual(h.seeks,[40]);
 });
 
+test('stored audio marks load for an exact file after reload and can automatically skip', async () => {
+  const fetcher=async url=>{
+    assert.equal(new URL(url,'http://local').searchParams.get('media_key'),mediaKey);
+    return {ok:true,json:async()=>({status:'ready',media_key:mediaKey,segments:[{type:'intro',start:10,end:40,source:'audio_match',auto_skip:true}]})};
+  };
+  for(let reload=0;reload<2;reload++){
+    const h=setup({fetcher});h.state.position=20;h.tracks([]);await flush();h.change('skip-mode-intro','auto');
+    assert.deepEqual(h.seeks,[40]);assert.match(h.el('skip-segments-source-status').textContent,/этого файла/);
+    assert.equal(h.listButtons().some(b=>b.textContent==='Подтвердить'),false);
+  }
+});
+
+test('audio candidates respect server auto_skip=false until the user confirms their boundaries',async()=>{
+  const h=setup({fetcher:async()=>({ok:true,json:async()=>({status:'ready',media_key:mediaKey,
+    segments:[{type:'intro',start:10,end:40,source:'audio_match',auto_skip:false,verified:true}]})})});
+  h.state.position=20;h.tracks([]);h.change('skip-mode-intro','auto');await flush();
+  assert.deepEqual(h.seeks,[]);assert.match(h.el('skip-segment-hint').textContent,/распознанные/);
+  h.el('skip-segments-open').dispatch('click');h.listButtons().find(b=>b.textContent==='Подтвердить').dispatch('click');await flush();
+  h.el('skip-segments-close').dispatch('click');h.video.dispatch('timeupdate');assert.deepEqual(h.seeks,[40]);
+});
+
+test('audio marks for another file cannot leak into playback and manual overrides keep precedence', async () => {
+  const h=setup({fetcher:async()=>({ok:true,json:async()=>({status:'ready',media_key:mediaKey.replace(/\.0$/,'.1'),
+    segments:[{type:'intro',start:10,end:40,source:'audio_match',auto_skip:true}]})})});
+  h.state.position=20;h.tracks([]);await flush();h.change('skip-mode-intro','auto');
+  assert.deepEqual(h.seeks,[]);assert.equal(h.el('skip-segment').hidden,true);
+  const manual=setup({fetcher:async()=>({ok:true,json:async()=>({status:'ready',media_key:mediaKey,
+    segments:[{type:'intro',start:10,end:40,source:'audio_match',auto_skip:true}]})})});
+  manual.preferences.set('one|preferences|'+mediaKey,{data:{overridden_types:['intro'],segments:[{type:'intro',start:5,end:15,source:'manual',verified:true}]}});
+  manual.state.position=20;manual.tracks([]);await flush();manual.change('skip-mode-intro','auto');
+  assert.deepEqual(manual.seeks,[]);assert.equal(manual.el('skip-segment').hidden,true);
+});
+
+test('finishing next-episode analysis refreshes current marks but stale completion does not', async () => {
+  let ready=false;
+  const h=setup({fetcher:async()=>({ok:true,json:async()=>({status:ready?'ready':'not_found',media_key:mediaKey,
+    segments:ready?[{type:'intro',start:10,end:40,source:'audio_match',auto_skip:true}]:[]})})});
+  h.state.position=20;h.tracks([]);await flush();h.change('skip-mode-intro','auto');
+  ready=true;h.emit('segmentsrefresh',{identity:{id:'tt1',magnet:'stale',file:0}});await flush();assert.equal(h.requests.length,1);
+  h.emit('segmentsrefresh',{identity:{...h.state}});await flush();assert.equal(h.requests.length,2);assert.deepEqual(h.seeks,[40]);
+});
+
 test('manual marks take precedence and empty overrides suppress a deleted automatic type', async () => {
   const h=setup();h.state.position=20;h.tracks([{type:'intro',start:10,end:30,auto_skip:true}]);await flush();
   h.submit('intro','0:12','0:25.5');await flush();

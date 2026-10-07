@@ -56,6 +56,7 @@ func NewServer(cfg Config) http.Handler {
 	mux.HandleFunc("GET /api/stream/", proxyTo(cfg.StreamURL))
 	// Тёплый кеш: фронтенд зовёт после просмотра >5% длительности.
 	mux.HandleFunc("POST /api/stream/keep", proxyTo(cfg.StreamURL))
+	mux.HandleFunc("GET /api/stream/download-status", proxyTo(cfg.StreamURL))
 	// /api/debug/* намеренно НЕ проксируется наружу (диагностика памяти и
 	// торрентов доступна только во внутренней сети).
 

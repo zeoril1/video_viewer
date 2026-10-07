@@ -7,7 +7,7 @@ const SkipSegments = (() => {
   const types = ['recap', 'intro', 'credits'];
   const names = {recap:'Пересказ', intro:'Заставка', credits:'Титры'};
   const verbs = {recap:'Пропустить пересказ', intro:'Пропустить заставку', credits:'Пропустить титры'};
-  const sources = {chapter:'Глава видео', theintrodb:'Внешняя разметка', manual:'Ваши отметки'};
+  const sources = {chapter:'Глава видео', audio_match:'Распознано по звуку', theintrodb:'Внешняя разметка', manual:'Ваши отметки'};
   const defaults = {recap:'button', intro:'button', credits:'button'};
   const toolbar = document.createElement('div');
   toolbar.className = 'skip-segments-toolbar';
@@ -24,7 +24,7 @@ const SkipSegments = (() => {
   panel.setAttribute('aria-label', 'Настройки пропуска');
   panel.innerHTML = `<div class="skip-segments-heading"><h3>Пропуск заставок и повторов</h3><button id="skip-segments-close" type="button">Закрыть</button></div>
     <div class="skip-segments-modes">${types.map(type => `<label>${names[type]} <select id="skip-mode-${type}"><option value="off">Выключено</option><option value="button">Кнопка</option><option value="auto">Автоматически</option></select></label>`).join('')}</div>
-    <p>Автопропуск использует главы видео и подтверждённые вами границы. Внешняя разметка может отличаться от этой версии: проверьте её и подтвердите или исправьте.</p>
+    <p>Автопропуск использует главы видео и подтверждённые вами границы. Распознанные по звуку и внешние отметки можно проверить, подтвердить или исправить для этого файла.</p>
     <p>Титры пропускаются до конца выбранного участка. Сцены между участками остаются.</p>
     <p id="skip-segments-source-status" role="status"></p>
     <button id="skip-segments-retry" type="button" hidden>Повторить поиск отметок</button>
@@ -217,7 +217,7 @@ const SkipSegments = (() => {
       ? state.season && state.episode ? 'Следующая серия' : 'Завершить просмотр' : verbs[active.type];
     el('skip-segment-hint').textContent = isFollower() ? 'Пропуском управляет ведущий.'
       : active && active.overlap ? 'Участки пересекаются. Исправьте границы.'
-      : active && !active.auto_skip ? 'Проверьте границы внешней разметки.' : '';
+      : active && !active.auto_skip ? active.source === 'audio_match' ? 'Проверьте распознанные границы.' : 'Проверьте границы внешней разметки.' : '';
     el('skip-segment-undo').hidden = !undo || undo.expires < Date.now();
     refreshRole();
     if (active && modes[active.type] === 'auto' && active.auto_skip && !active.overlap && !suppressed.has(segmentKey(active))
@@ -236,21 +236,25 @@ const SkipSegments = (() => {
   async function lookupExternal(state) {
     if (!state.id || !Number.isInteger(state.season) || state.season < 0 || !state.episode || duration <= 0 || !mediaKey) return;
     const tmdb = typeof currentItem !== 'undefined' && currentItem && currentItem.tmdb_id || '';
-    const query = new URLSearchParams({season:state.season, episode:state.episode, duration, ...(tmdb ? {tmdb} : {})});
+    const query = new URLSearchParams({season:state.season, episode:state.episode, duration, media_key:mediaKey, ...(tmdb ? {tmdb} : {})});
     const lookup = state.id+'?'+query;
     if (lookup === externalLookup) return;
-    cancelExternal(); externalLookup = lookup; external = [];
-    const controller = new AbortController(), requestIdentity = identity, requestGeneration = generation;
+    cancelExternal(); externalLookup = lookup;
+    const controller = new AbortController(), requestIdentity = identity, requestGeneration = generation, requestMediaKey = mediaKey;
     externalRequest = controller; externalRetryAvailable = false; sourceStatus = 'Ищем готовые отметки…'; compose();
     const timeout = setTimeout(() => controller.abort(),10000);
     try {
       const response = await fetch('/api/films/'+encodeURIComponent(state.id)+'/segments?'+query, {signal:controller.signal});
       if (!response.ok) throw new Error('lookup unavailable');
       const data = await response.json();
-      if (externalRequest !== controller || requestGeneration !== generation || requestIdentity !== playbackIdentity(PP.state())) return;
-      external = clean(data.segments, 'theintrodb').map(s => ({...s,auto_skip:false}));
+      if (externalRequest !== controller || requestGeneration !== generation || requestIdentity !== playbackIdentity(PP.state()) || requestMediaKey !== mediaKey) return;
+      external = clean((data.segments || []).map(s => ({...s,source:s.source || 'theintrodb',verified:false})))
+        .filter(s => s.source !== 'audio_match' || data.media_key === requestMediaKey)
+        .map(s => ({...s,auto_skip:s.source === 'audio_match' && s.auto_skip === true}));
       externalRetryAvailable = !external.length && data.status !== 'disabled';
-      sourceStatus = external.length ? 'Найдена внешняя разметка. Проверьте границы для этого файла.'
+      sourceStatus = external.some(s => s.source === 'audio_match') ? 'Сохранённые отметки распознавания загружены для этого файла.'
+        : external.length ? 'Найдена внешняя разметка. Проверьте границы для этого файла.'
+        : data.analysis_status === 'unavailable' ? 'Распознавание временно недоступно. Можно отметить участки вручную.'
         : data.status === 'disabled' ? 'Поиск внешней разметки выключен на сервере.' : data.status === 'unavailable' ? 'Внешняя разметка временно недоступна.' : 'Готовые отметки для этой серии не найдены.';
       compose();
     } catch (_) {
@@ -317,11 +321,16 @@ const SkipSegments = (() => {
     if (identity && next !== identity) resetPlayback();
     identity = next;
     const nextKey = validMediaKey(detail.media_key) ? detail.media_key : '';
-    if (mediaKey && nextKey !== mediaKey) {suppressed.clear(); undo = null; resetEditor();}
+    if (mediaKey && nextKey !== mediaKey) {external=[];cancelExternal();suppressed.clear(); undo = null; resetEditor();}
     mediaKey = nextKey; duration = Number(detail.duration) || (PP.duration ? PP.duration() : state.duration) || 0;
     chapter = clean(detail.segments,'chapter'); compose(); lookupExternal(state);
   });
   window.addEventListener('playbackchange', playbackChanged);
+  window.addEventListener('segmentsrefresh', event => {
+    const expected=event.detail && event.detail.identity;
+    if(expected && playbackIdentity(expected)!==playbackIdentity(PP.state()))return;
+    cancelExternal();lookupExternal(PP.state());
+  });
   window.addEventListener('playbackstop', resetPlayback);
   window.addEventListener('playbackrole', () => {refreshRole(); tick();});
   window.addEventListener('personalchange', loadModes);

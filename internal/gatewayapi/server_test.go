@@ -89,6 +89,36 @@ func TestFilesPostBodyProxied(t *testing.T) {
 	}
 }
 
+func TestDownloadStatusProxiedAndAnalysisWritesRemainInternal(t *testing.T) {
+	called := false
+	stream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		if r.URL.Path != "/api/stream/download-status" || r.URL.Query().Get("file") != "2" {
+			t.Error(r.URL)
+		}
+		w.Write([]byte(`{"complete":true,"downloaded":100,"total":100}`))
+	}))
+	defer stream.Close()
+	h := NewServer(Config{WebDir: t.TempDir(), StreamURL: stream.URL, CatalogURL: stream.URL})
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/stream/download-status?magnet=m&file=2", nil))
+	if !called || w.Code != 200 || !strings.Contains(w.Body.String(), `"complete":true`) {
+		t.Fatal(called, w.Code, w.Body.String())
+	}
+	for _, request := range []struct{ method, path string }{
+		{http.MethodGet, "/internal/segment-analysis/segments.0123456789abcdef0123456789abcdef01234567.2"},
+		{http.MethodPost, "/internal/segment-analysis"},
+		{http.MethodPost, "/api/films/tt1234567/segments"},
+	} {
+		called = false
+		w = httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(request.method, request.path, nil))
+		if called || w.Code == http.StatusOK || w.Code == http.StatusNoContent {
+			t.Fatal("analysis write/protected data exposed", request, w.Code)
+		}
+	}
+}
+
 // Статика фронтенда отдаётся с Cache-Control: no-cache — иначе браузер
 // (и WebView Android-приставки) кэширует app.js эвристически по
 // Last-Modified и продолжает работать на старой версии после обновления.

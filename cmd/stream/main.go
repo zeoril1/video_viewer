@@ -78,13 +78,16 @@ func main() {
 	}
 
 	handler, stopHLS := streamapi.NewServer(streamapi.Config{
-		MaxSessions:  *maxSessions,
-		MaxHLSBytes:  *maxHLS,
-		MinFreeBytes: *minFree,
-		Torrents:     mgr,
-		Addr:         *addr,
-		Readahead:    *readahead,
-		TMDB:         tmdbClient,
+		Context:                ctx,
+		AnalysisStoreURL:       envOr("SEGMENTS_CATALOG_URL", "http://127.0.0.1:8081"),
+		DisableSegmentAnalysis: os.Getenv("SEGMENTS_ANALYSIS_ENABLED") == "false",
+		MaxSessions:            *maxSessions,
+		MaxHLSBytes:            *maxHLS,
+		MinFreeBytes:           *minFree,
+		Torrents:               mgr,
+		Addr:                   *addr,
+		Readahead:              *readahead,
+		TMDB:                   tmdbClient,
 	})
 
 	// При shutdown останавливаем ffmpeg-сессии (иначе процессы осиротеют).
