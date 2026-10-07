@@ -27,6 +27,22 @@ func TestPosterProxiedToCatalog(t *testing.T) {
 	}
 }
 
+func TestSegmentsProxiedToCatalog(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/films/tt1234567/segments" || r.URL.Query().Get("episode") != "2" || r.URL.Query().Get("duration") != "2100" {
+			t.Error(r.URL)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"segments":[],"status":"not_found"}`))
+	}))
+	defer upstream.Close()
+	w := httptest.NewRecorder()
+	NewServer(Config{WebDir: t.TempDir(), CatalogURL: upstream.URL}).ServeHTTP(w, httptest.NewRequest("GET", "/api/films/tt1234567/segments?season=1&episode=2&duration=2100", nil))
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"not_found"`) {
+		t.Fatal(w.Code, w.Body.String())
+	}
+}
+
 func TestFilesPostBodyProxied(t *testing.T) {
 	called := false
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

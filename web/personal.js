@@ -50,11 +50,13 @@ const Personal = (() => {
     return items.find((x) => x.kind === kind && x.key === String(key));
   }
   async function put(kind, key, data) {
+    const uid = VV.user && VV.user.id;
     await request("/api/personal/" + kind + "/" + encodeURIComponent(key), {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(data),
     });
+    if (!VV.user || VV.user.id !== uid) return;
     items = items.filter((x) => !(x.kind === kind && x.key === String(key)));
     items.unshift({
       kind,
@@ -65,9 +67,11 @@ const Personal = (() => {
     window.dispatchEvent(new Event("personalchange"));
   }
   async function remove(kind, key) {
+    const uid = VV.user && VV.user.id;
     await request("/api/personal/" + kind + "/" + encodeURIComponent(key), {
       method: "DELETE",
     });
+    if (!VV.user || VV.user.id !== uid) return;
     items = items.filter((x) => !(x.kind === kind && x.key === String(key)));
     window.dispatchEvent(new Event("personalchange"));
   }

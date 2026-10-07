@@ -93,7 +93,7 @@ func NewServer(cfg Config) (http.Handler, func()) {
 
 	// GET /api/films/{imdbID}/tracks — звуковые дорожки торрента (ffprobe).
 	mux.HandleFunc("GET /api/films/{id}/tracks", func(w http.ResponseWriter, r *http.Request) {
-		handleTracks(hls)(w, r)
+		handleTracks(hls, cfg.Torrents)(w, r)
 	})
 
 	// GET /api/films/{imdbID}/hls.m3u8 — HLS-плейлист (ffmpeg, выбранная дорожка).

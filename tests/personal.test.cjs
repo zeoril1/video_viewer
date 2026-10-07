@@ -66,3 +66,26 @@ test("front-end JavaScript parses", () => {
       { filename: name },
     );
 });
+
+test("pending personal writes and deletes cannot change the next account's preferences", async () => {
+  const pending = [], changes = [];
+  const context = vm.createContext({
+    AbortController, setTimeout, clearTimeout, Event: class {},
+    VV: { user: { id: 1 } }, document: { querySelector: () => null },
+    window: { dispatchEvent: e => changes.push(e) },
+    fetch: async (url, options) => {
+      if (options && options.method) return new Promise(resolve => pending.push(() => resolve({ ok: true, status: 204 })));
+      return { ok: true, status: 200, json: async () => ({ items: [{ kind: 'preferences', key: 'skip_segments', data: { intro: 'button' } }] }) };
+    },
+  });
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../web/personal.js'), 'utf8') + '\nglobalThis.personal=Personal;', context);
+  const put = context.personal.put('preferences', 'skip_segments', { intro: 'auto' });
+  const remove = context.personal.remove('preferences', 'skip_segments');
+  context.VV.user = { id: 2 };
+  await context.personal.load();
+  const count = changes.length;
+  for (const complete of pending) complete();
+  await Promise.all([put, remove]);
+  assert.equal(context.personal.get('preferences', 'skip_segments').data.intro, 'button');
+  assert.equal(changes.length, count);
+});

@@ -236,7 +236,7 @@
   }
 
   function inControls(el) {
-    return !!(el && el.closest && el.closest('#player-controls'));
+    return !!(el && el.closest && el.closest('#player-controls, .skip-segments-panel, .skip-segments-toolbar'));
   }
 
   function onKeyDown(e) {
@@ -320,6 +320,12 @@
   // ---- Мост для нативной обёртки: кнопка Back ----------------------------
   function handleBack() {
     try {
+      var skipPanel = document.getElementById('skip-segments-panel');
+      if (skipPanel && !skipPanel.hidden) {
+        var skipClose = document.getElementById('skip-segments-close');
+        if (skipClose) skipClose.click();
+        return 'consumed';
+      }
       if (document.fullscreenElement) {
         if (document.exitFullscreen) document.exitFullscreen();
         return 'consumed';

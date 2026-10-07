@@ -17,6 +17,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/zeoril1/video_viewer/internal/segments"
+	"github.com/zeoril1/video_viewer/internal/torrents"
 )
 
 // audioTrack — звуковая дорожка из ffprobe (Ordinal — номер среди аудио,
@@ -96,6 +99,8 @@ type probeResult struct {
 	Tracks    []audioTrack
 	Subtitles []subtitleTrack
 	Duration  float64
+	Segments  []segments.Segment
+	MediaKey  string
 	// VideoCodec — кодек видео (h264/hevc/av1/vp9/...); пусто — не определён.
 	VideoCodec string
 	// VideoHeight — вертикальное разрешение видео (0 — не определено).
@@ -199,7 +204,7 @@ func (m *hlsManager) tracks(ctx context.Context, id, magnet string, file int) (p
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "ffprobe",
 		"-v", "error",
-		"-show_entries", "stream=index,codec_name,codec_type,height,start_time:stream_tags=language,title:format=duration",
+		"-show_entries", "stream=index,codec_name,codec_type,height,start_time:stream_tags=language,title:format=duration:chapter=start_time,end_time:chapter_tags=title",
 		"-of", "json",
 		m.inputURL(id, magnet, file),
 	)
@@ -227,6 +232,7 @@ func (m *hlsManager) tracks(ctx context.Context, id, magnet string, file int) (p
 		Format struct {
 			Duration string `json:"duration"`
 		} `json:"format"`
+		Chapters []mediaChapter `json:"chapters"`
 	}
 	if err := json.Unmarshal(out, &parsed); err != nil {
 		return probeResult{}, fmt.Errorf("parse ffprobe: %w", err)
@@ -270,7 +276,7 @@ func (m *hlsManager) tracks(ctx context.Context, id, magnet string, file int) (p
 		}
 	}
 	duration, _ := strconv.ParseFloat(parsed.Format.Duration, 64)
-	pr := probeResult{Tracks: tracks, Subtitles: subtitles, Duration: duration, VideoCodec: videoCodec, VideoHeight: videoHeight, VideoStart: videoStart}
+	pr := probeResult{Tracks: tracks, Subtitles: subtitles, Duration: duration, Segments: chapterSegments(parsed.Chapters, duration), VideoCodec: videoCodec, VideoHeight: videoHeight, VideoStart: videoStart}
 	m.mu.Lock()
 	// Эвикция: без неё кэш рос бы бесконечно (ключ — полная строка магнита).
 	if len(m.probeCache) >= maxProbeCache {
@@ -651,7 +657,7 @@ func subsParam(r *http.Request) int {
 
 // handleTracks — GET /api/films/{id}/tracks: дорожки, субтитры, длительность,
 // кодек/высота видео (для фолбэка на H.264, если браузер не играет HEVC).
-func handleTracks(hls *hlsManager) http.HandlerFunc {
+func handleTracks(hls *hlsManager, mgr *torrents.Manager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		magnet := strings.TrimSpace(r.URL.Query().Get("magnet"))
@@ -667,6 +673,18 @@ func handleTracks(hls *hlsManager) http.HandlerFunc {
 			http.Error(w, "tracks unavailable (no peers?): "+err.Error(), http.StatusGatewayTimeout)
 			return
 		}
+		if pr.MediaKey == "" {
+			pr.MediaKey = resolveMediaKey(r.Context(), mgr, id, magnet, fileParam(r))
+			if pr.MediaKey != "" {
+				hls.mu.Lock()
+				key := probeKey(id, magnet, fileParam(r))
+				if cached, ok := hls.probeCache[key]; ok {
+					cached.MediaKey = pr.MediaKey
+					hls.probeCache[key] = cached
+				}
+				hls.mu.Unlock()
+			}
+		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"id":          id,
@@ -676,6 +694,8 @@ func handleTracks(hls *hlsManager) http.HandlerFunc {
 			"codec":       pr.VideoCodec,
 			"height":      pr.VideoHeight,
 			"video_start": pr.VideoStart, // сдвиг видео-дорожки (для adelay)
+			"segments":    pr.Segments,
+			"media_key":   pr.MediaKey,
 		})
 	}
 }

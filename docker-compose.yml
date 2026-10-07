@@ -75,6 +75,8 @@ services:
       # docker-compose.yml (TMDB_API_KEY / TMDB_ACCESS_TOKEN) или в окружении.
       TMDB_API_KEY: ${TMDB_API_KEY:-}
       TMDB_ACCESS_TOKEN: ${TMDB_ACCESS_TOKEN:-}
+      SEGMENTS_EXTERNAL_ENABLED: ${SEGMENTS_EXTERNAL_ENABLED:-true}
+      THEINTRODB_API_KEY: ${THEINTRODB_API_KEY:-}
       # Dev-пользователь (SeedDevUser) — создаётся только если заданы оба.
       DEV_USER: ${DEV_USER:-}
       DEV_PASSWORD: ${DEV_PASSWORD:-}

@@ -72,6 +72,7 @@ const PP = (() => {
   let curSeason = 0;           // сезон/серия текущего файла (для URL, истории, прогресса)
   let curEpisode = 0;
   let autoNextFired = false;   // защита от повторного автоперехода
+  let completedPlayback = false;
   let lastProgressSend = 0;
   let playbackReady = false;
   let follower = false, remotePaused = false;
@@ -167,6 +168,7 @@ const PP = (() => {
     if (hooks.onStateChange) {
       try { hooks.onStateChange(state()); } catch (e) { dbg('player hook: ' + e.message); }
     }
+    window.dispatchEvent(new CustomEvent('playbackchange', { detail: state() }));
   }
 
   // ---- Прогресс просмотра ----
@@ -522,6 +524,10 @@ const PP = (() => {
       if (generation !== tracksGeneration || !currentPlay || currentPlay.id !== id || currentPlay.magnet !== magnetSrc || currentFile !== file) return;
       totalDuration = data.duration || 0;
       updatePlayerUI();
+      window.dispatchEvent(new CustomEvent('playbacksegments', { detail: {
+        segments: data.segments || [], media_key: data.media_key || '', duration: totalDuration,
+        identity: { id, magnet: magnetSrc, file },
+      } }));
       // Запрос длительности завершён — fetchDuration в playHls больше не нужен.
       durationFetch.inflight = false;
       currentVideoCodec = (data.codec || '').toLowerCase();
@@ -722,6 +728,7 @@ const PP = (() => {
   function selectEpisode(index) {
     if (!currentPlay || currentFile === index) return;
     maybeSaveProgress(true);
+    completedPlayback = false;
     playbackReady = false;
     lastProgressSend = 0;
     autoVoice = selectedVoice;
@@ -805,6 +812,7 @@ const PP = (() => {
 
   // Абсолютная позиция: streamStart + currentTime (при перемотке ffmpeg стартует с позиции).
   function absTime() {
+    if (completedPlayback && totalDuration > 0) return totalDuration;
     return streamStart + (player.currentTime || 0);
   }
 
@@ -844,6 +852,7 @@ const PP = (() => {
       const frac = (e.clientX - rect.left) / rect.width;
       const dur = totalDuration || streamStart + (player.duration || 0);
       const target = Math.max(0, Math.min(dur, frac * dur));
+      completedPlayback = false;
       if (target >= streamStart && target <= absBufEnd() + 5) {
         player.currentTime = target - streamStart;
       } else if (isFinite(target) && currentPlay) {
@@ -857,6 +866,7 @@ const PP = (() => {
   function seekTo(target) {
     // Защита от Infinity/NaN (когда длительность не получена) — иначе ffmpeg получит -ss +Inf.
     if (!currentPlay || !isFinite(target) || target < 0) return;
+    completedPlayback = false;
     dbg('seek: перезапуск потока с ' + target + 's');
     streamStart = target;
     playHls(currentPlay.id, currentPlay.magnet, currentFile, currentTrack, target, currentQuality, currentSubs);
@@ -868,6 +878,7 @@ const PP = (() => {
     if (!currentPlay || playerWrap.hidden) return;
     const dur = totalDuration || streamStart + (player.duration || 0);
     const target = Math.max(0, isFinite(dur) ? Math.min(dur, absTime() + delta) : absTime() + delta);
+    completedPlayback = false;
     if (target >= streamStart && target <= absBufEnd() + 5) {
       player.currentTime = target - streamStart;
     } else if (isFinite(target)) {
@@ -1039,6 +1050,7 @@ const PP = (() => {
     // ←/→ — перемотка на 5 секунд (когда курсор не в поле ввода).
     document.addEventListener('keydown', (e) => {
       if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+      if (e.target && e.target.closest && e.target.closest('.skip-segments-panel, .skip-segments-toolbar')) return;
       const tag = ((e.target && e.target.tagName) || '').toLowerCase();
       if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
       if (playerWrap.hidden || !currentPlay || trailerActive) return;
@@ -1101,6 +1113,7 @@ const PP = (() => {
     const previousVoice = keepAudio ? selectedVoice : '';
     if (!keepAudio) selectedAudio = null;
     if (currentPlay) {maybeSaveProgress(true);if(currentPlay.id!==o.id)leave();}
+    completedPlayback = false;
     playbackReady = false;
     lastProgressSend = 0;
     currentPlay = { id: o.id, magnet: o.magnet };
@@ -1161,6 +1174,7 @@ const PP = (() => {
     currentSubtitles = [];
     totalDuration = 0;
     currentPlay = null;
+    completedPlayback = false;
     currentFile = -1;
     lastFiles = [];
     notify();
@@ -1188,7 +1202,12 @@ const PP = (() => {
     saveProgress: maybeSaveProgress,
     hide: () => { if (playerWrap) playerWrap.hidden = true; },
     ready: () => !pendingPlayback && (playbackReady || player.readyState >= 2),
-    setFollower: value => { follower = value; },
+    setFollower: value => {
+      follower = value;
+      window.dispatchEvent(new CustomEvent('playbackrole', { detail: { follower } }));
+    },
+    isFollower: () => follower,
+    duration: () => totalDuration,
     setRemotePaused: value => {
       remotePaused = value;
       if (value) {
@@ -1200,8 +1219,27 @@ const PP = (() => {
       if (currentPlay) subsSelect(currentPlay.id, currentPlay.magnet, ordinal, false);
     },
     seek: target => {
+      completedPlayback = false;
       if (target >= streamStart && target <= absBufEnd()) player.currentTime = target - streamStart;
       else seekTo(target);
+    },
+    skipSegment: target => {
+      if (follower || !currentPlay || !Number.isFinite(target) || target < 0) return false;
+      if (totalDuration > 0 && Math.abs(target - totalDuration) < 0.01) {
+        // Starting ffmpeg at EOF cannot yield a playable frame. Complete the
+        // current episode explicitly, keeping history at its real end.
+        completedPlayback = true;
+        autoNextFired = true;
+        player.pause();
+        maybeSaveProgress(true);
+        updatePlayerUI();
+        playNeighbor(1, true);
+        return true;
+      }
+      completedPlayback = false;
+      if (target >= streamStart && target <= absBufEnd()) player.currentTime = target - streamStart;
+      else seekTo(target);
+      return false;
     },
     version: 2,
   };
