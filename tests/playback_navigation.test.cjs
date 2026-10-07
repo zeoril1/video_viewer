@@ -41,6 +41,96 @@ test('room invitation URLs remain usable', () => {
   assert.equal(c.location.search, '?id=tt1&room=invite');
 });
 
+test('reload with a TV flag retains the saved source and episode', () => {
+  const c = setup('?id=tt1');
+  c.savePlaybackPage(new URLSearchParams('id=tt1&magnet=magnet:saved&season=2&ep=3&file=4&autoplay=1'));
+  c.location.search = '?id=tt1&tv=1';
+  const params = c.playbackPageParams();
+  assert.equal(params.get('magnet'), 'magnet:saved');
+  assert.equal(params.get('ep'), '3');
+  assert.equal(params.get('tv'), '1');
+  assert.equal(c.location.search, '?id=tt1&tv=1');
+});
+
+test('an explicit episode link does not inherit the previous source of the same series', () => {
+  const c = setup('?id=tt1');
+  c.savePlaybackPage(new URLSearchParams('id=tt1&magnet=magnet:saved&season=2&ep=3&file=4&autoplay=1'));
+  c.location.search = '?id=tt1&season=2&ep=4&autoplay=1';
+  const params = c.playbackPageParams();
+  assert.equal(params.get('ep'), '4');
+  assert.equal(params.get('magnet'), null);
+  assert.equal(params.get('file'), null);
+});
+
+test('navigation retains all playback parameters when session storage is unavailable', () => {
+  const c = setup();
+  c.sessionStorage.setItem = () => { throw new Error('disabled'); };
+  const url = c.watchUrl('tt1', { magnet: 'magnet:saved', file: 4, season: 2, ep: 3 });
+  const params = new URL(url, 'http://localhost').searchParams;
+  assert.equal(params.get('magnet'), 'magnet:saved');
+  assert.equal(params.get('file'), '4');
+  c.location.pathname = '/watch.html';
+  c.location.search = new URL(url, 'http://localhost').search;
+  assert.equal(c.playbackPageParams().get('ep'), '3');
+});
+
+test('saving an active room keeps its invitation in the visible URL', () => {
+  const c = setup('?id=tt1&room=invite');
+  c.savePlaybackPage(new URLSearchParams('id=tt1&room=invite&magnet=magnet:saved'));
+  assert.equal(c.playbackPageParams().get('room'), 'invite');
+  assert.equal(new URLSearchParams(c.location.search).get('room'), 'invite');
+});
+
+test('a source waiting for tracks is saved as active and an explicit stop removes it', () => {
+  const film = fs.readFileSync(path.join(__dirname, '../web/film.js'), 'utf8');
+  const c = setup();
+  Object.assign(c, { filmId: 'tt1', voicePref: { 2: 'LostFilm' }, wantVoice: '', PP: { release: () => 'Season release' } });
+  vm.runInContext(film.slice(film.indexOf('function syncFilmUrl('), film.indexOf('// Раздача кончилась: ищем')), c);
+  c.syncFilmUrl({ active: true, playing: false, magnet: 'magnet:saved', file: 4, season: 2, episode: 3 });
+  let params = c.playbackPageParams();
+  assert.equal(params.get('autoplay'), '1');
+  assert.equal(params.get('magnet'), 'magnet:saved');
+  assert.equal(params.get('rt'), 'Season release');
+  c.syncFilmUrl({ active: false, playing: false, season: 2, episode: 3 });
+  params = c.playbackPageParams();
+  assert.equal(params.get('magnet'), null);
+  assert.equal(params.get('autoplay'), null);
+});
+
+test('page unload saves progress without publishing an explicit playback stop', () => {
+  const player = fs.readFileSync(path.join(__dirname, '../web/player.js'), 'utf8');
+  const handlers = {}, progress = [];
+  const c = vm.createContext({ available: true, document: { addEventListener() {} },
+    window: { addEventListener: (name, fn) => { handlers[name] = fn; } },
+    maybeSaveProgress: (...args) => progress.push(args),
+    leave() {}, hlsPlayer: {}, stop() { assert.fail('unload must not clear the saved playback source'); } });
+  const start = player.lastIndexOf('  if (available) {', player.indexOf("document.addEventListener('visibilitychange'"));
+  vm.runInContext(player.slice(start, player.indexOf('  // ---- Публичный API ----', start)), c);
+  handlers.beforeunload();
+  assert.deepEqual(progress, [[true, true]]);
+  assert.equal(typeof handlers.pagehide, 'function');
+});
+
+test('delayed film metadata restores the saved source exactly once', () => {
+  const film = fs.readFileSync(path.join(__dirname, '../web/film.js'), 'utf8');
+  const starts = [];
+  const c = vm.createContext({ seriesUiReady: false, savedPlaybackRestored: false,
+    filmId: 'tt1', filmParams: new URLSearchParams('rt=Season'), startMagnet: 'magnet:saved',
+    startFile: 4, wantSeason: 2, wantEp: 3, startPos: 0, wantVoice: 'LostFilm', wantPlay: true,
+    PP: { available: true, playing: () => false, start: options => starts.push(options) } });
+  vm.runInContext(film.slice(film.indexOf('function resumeSavedPlayback('), film.indexOf('async function initFilmPage(')), c);
+  c.resumeSavedPlayback();
+  assert.equal(starts.length, 0);
+  c.seriesUiReady = true;
+  c.resumeSavedPlayback();
+  c.resumeSavedPlayback();
+  assert.equal(starts.length, 1);
+  assert.equal(starts[0].magnet, 'magnet:saved');
+  assert.equal(starts[0].file, 4);
+  assert.equal(starts[0].ep, 3);
+  assert.equal(c.wantPlay, false);
+});
+
 test('file metadata uses a JSON body and preserves cancellation', async () => {
   const code = fs.readFileSync(path.join(__dirname, '../web/series.js'), 'utf8');
   let request;

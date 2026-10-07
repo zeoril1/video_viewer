@@ -43,6 +43,31 @@ func TestSegmentsProxiedToCatalog(t *testing.T) {
 	}
 }
 
+func TestSeriesMetadataProxiedToCatalog(t *testing.T) {
+	for _, path := range []string{
+		"/api/films/tt1234567/seasons",
+		"/api/films/tmdb-tv-42/seasons/2",
+	} {
+		t.Run(path, func(t *testing.T) {
+			called := false
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				called = true
+				if r.Method != http.MethodGet || r.URL.Path != path {
+					t.Error(r.Method, r.URL.Path)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.Write([]byte(`{"status":"ready"}`))
+			}))
+			defer upstream.Close()
+			w := httptest.NewRecorder()
+			NewServer(Config{WebDir: t.TempDir(), CatalogURL: upstream.URL}).ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
+			if !called || w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"ready"`) {
+				t.Fatal(called, w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
 func TestFilesPostBodyProxied(t *testing.T) {
 	called := false
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

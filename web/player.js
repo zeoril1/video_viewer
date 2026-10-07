@@ -160,6 +160,7 @@ const PP = (() => {
       episode: curEpisode,
       voice: selectedVoice,
       paused: player.paused,
+      active: !!currentPlay,
       playing: !!hlsPlayer && !playerWrap.hidden && !trailerActive,
     };
   }
@@ -1073,7 +1074,10 @@ const PP = (() => {
     });
     window.addEventListener('pagehide', leave);
     window.addEventListener('beforeunload', () => {
-      if (hlsPlayer) { leave(); stop({ keepProgress: true }); }
+      // Reload must retain the selected source in history.state. stop() is a
+      // user action: its notification clears that selection on the film page.
+      // pagehide releases this document's stream session without changing it.
+      maybeSaveProgress(true, true);
     });
   }
 

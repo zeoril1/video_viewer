@@ -133,15 +133,20 @@
           pos: Math.max(0, latest.position || original.position || 0),
           quality: original.quality,
         });
-        const p = new URLSearchParams(location.search);
+        const p = playbackPageParams();
+        p.set('id', original.id);
         p.set("magnet", source.magnet);
         p.set("file", String(file.index));
         p.set("rt", source.title || "");
+        if (original.season) p.set('season', String(original.season));
+        if (original.episode) p.set('ep', String(original.episode));
+        if (original.voice) p.set('voice', original.voice);
+        p.set('autoplay', '1');
         p.set(
           "pos",
           String(Math.max(0, latest.position || original.position || 0)),
         );
-        history.replaceState(null, "", location.pathname + "?" + p);
+        savePlaybackPage(p);
         box.hidden = true;
         return;
       }

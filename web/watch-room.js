@@ -41,7 +41,10 @@ const WatchRoom = (() => {
   function stopRoom(message) {
     generation++;clearTimeout(timer);timer=null;room='';token='';busy=false;
     controls();PP.setRemotePaused(false);PlaybackExtras.loading('');status(message);
-    const url=new URL(location.href);url.searchParams.delete('room');history.replaceState(null,'',url.pathname+url.search);
+    const url=new URL(location.href);url.searchParams.delete('room');
+    const saved=Object.assign({},history.state);
+    if(saved.playback){const playback=new URLSearchParams(saved.playback);playback.delete('room');saved.playback=playback.toString();}
+    history.replaceState(saved,'',url.pathname+url.search);
   }
   async function tick() {
     if (!room || busy) return;

@@ -28,7 +28,7 @@ func requireDataSources(cfg Config, w http.ResponseWriter) bool {
 // дозаполняются В ФОНЕ, иначе WDQS/IMDb с таймаутами до минут вешали бы клиента.
 func handleFilmByID(cfg Config, id string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(id, "tmdb-") && cfg.TMDB != nil {
+		if strings.HasPrefix(id, "tmdb-") {
 			parts := strings.Split(id, "-")
 			if len(parts) != 3 || (parts[1] != "movie" && parts[1] != "tv") {
 				http.NotFound(w, r)
@@ -37,6 +37,27 @@ func handleFilmByID(cfg Config, id string) http.HandlerFunc {
 			n, err := strconv.ParseInt(parts[2], 10, 64)
 			if err != nil || n <= 0 {
 				http.NotFound(w, r)
+				return
+			}
+			// These records are persisted too. A reload should use the local card
+			// immediately, even while TMDB is slow or temporarily unavailable.
+			if cfg.DB != nil {
+				cached, found, err := cfg.DB.GetByIMDBID(r.Context(), id)
+				if err != nil {
+					http.Error(w, "film cache unavailable", http.StatusInternalServerError)
+					return
+				}
+				if found {
+					maybeRefreshFilmDataBg(cfg, id)
+					list := []db.Film{cached}
+					localizeFilmPeople(r.Context(), cfg.DB, list)
+					w.Header().Set("Content-Type", "application/json; charset=utf-8")
+					_ = json.NewEncoder(w).Encode(list[0])
+					return
+				}
+			}
+			if cfg.TMDB == nil {
+				http.Error(w, "metadata unavailable", http.StatusServiceUnavailable)
 				return
 			}
 			kind := "feature"

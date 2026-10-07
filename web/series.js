@@ -136,12 +136,26 @@ function probeOrder(pool, season) {
   });
 }
 
-// ensureSeasonEpisodes — номера серий сезона: открывает раздачи (сначала полный сборник),
-// пока не наберём столько же, сколько в TMDB (один пак может отдать не все).
+// ensureSeasonEpisodes — номера серий сезона из каталога; если TMDB недоступен,
+// пробует файлы раздач (сначала полный сборник).
 // ВАЖНО: текст «// ensureSeasonEpisodes» — маркер для tests/season_fit.test.cjs (indexOf), не удалять.
 async function ensureSeasonEpisodes(id, season, items) {
   if (!id) return;
   const cache = seriesEpisodes[id] || (seriesEpisodes[id] = { bySeason: {}, done: {}, probing: false });
+  // The episode grid is already fully described by TMDB; discovering torrent
+  // files here adds network waits without changing the canonical list.
+  if (seasonEpisodeCount(id, season) > 0) return;
+  if (typeof SeriesCatalog !== 'undefined') {
+    // Tracker cache can arrive before the first TMDB refresh. Wait for the
+    // catalog result before considering torrent metadata as a fallback.
+    const metadata = await SeriesCatalog.load(id);
+    if (metadata && metadata.seasons && metadata.seasons.length) {
+      const counts = {};
+      for (const s of metadata.seasons) counts[s.season] = s.episodes;
+      filmSeasonEps[id] = counts;
+      return;
+    }
+  }
   if (season && cache.done[season]) return;
   if (cache.probing) {
     if (cache._probe) await cache._probe;
@@ -159,6 +173,7 @@ async function ensureSeasonEpisodes(id, season, items) {
       const list = cands.length ? cands.slice(0, episodeProbeLimit) : (season ? [] : fallback);
       const want = seasonEpisodeCount(id, season);
       for (const src of list) {
+        if (seasonEpisodeCount(id, season) > 0) break;
         if (!src || !src.magnet) continue;
         // Раздачу уже отбраковали для этого сезона (номера убегают) — не переоткрываем.
         const known = knownSeasonFit(src.magnet, season);

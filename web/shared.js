@@ -124,6 +124,7 @@ const I18N = {
     voicesLabel: 'Озвучки',
     fullCollection: 'Полный сборник',
     episodesLoading: 'Загружаю серии…',
+    seriesMetadataUnavailable: 'Данные сезонов временно недоступны.',
     seasonsLoading: 'Загружаю сезоны…',
     voicesLoading: 'Загружаю озвучки…',
     episodesNotFound: 'Серии этой раздачи не найдены.',
@@ -206,6 +207,7 @@ const I18N = {
     voicesLabel: 'Voices',
     fullCollection: 'Full collection',
     episodesLoading: 'Loading episodes…',
+    seriesMetadataUnavailable: 'Season metadata is temporarily unavailable.',
     seasonsLoading: 'Loading seasons…',
     voicesLoading: 'Loading voices…',
     episodesNotFound: 'No episodes found in this release.',
@@ -594,13 +596,18 @@ function loadStoredItem(id) {
 function playbackPageUrl(path, params) {
   const id = params.get('id');
   if (!id || params.has('room')) return path + '?' + params.toString();
-  try { sessionStorage.setItem('vv:navigate:' + path + ':' + id, params.toString()); } catch (e) {}
+  try { sessionStorage.setItem('vv:navigate:' + path + ':' + id, params.toString()); }
+  catch (e) { return path + '?' + params.toString(); }
   return path + '?id=' + encodeURIComponent(id);
 }
 
 function savePlaybackPage(params) {
   const state = Object.assign({}, history.state, { playback: params.toString() });
-  history.replaceState(state, '', location.pathname + '?id=' + encodeURIComponent(params.get('id')));
+  const visible = new URLSearchParams(params);
+  if (!params.has('room')) {
+    for (const key of ['magnet', 'rt', 'file', 'season', 'ep', 'pos', 'track', 'subs', 'voice', 'autoplay', 'play']) visible.delete(key);
+  }
+  history.replaceState(state, '', location.pathname + '?' + visible.toString());
 }
 
 function playbackPageParams() {
@@ -611,7 +618,12 @@ function playbackPageParams() {
   let pending = '';
   try { pending = sessionStorage.getItem(key) || ''; sessionStorage.removeItem(key); } catch (e) {}
   const saved = new URLSearchParams(pending || (history.state && history.state.playback) || '');
-  const result = params.size === 1 && saved.get('id') === id ? saved : params;
+  // Presentation flags (for example ?tv=1) do not replace the stored source.
+  // An explicit playback link does, including links to another episode of the
+  // same series; inheriting its old magnet/file would open the wrong episode.
+  const explicit = ['magnet', 'rt', 'file', 'season', 'ep', 'pos', 'track', 'subs', 'voice', 'autoplay', 'play'].some(key => params.has(key));
+  const result = !explicit && saved.get('id') === id ? saved : params;
+  if (result === saved) params.forEach((value, key) => result.set(key, value));
   try { savePlaybackPage(result); } catch (e) {}
   return result;
 }

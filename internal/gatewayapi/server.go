@@ -39,6 +39,8 @@ func NewServer(cfg Config) http.Handler {
 	mux.HandleFunc("GET /api/films/{id}", proxyTo(cfg.CatalogURL))
 	mux.HandleFunc("GET /api/films/{id}/sources", proxyTo(cfg.CatalogURL))
 	mux.HandleFunc("GET /api/films/{id}/segments", proxyTo(cfg.CatalogURL))
+	mux.HandleFunc("GET /api/films/{id}/seasons", proxyTo(cfg.CatalogURL))
+	mux.HandleFunc("GET /api/films/{id}/seasons/{season}", proxyTo(cfg.CatalogURL))
 	// Админ-эндпоинты каталога: роль проверяет catalog-сервис.
 	mux.HandleFunc("/api/admin/", proxyTo(cfg.CatalogURL))
 

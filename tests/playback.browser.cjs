@@ -136,7 +136,11 @@ const server=http.createServer((req,res)=>{
   await host.evaluate(()=>{video.currentTime=230;video.dispatchEvent(new Event('seeked'));});
   await guest.waitForFunction(()=>PP.state().position>=230,null,{timeout:15000});
   await host.evaluate(()=>video.play());await guest.waitForFunction(()=>!video.paused);
+  await host.evaluate(()=>history.replaceState({marker:'retained',playback:'id=tt1&magnet=saved&file=2&season=1&ep=3&room=invite'},'',location.href));
   await host.locator('#room-leave').click();
+  await host.waitForFunction(()=>document.getElementById('room-status').textContent.includes('Совместный просмотр завершён'));
+  assert.deepEqual(await host.evaluate(()=>({marker:history.state.marker,playback:history.state.playback})),
+    {marker:'retained',playback:'id=tt1&magnet=saved&file=2&season=1&ep=3'},'Closing a room retains playback selection for reload');
   await guest.waitForFunction(()=>document.getElementById('room-status').textContent.includes('закрыта'));
   assert.equal(await guest.evaluate(()=>document.body.classList.contains('room-guest')),false);
   assert.equal(await guest.evaluate(()=>video.paused),true);

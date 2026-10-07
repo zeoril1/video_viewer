@@ -45,6 +45,7 @@ let startMagnet = filmParams.get('magnet') || '';
 let startFile = filmParams.get('file') !== null && filmParams.get('file') !== '' ? parseInt(filmParams.get('file'), 10) : -1;
 let startPos = parseFloat(filmParams.get('pos') || '0') || 0;
 let seriesUiReady = false;
+let savedPlaybackRestored = false;
 
 let lastSourceItems = [];
 let lastSourceId = null;
@@ -65,6 +66,25 @@ function showNote(el, text) {
   if (!el) return;
   el.textContent = text || '';
   el.hidden = !text;
+}
+
+function beginSeriesMetadata(id) {
+  if (typeof SeriesCatalog === 'undefined' || !id) return;
+  SeriesCatalog.load(id, data => {
+    if (!currentItem || (currentItem.imdb_id || currentItem.id) !== id) return;
+    if (data.tmdb_id && !currentItem.tmdb_id) {
+      currentItem.tmdb_id = String(data.tmdb_id); storeItem(currentItem);
+    }
+    const counts = {};
+    for (const s of data.seasons || []) if (s.season > 0 && s.episodes > 0) counts[s.season] = s.episodes;
+    if (Object.keys(counts).length) filmSeasonEps[id] = counts;
+    const items = lastSourceId === id ? lastSourceItems : [];
+    renderSeasonChips(items,id); renderEpisodeGrid(id);
+    if (!Object.keys(counts).length && data.status === 'unavailable' && !allKnownSeasons(id,items).length) {
+      showNote(seasonNote, t('seriesMetadataUnavailable'));
+      showNote(episodesNote, t('seriesMetadataUnavailable'));
+    }
+  });
 }
 
 // ---- Источники на трекере ----
@@ -148,7 +168,7 @@ async function loadSources(it, opts) {
     const items = (data.items || []).filter((s) => s.magnet);
 
     // Каноническое число серий сезона (TMDB) — по нему строится сетка.
-    if (data.seasons && data.seasons.length) {
+    if (data.seasons && data.seasons.length && !(typeof SeriesCatalog !== 'undefined' && SeriesCatalog.seasons(id).length)) {
       const m = {};
       for (const s of data.seasons) {
         if (s && s.season > 0 && s.episodes > 0) m[s.season] = s.episodes;
@@ -275,7 +295,7 @@ function renderSeasonChips(items, id) {
   const seasons = allKnownSeasons(id, items);
   const available = (k) => seasonReleaseSources(items, k).length > 0;
   if (selectedSeason === null || !seasons.includes(selectedSeason)) {
-    selectedSeason = seasons.find(available) || null;
+    selectedSeason = seasons.find(available) || seasons[0] || null;
   }
   // Сезоны показываем всегда (в том числе когда сезон один) — блок не прячем.
   sourcesSeasonWrap.hidden = false;
@@ -286,7 +306,12 @@ function renderSeasonChips(items, id) {
     btn.type = 'button';
     btn.className = 'chip' + (k === selectedSeason ? ' active' : '');
     btn.textContent = seasonLabel(k);
-    btn.disabled = !available(k);
+    // Browsing canonical seasons must not depend on available torrent sources.
+    btn.disabled = !available(k) && !(filmSeasonEps[id] && filmSeasonEps[id][k] > 0);
+    if (typeof SeriesCatalog !== 'undefined') {
+      const metadata = SeriesCatalog.seasons(id).find(s => s.season === k);
+      if (metadata && metadata.name) btn.title = metadata.name;
+    }
     btn.addEventListener('click', () => {
       if (k === selectedSeason) return;
       selectedSeason = k;
@@ -295,6 +320,7 @@ function renderSeasonChips(items, id) {
       renderSeasonVoices(items, id);
       renderEpisodeGrid(id);
       ensureSeasonEpisodes(id, selectedSeason, items).then(() => {
+        if (!currentItem || (currentItem.imdb_id || currentItem.id) !== id || selectedSeason !== k) return;
         renderEpisodeGrid(id);
         renderSeasonVoices(items, id);
       });
@@ -352,6 +378,7 @@ async function switchVoice(id, voice) {
 // Сетка серий сезона из кэша; число кнопок — по сезону TMDB (раздача может
 // покрывать сезон частично, иначе последние серии в сетке не появлялись).
 function renderEpisodeGrid(id) {
+  if (!id) return;
   if (wantEp && !selectedEpisode) selectedEpisode = wantEp;
   const cache = seriesEpisodes[id];
   const eps = (cache && cache.bySeason[selectedSeason]) || [];
@@ -365,11 +392,21 @@ function renderEpisodeGrid(id) {
   sourcesEpisodes.innerHTML = '';
   showNote(episodesNote, list.length ? '' : t('episodesLoading'));
   if (!list.length) return;
+  if (typeof SeriesCatalog !== 'undefined' && can > 0) {
+    const season = selectedSeason;
+    SeriesCatalog.loadEpisodes(id,season,() => {
+      if (currentItem && (currentItem.imdb_id || currentItem.id) === id && selectedSeason === season) renderEpisodeGrid(id);
+    });
+  }
   list.forEach((ep) => {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'ep-btn' + (ep === selectedEpisode ? ' active' : '');
     btn.textContent = t('episodeLabel') + ' ' + ep;
+    if (typeof SeriesCatalog !== 'undefined') {
+      const metadata = SeriesCatalog.episodes(id,selectedSeason).find(e => e.episode === ep);
+      if (metadata) btn.title = [metadata.name,metadata.air_date].filter(Boolean).join(' · ');
+    }
     btn.disabled = !eps.includes(ep) && !(can > 0 && seasonReleaseSources(lastSourceItems, selectedSeason).length);
     btn.addEventListener('click', () => onPickEpisode(ep));
     sourcesEpisodes.appendChild(btn);
@@ -622,7 +659,7 @@ async function fetchFilmDetails(id, retries) {
     const f = await r.json();
     // tmdb_id нужен для раскладки серий по сезонам TMDB — иначе раздача «убегает» за границы сезона.
     if (f && f.tmdb_id && currentItem && !currentItem.tmdb_id) currentItem.tmdb_id = f.tmdb_id;
-    if (f && (f.plot || f.plot_ru || f.genres || f.poster_url || f.director || f.actors || f.movie_length || (f.countries && f.countries.length))) {
+    if (f && typeof f === 'object') {
       currentItem = Object.assign({}, currentItem, f);
       storeItem(currentItem);
       showDetails(currentItem);
@@ -661,12 +698,14 @@ function setupSeriesUi() {
   if (!isSeriesKind(currentItem && currentItem.kind)) return;
   seriesUiReady = true;
   showSeriesSkeleton();
+  if (typeof beginSeriesMetadata === 'function') beginSeriesMetadata(filmId);
   if (!PP.available) return; // разметки плеера нет — серия уйдёт на /watch.html
   PP.init({
     onStateChange: onPlayerState,
     onReleaseEnd: onReleaseEnd,
     onFiles: onPlayerFiles,
   });
+  resumeSavedPlayback();
 }
 
 // Файлы играемой раздачи: дополняем сетку серий и подписи озвучек.
@@ -711,15 +750,17 @@ function syncFilmUrl(st) {
   if (st.episode) p.set('ep', String(st.episode));
   const voice = (st.season && voicePref[st.season]) || wantVoice;
   if (voice) p.set('voice', voice);
-  if (st.playing) {
+  if (st.active) {
     // Пока играет — в адресе и раздача/файл: F5 продолжит ту же серию.
     p.set('autoplay', '1');
     if (st.file >= 0) p.set('file', String(st.file)); else p.delete('file');
     if (st.magnet) p.set('magnet', st.magnet); else p.delete('magnet');
+    if (PP.release()) p.set('rt', PP.release()); else p.delete('rt');
   } else {
     p.delete('autoplay');
     p.delete('magnet');
     p.delete('file');
+    p.delete('rt');
   }
   try {
     savePlaybackPage(p);
@@ -774,6 +815,25 @@ function restoreWatchSelection() {
   }
 }
 
+function resumeSavedPlayback() {
+  if (savedPlaybackRestored || !seriesUiReady || !PP.available || !startMagnet) return;
+  // Film metadata can arrive after the initial page bootstrap. Restore once
+  // when the series player becomes available, without replacing a manual pick.
+  savedPlaybackRestored = true;
+  wantPlay = false;
+  if (PP.playing()) return;
+  PP.start({
+    id: filmId,
+    magnet: startMagnet,
+    release: filmParams.get('rt') || '',
+    file: startFile,
+    season: wantSeason,
+    ep: wantEp,
+    pos: filmParams.has('pos') || startPos > 0 ? startPos : undefined,
+    voice: wantVoice,
+  });
+}
+
 async function initFilmPage() {
   await loadEpisodeHistory(filmId);
   restoreWatchSelection();
@@ -794,19 +854,8 @@ async function initFilmPage() {
   setupSeriesUi();
   // Продолжение просмотра из истории: в адресе есть конкретная раздача — играем её сразу,
   // не дожидаясь поиска источников (сетка серий подтянется вместе с файлами раздачи).
-  if (seriesUiReady && startMagnet) {
-    wantPlay = false;
-    PP.start({
-      id: filmId,
-      magnet: startMagnet,
-      file: startFile,
-      season: wantSeason,
-      ep: wantEp,
-      pos: filmParams.has('pos') || startPos > 0 ? startPos : undefined,
-      voice: wantVoice,
-    });
-  }
-  loadSources(currentItem, { play: wantPlay, series: seriesUiReady });
+  resumeSavedPlayback();
+  loadSources(currentItem, { play: wantPlay && !startMagnet, series: seriesUiReady });
 }
 
 onLang(() => {

@@ -145,6 +145,7 @@ func NewServer(cfg Config) http.Handler {
 	registerDiscover(mux, cfg)
 	registerWatchOrder(mux, cfg, svc)
 	registerSegments(mux, cfg)
+	registerSeriesMetadata(mux, cfg)
 
 	return httpx.LogMiddleware(mux)
 }

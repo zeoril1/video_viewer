@@ -43,11 +43,13 @@ function syncUrl() {
   if (!watchId) return;
   const p = new URLSearchParams(wParams);
   const st = PP.state();
+  if (!st.active) return;
   if (st.magnet) p.set('magnet', st.magnet);
   if (PP.release()) p.set('rt', PP.release());
   if (st.file >= 0) p.set('file', String(st.file)); else p.delete('file');
   if (st.season) p.set('season', String(st.season));
   if (st.episode) p.set('ep', String(st.episode));
+  if (st.voice) p.set('voice', st.voice);
   p.delete('pos'); // позиция уже учтена потоком — в адресе она только мешала бы
   try {
     savePlaybackPage(p);

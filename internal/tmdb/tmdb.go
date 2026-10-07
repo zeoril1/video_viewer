@@ -492,9 +492,11 @@ func (c *Client) SeasonsCount(ctx context.Context, tmdbID int64) (int, error) {
 
 // SeasonInfo — сезон TMDB: номер, число серий и год старта (спецматериалы — сезон 0).
 type SeasonInfo struct {
-	Number   int `json:"season_number"`
-	Episodes int `json:"episode_count"`
-	Year     int `json:"-"`
+	Number   int    `json:"season_number"`
+	Episodes int    `json:"episode_count"`
+	Year     int    `json:"year,omitempty"`
+	Name     string `json:"name,omitempty"`
+	AirDate  string `json:"air_date,omitempty"`
 }
 
 // SeasonStructure возвращает структуру сезонов сериала (число серий и год).
@@ -513,6 +515,7 @@ func (c *Client) SeasonStructure(ctx context.Context, tmdbID int64) ([]SeasonInf
 			Number   int    `json:"season_number"`
 			Episodes int    `json:"episode_count"`
 			AirDate  string `json:"air_date"`
+			Name     string `json:"name"`
 		} `json:"seasons"`
 	}
 	if err := json.Unmarshal(body, &d); err != nil {
@@ -527,7 +530,7 @@ func (c *Client) SeasonStructure(ctx context.Context, tmdbID int64) ([]SeasonInf
 		if len(s.AirDate) >= 4 {
 			year = atoi(s.AirDate[:4])
 		}
-		out = append(out, SeasonInfo{Number: s.Number, Episodes: s.Episodes, Year: year})
+		out = append(out, SeasonInfo{Number: s.Number, Episodes: s.Episodes, Year: year, Name: s.Name, AirDate: s.AirDate})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Number < out[j].Number })
 	return out, nil
