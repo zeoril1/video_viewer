@@ -78,6 +78,7 @@ func main() {
 	}
 
 	handler, stopHLS := streamapi.NewServer(streamapi.Config{
+		AuthURL:                envOr("AUTH_URL", "http://127.0.0.1:8083"),
 		Context:                ctx,
 		AnalysisStoreURL:       envOr("SEGMENTS_CATALOG_URL", "http://127.0.0.1:8081"),
 		DisableSegmentAnalysis: os.Getenv("SEGMENTS_ANALYSIS_ENABLED") == "false",

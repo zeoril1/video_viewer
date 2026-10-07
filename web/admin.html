@@ -6,12 +6,14 @@
   <title>Админ-панель — Video Viewer</title>
   <link rel="stylesheet" href="style.css?v=16" />
   <link rel="stylesheet" href="admin.css?v=4" />
+  <link rel="stylesheet" href="storage.css?v=1" />
 </head>
 <body>
   <header class="topbar">
     <h1 class="logo">🛠 Админ-панель</h1>
     <div class="user-area">
       <span id="admin-user" class="user-name"></span>
+      <a class="auth-btn" href="/storage.html">Файлы и загрузки</a>
       <a class="auth-btn" href="/">← Каталог</a>
       <a class="auth-btn" href="/iptv.html">📺 IPTV</a>
       <button id="admin-logout" class="auth-btn" type="button">Выйти</button>
@@ -22,6 +24,7 @@
     <div class="admin-tabs">
       <button id="tab-missing" class="section-btn active" type="button">Пустые поля</button>
       <button id="tab-notfound" class="section-btn" type="button">Не удалось обновить</button>
+      <button id="tab-users" class="section-btn" type="button">Пользователи</button>
     </div>
 
     <div class="admin-controls">
@@ -30,11 +33,23 @@
       <span id="admin-count" class="admin-count"></span>
     </div>
 
-    <p class="admin-count">IMDb-рейтинг не обязателен. Для будущих релизов рейтинги не проверяются. Неудачные обновления откладываются на 7 дней; повтор вручную доступен в отдельной таблице. Обновление — 4 потока.</p>
+    <p id="admin-film-note" class="admin-count">IMDb-рейтинг не обязателен. Для будущих релизов рейтинги не проверяются. Неудачные обновления откладываются на 7 дней; повтор вручную доступен в отдельной таблице. Обновление — 4 потока.</p>
 
     <p id="admin-deny" class="empty" hidden>Нет доступа. Страница доступна только администратору.</p>
 
-    <div class="admin-layout">
+    <section id="users-panel" class="users-panel" hidden>
+      <h2>Пользователи и права доступа</h2>
+      <p class="storage-note">Пользователь смотрит видео и использует пропуски. Модератор также добавляет и редактирует пропуски. Администратор управляет пользователями, файлами и каталогом.</p>
+      <p id="users-status" class="users-status" role="status" aria-live="polite"></p>
+      <div class="storage-table-wrap">
+        <table class="storage-table">
+          <thead><tr><th>Пользователь</th><th>Зарегистрирован</th><th>Роль</th><th>Действия</th></tr></thead>
+          <tbody id="users-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <div id="admin-films-layout" class="admin-layout">
       <div class="admin-log-wrap">
         <h2 class="admin-log-title">Лог обновления</h2>
         <button id="clear-log" class="section-btn" type="button">Очистить</button>
@@ -121,6 +136,6 @@
     </div>
   </main>
 
-  <script src="admin.js?v=4"></script>
+  <script src="admin.js?v=5"></script>
 </body>
 </html>

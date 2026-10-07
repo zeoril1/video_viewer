@@ -14,14 +14,22 @@ const logoutBtn = document.getElementById('admin-logout');
 // Вкладки: «Пустые поля» и «Не удалось обновить».
 const tabMissing = document.getElementById('tab-missing');
 const tabNotfound = document.getElementById('tab-notfound');
+const tabUsers = document.getElementById('tab-users');
+const usersPanel = document.getElementById('users-panel');
+const usersBody = document.getElementById('users-body');
+const usersStatus = document.getElementById('users-status');
+const filmsLayout = document.getElementById('admin-films-layout');
+const filmNote = document.getElementById('admin-film-note');
 const notfoundWrap = document.getElementById('notfound-wrap');
 const notfoundBody = document.getElementById('notfound-body');
 
 let lastSeq = 0;
-let currentTab = 'missing'; // 'missing' | 'notfound'
+let currentTab = 'missing'; // 'missing' | 'notfound' | 'users'
 let missingCount = 0;
 let notFoundCount = 0;
 let reloadTimer = null;
+let adminUserID = 0;
+let usersCount = 0;
 
 // ---- Авторизация (доступ только для роли admin) ----
 async function init() {
@@ -40,14 +48,19 @@ async function init() {
     notfoundWrap.hidden = true;
     tabMissing.hidden = true;
     tabNotfound.hidden = true;
+    tabUsers.hidden = true;
+    usersPanel.hidden = true;
+    filmsLayout.hidden = true;
     refreshAllBtn.hidden = true;
     reloadBtn.hidden = true;
     document.querySelector('.admin-log-wrap').hidden = true;
     return;
   }
   meEl.textContent = me.username + ' (админ)';
+  adminUserID = me.id;
   tabMissing.addEventListener('click', () => showTab('missing'));
   tabNotfound.addEventListener('click', () => showTab('notfound'));
+  tabUsers.addEventListener('click', () => { showTab('users'); loadUsers(); });
   loadFilms();
   loadNotFound();
   pollLogs();
@@ -166,19 +179,90 @@ function splitList(s) {
 function showTab(name) {
   currentTab = name;
   const isMissing = name === 'missing';
+  const isUsers = name === 'users';
+  filmsLayout.hidden = isUsers;
+  usersPanel.hidden = !isUsers;
+  filmNote.hidden = isUsers;
+  refreshAllBtn.hidden = isUsers;
   table.closest('.admin-table-wrap').hidden = !isMissing;
-  notfoundWrap.hidden = isMissing;
+  notfoundWrap.hidden = name !== 'notfound';
   tabMissing.classList.toggle('active', isMissing);
-  tabNotfound.classList.toggle('active', !isMissing);
+  tabNotfound.classList.toggle('active', name === 'notfound');
+  tabUsers.classList.toggle('active', isUsers);
   updateCount();
 }
 
 function updateCount() {
-  if (currentTab === 'notfound') {
+  if (currentTab === 'users') {
+    countEl.textContent = 'Пользователей: ' + usersCount;
+  } else if (currentTab === 'notfound') {
     countEl.textContent = 'Не удалось обновить: ' + notFoundCount;
   } else {
     countEl.textContent = 'Записей с пустыми полями: ' + missingCount;
   }
+}
+
+// ---- Пользователи ----
+function userStatus(text, kind = '') {
+  usersStatus.textContent = text;
+  usersStatus.className = 'users-status' + (kind ? ' ' + kind : '');
+}
+
+async function loadUsers() {
+  userStatus('Загружаем пользователей…');
+  try {
+    const response = await fetch('/api/admin/users', { cache: 'no-store' });
+    if (!response.ok) throw new Error((await response.text()).trim() || 'Ошибка ' + response.status);
+    const data = await response.json();
+    const users = Array.isArray(data.items) ? data.items : [];
+    usersBody.replaceChildren();
+    usersCount = users.length;
+    for (const user of users) usersBody.appendChild(makeUserRow(user));
+    if (!users.length) {
+      const row = document.createElement('tr'), cell = document.createElement('td');
+      cell.colSpan = 4; cell.textContent = 'Пользователей пока нет.'; cell.className = 'admin-empty';
+      row.appendChild(cell); usersBody.appendChild(row);
+    }
+    updateCount(); userStatus('');
+  } catch (error) { userStatus('Не удалось загрузить пользователей: ' + error.message, 'error'); }
+}
+
+function makeUserRow(user) {
+  const row = document.createElement('tr');
+  const name = document.createElement('td'), registered = document.createElement('td');
+  name.textContent = user.username + (user.id === adminUserID ? ' (вы)' : '');
+  const date = user.created_at ? new Date(user.created_at) : null;
+  registered.textContent = date && !Number.isNaN(date.getTime()) ? date.toLocaleDateString('ru-RU') : '—';
+  const roleCell = document.createElement('td'), select = document.createElement('select');
+  select.setAttribute('aria-label', 'Роль пользователя ' + user.username);
+  for (const [role, label] of [['user', 'Пользователь'], ['moderator', 'Модератор'], ['admin', 'Администратор']]) {
+    const option = document.createElement('option');
+    option.value = role; option.textContent = label; select.appendChild(option);
+  }
+  select.value = user.role;
+  roleCell.appendChild(select);
+  const actions = document.createElement('td'), save = document.createElement('button');
+  save.type = 'button'; save.className = 'auth-btn'; save.textContent = 'Сохранить';
+  save.disabled = true;
+  select.addEventListener('change', () => { save.disabled = select.value === user.role; });
+  save.addEventListener('click', async () => {
+    const role = select.value;
+    if (user.id === adminUserID && role !== 'admin' && !confirm('Изменить свою роль? После сохранения доступ к администрированию будет закрыт.')) return;
+    save.disabled = select.disabled = true;
+    try {
+      const response = await fetch('/api/admin/users/' + encodeURIComponent(user.id) + '/role', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ role }),
+      });
+      if (!response.ok) throw new Error((await response.text()).trim() || 'Ошибка ' + response.status);
+      user.role = role;
+      userStatus('Права пользователя ' + user.username + ' сохранены.', 'success');
+      if (user.id === adminUserID && role !== 'admin') location.href = '/';
+    } catch (error) { userStatus('Не удалось сохранить права: ' + error.message, 'error'); }
+    finally { select.disabled = false; save.disabled = select.value === user.role; }
+  });
+  actions.appendChild(save);
+  row.appendChild(name); row.appendChild(registered); row.appendChild(roleCell); row.appendChild(actions);
+  return row;
 }
 
 // ---- Список «не найдены на TMDB» ----
@@ -295,7 +379,7 @@ refreshAllBtn.addEventListener('click', () => {
     .catch((e) => { logLine('error', 'Не удалось запустить массовое обновление: ' + e.message); refreshAllBtn.disabled = false; });
 });
 
-reloadBtn.addEventListener('click', () => { loadFilms(); loadNotFound(); });
+reloadBtn.addEventListener('click', () => { if (currentTab === 'users') loadUsers(); else { loadFilms(); loadNotFound(); } });
 clearLogBtn.addEventListener('click', () => { logEl.innerHTML = ''; });
 
 function flash(tr, ok) {

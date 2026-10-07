@@ -270,7 +270,7 @@ func (h *authHandler) register(w http.ResponseWriter, r *http.Request) {
 	setSessionCookie(w, token, h.cookieSecure(r))
 	log.Printf("auth: register %s (id=%d)", body.Username, userID)
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	_ = json.NewEncoder(w).Encode(map[string]any{"user": db.User{ID: userID, Username: body.Username}})
+	_ = json.NewEncoder(w).Encode(map[string]any{"user": db.User{ID: userID, Username: body.Username, Role: db.RoleUser}})
 }
 
 // login — POST /api/auth/login: вход по логину/паролю.
@@ -335,6 +335,7 @@ func (h *authHandler) logout(w http.ResponseWriter, r *http.Request) {
 
 // me — GET /api/auth/me: текущий пользователь (по куке сессии).
 func (h *authHandler) me(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	if h.repo == nil {
 		http.Error(w, "auth disabled", http.StatusServiceUnavailable)
 		return

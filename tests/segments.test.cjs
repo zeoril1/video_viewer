@@ -8,7 +8,7 @@ const mediaKey = 'segments.'+'a'.repeat(40)+'.0';
 
 // Run the full UI module: only browser primitives, media and the account API
 // are replaced, so these tests exercise its event and persistence behavior.
-function setup({guest = false, fetcher} = {}) {
+function setup({guest = false, role = 'moderator', fetcher} = {}) {
   const elements = new Map(), events = new Map(), preferences = new Map(), writes = [], requests = [], seeks = [];
   let now = 100000, follower = false;
   class Element {
@@ -34,7 +34,7 @@ function setup({guest = false, fetcher} = {}) {
   const video = new Element('video');video.paused = false;video.currentTime = 0;
   const wrap = new Element();elements.set('player',video);elements.set('player-wrap',wrap);
   const state = {id:'tt1',magnet:'magnet:first',file:0,position:0,duration:300,season:1,episode:1,playing:true};
-  const VV = {user:guest ? null : {id:'one'}};
+  const VV = {user:guest ? null : {id:'one',role}};
   const window = {addEventListener(name,fn) {if (!events.has(name)) events.set(name,[]);events.get(name).push(fn);},dispatchEvent(event) {for(const fn of events.get(event.type)||[])fn(event);}};
   const emit = (type,detail) => window.dispatchEvent({type,detail});
   class Clock extends Date {static now(){return now;}}
@@ -167,6 +167,32 @@ test('follower controls cannot seek, save marks or auto skip; the editor can sti
   h.el('skip-segments-close').dispatch('click');assert.equal(h.el('skip-segments-panel').hidden,true);
 });
 
+test('ordinary users and guests can use skips and choose modes but cannot change marks', async () => {
+  for (const options of [{guest:true}, {role:'user'}, {role:''}]) {
+    const h=setup(options);h.state.position=20;h.tracks([{type:'intro',start:10,end:30,auto_skip:true}]);
+    assert.equal(h.el('skip-segments-form').hidden,true);assert.equal(h.el('skip-edit-save').disabled,true);
+    assert.equal(h.el('skip-edit-permission').hidden,false);
+    for (const b of h.listButtons()) assert.equal(b.hidden,true);
+    h.submit('recap','15','40');h.listButtons().find(b=>b.textContent==='Удалить').dispatch('click');
+    h.el('skip-capture-start').dispatch('click');assert.equal(h.el('skip-edit-start').value,'15');
+    h.change('skip-mode-intro','auto');await flush();
+    assert.deepEqual(h.seeks,[30]);assert.equal(h.writes.some(w=>w.key===mediaKey),false);
+    assert.equal(h.writes.length,options.guest?0:1);
+    if (!options.guest) assert.equal(h.writes[0].key,'skip_segments');
+  }
+});
+
+test('admin and moderator may save marks and a role downgrade cancels queued marks', async () => {
+  for (const role of ['moderator','admin']) {
+    const h=setup({role});h.tracks([]);assert.equal(h.el('skip-segments-form').hidden,false);
+    h.submit('intro','10','30');await flush();assert.equal(h.writes.at(-1).key,mediaKey);
+  }
+  const h=setup({role:'moderator'});h.tracks([]);h.submit('intro','10','30');
+  h.VV.user.role='user';h.emit('personalchange');await flush();
+  assert.equal(h.writes.length,0);assert.equal(h.el('skip-segments-form').hidden,true);
+  h.state.position=20;h.video.dispatch('timeupdate');assert.equal(h.el('skip-segment').hidden,true);
+});
+
 test('account changes clear transient settings and exact-file guest marks', async () => {
   const h=setup({guest:true});h.tracks([]);h.change('skip-mode-intro','off');h.submit('intro','10','30');
   assert.equal(h.writes.length,0);h.VV.user={id:'two'};h.emit('personalchange');
@@ -213,7 +239,7 @@ test('unavailable external lookup can be retried without restarting playback', a
 });
 
 test('overlapping types cannot chain automatic skips; manual skip stays available', async () => {
-  const h=setup({guest:true});h.state.position=20;h.tracks([{type:'intro',start:10,end:30,auto_skip:true}]);
+  const h=setup();h.state.position=20;h.tracks([{type:'intro',start:10,end:30,auto_skip:true}]);
   h.el('skip-segments-open').dispatch('click');h.submit('recap','15','40');
   h.change('skip-mode-intro','auto');h.change('skip-mode-recap','auto');h.el('skip-segments-close').dispatch('click');h.video.dispatch('timeupdate');
   assert.deepEqual(h.seeks,[]);assert.match(h.el('skip-segment-hint').textContent,/пересекаются/);

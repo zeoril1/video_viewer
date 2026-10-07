@@ -24,12 +24,13 @@ const SkipSegments = (() => {
   panel.setAttribute('aria-label', 'Настройки пропуска');
   panel.innerHTML = `<div class="skip-segments-heading"><h3>Пропуск заставок и повторов</h3><button id="skip-segments-close" type="button">Закрыть</button></div>
     <div class="skip-segments-modes">${types.map(type => `<label>${names[type]} <select id="skip-mode-${type}"><option value="off">Выключено</option><option value="button">Кнопка</option><option value="auto">Автоматически</option></select></label>`).join('')}</div>
-    <p>Автопропуск использует главы видео и подтверждённые вами границы. Распознанные по звуку и внешние отметки можно проверить, подтвердить или исправить для этого файла.</p>
+    <p>Автопропуск использует главы видео и подтверждённые границы. Администраторы и модераторы могут проверить, подтвердить или исправить найденные отметки для этого файла.</p>
     <p>Титры пропускаются до конца выбранного участка. Сцены между участками остаются.</p>
     <p id="skip-segments-source-status" role="status"></p>
     <button id="skip-segments-retry" type="button" hidden>Повторить поиск отметок</button>
     <div id="skip-segments-list" class="skip-segments-list"></div>
-    <form id="skip-segments-form" class="skip-segments-form">
+    <p id="skip-edit-permission">Добавлять и изменять отметки могут администраторы и модераторы.</p>
+    <form id="skip-segments-form" class="skip-segments-form" hidden>
       <h4 id="skip-segments-form-title">Добавить участок для этой серии</h4>
       <label>Участок <select id="skip-edit-type">${types.map(type => `<option value="${type}">${names[type]}</option>`).join('')}</select></label>
       <label>Начало <input id="skip-edit-start" inputmode="decimal" placeholder="0:00" required aria-describedby="skip-time-help"><button id="skip-capture-start" type="button">Текущая позиция</button></label>
@@ -42,7 +43,7 @@ const SkipSegments = (() => {
   const el = id => document.getElementById(id);
   let identity = '', mediaKey = '', duration = 0, chapter = [], external = [], effective = [];
   let externalRequest = null, externalLookup = '', externalRetryAvailable = false, sourceStatus = '', edit = null;
-  let modes = {...defaults}, localModes = false, owner = account();
+  let modes = {...defaults}, localModes = false, owner = account(), editorRole = VV.user && VV.user.role || '';
   const localOverrides = new Map(), suppressed = new Set();
   let lastPosition = null, undo = null, ignoredBackwardUntil = 0, generation = 0;
   let preferenceQueue = Promise.resolve();
@@ -50,6 +51,7 @@ const SkipSegments = (() => {
   function account() { return VV.user ? String(VV.user.id) : 'guest'; }
   function playbackIdentity(state) { return [state.id || '', state.magnet || '', state.file ?? -1].join('|'); }
   function isFollower() { return PP.isFollower ? PP.isFollower() : document.body.classList.contains('room-guest'); }
+  function canEdit() { return !!VV.user && ['admin','moderator'].includes(VV.user.role) && !isFollower(); }
   function validMediaKey(key) { return /^segments\.[a-f0-9]{40}\.\d+$/.test(key || ''); }
   function clean(items, source) {
     return (Array.isArray(items) ? items : []).filter(s => s && types.includes(s.type)
@@ -71,7 +73,10 @@ const SkipSegments = (() => {
       ...(Array.isArray(raw.overridden_types) ? {overridden_types:raw.overridden_types} : {})};
   }
   function loadModes() {
-    const nextOwner = account();
+    const nextOwner = account(), nextRole = VV.user && VV.user.role || '';
+    if (nextRole !== editorRole) {
+      editorRole = nextRole; localOverrides.clear(); resetEditor();
+    }
     if (nextOwner !== owner) {
       owner = nextOwner; localModes = false; localOverrides.clear(); suppressed.clear(); undo = null;
       el('skip-segments-status').textContent = ''; resetEditor();
@@ -111,14 +116,15 @@ const SkipSegments = (() => {
   }
   function button(text, action) {
     const node = document.createElement('button'); node.type = 'button'; node.textContent = text;
-    node.disabled = isFollower(); node.addEventListener('click', action); return node;
+    node.className = 'skip-segments-edit-action'; node.disabled = !canEdit(); node.hidden = !canEdit();
+    node.addEventListener('click', () => {if (canEdit()) action();}); return node;
   }
   function renderList() {
     const list = el('skip-segments-list'); list.replaceChildren();
     el('skip-segments-source-status').textContent = sourceStatus;
     el('skip-segments-retry').hidden = !externalRetryAvailable;
     if (!effective.length) {
-      const empty = document.createElement('p'); empty.textContent = 'Участки пока не отмечены. Можно задать границы вручную.'; list.append(empty);
+      const empty = document.createElement('p'); empty.textContent = canEdit() ? 'Участки пока не отмечены. Можно задать границы вручную.' : 'Участки пока не отмечены.'; list.append(empty);
     }
     for (const segment of effective) {
       const row = document.createElement('div'); row.className = 'skip-segments-row';
@@ -127,7 +133,7 @@ const SkipSegments = (() => {
       row.append(label);
       if (!segment.auto_skip) row.append(button('Подтвердить', () => setType(segment.type, effective.filter(s => s.type === segment.type).map(s => segmentKey(s) === segmentKey(segment) ? {...s,source:'manual',auto_skip:true} : s))));
       row.append(button('Исправить', () => {
-        if (isFollower()) return;
+        if (!canEdit()) return;
         edit = {key:segmentKey(segment), type:segment.type};
         el('skip-edit-type').value = segment.type; el('skip-edit-type').disabled = true;
         el('skip-edit-start').value = time(segment.start); el('skip-edit-end').value = time(segment.end);
@@ -148,39 +154,48 @@ const SkipSegments = (() => {
     refreshRole();
   }
   async function saveOverride(data) {
-    if (isFollower() || !validMediaKey(mediaKey)) return;
-    const key = mediaKey, requestOwner = owner;
+    if (!canEdit() || !validMediaKey(mediaKey)) return;
+    const key = mediaKey, requestOwner = owner, previous = localOverrides.get(mediaKey);
     localOverrides.set(key, data); resetEditor(); compose();
-    if (!VV.user) { el('skip-segments-status').textContent = 'Отметки действуют до закрытия страницы. Войдите, чтобы сохранить их.'; return; }
     el('skip-segments-status').textContent = 'Сохраняем отметки…';
     const write = async () => {
-      if (account() !== requestOwner) return;
+      if (account() !== requestOwner || !canEdit()) return;
       try {
         await Personal.put('preferences', key, data);
         if (account() === requestOwner && mediaKey === key) el('skip-segments-status').textContent = 'Отметки для этого файла сохранены.';
       } catch (_) {
-        if (account() === requestOwner && mediaKey === key) el('skip-segments-status').textContent = 'Не удалось сохранить отметки. Они действуют на этой странице.';
+        if (account() === requestOwner && mediaKey === key) {
+          if (localOverrides.get(key) === data) {
+            if (previous) localOverrides.set(key, previous); else localOverrides.delete(key);
+            compose();
+          }
+          el('skip-segments-status').textContent = 'Не удалось сохранить отметки. Проверьте права доступа и повторите попытку.';
+        }
       }
     };
     preferenceQueue = preferenceQueue.then(write, write); await preferenceQueue;
   }
   function setType(type, segments) {
-    if (isFollower()) return;
+    if (!canEdit()) return;
     const raw = override();
     saveOverride({segments:[...(raw.segments || []).filter(s => s.type !== type), ...segments.map(s => ({type:s.type,start:s.start,end:s.end,source:s.source,auto_skip:s.auto_skip,verified:s.auto_skip === true}))],
       overridden_types:Array.from(new Set([...overriddenTypes(raw),type]))});
   }
   function resetEditor() {
-    edit = null; el('skip-edit-type').disabled = isFollower();
+    edit = null; el('skip-edit-type').disabled = !canEdit();
     el('skip-edit-start').value = ''; el('skip-edit-end').value = '';
     el('skip-edit-cancel').hidden = true; el('skip-segments-form-title').textContent = 'Добавить участок для этой серии';
   }
   function refreshRole() {
-    const follower = isFollower();
+    const follower = isFollower(), editable = canEdit();
     for (const node of panel.querySelectorAll('input, select, button')) node.disabled = follower;
+    el('skip-segments-form').hidden = !editable;
+    el('skip-edit-permission').hidden = editable;
+    for (const node of panel.querySelectorAll('button')) if (node.className === 'skip-segments-edit-action') {node.hidden = !editable; node.disabled = !editable;}
+    for (const id of ['skip-edit-type','skip-edit-start','skip-edit-end','skip-capture-start','skip-capture-end','skip-edit-cancel']) el(id).disabled = !editable;
     el('skip-segments-close').disabled = false;
-    el('skip-edit-type').disabled = follower || !!edit;
-    el('skip-edit-save').disabled = follower || !validMediaKey(mediaKey);
+    el('skip-edit-type').disabled = !editable || !!edit;
+    el('skip-edit-save').disabled = !editable || !validMediaKey(mediaKey);
     const state = PP.state();
     el('skip-segments-retry').disabled = follower || !!externalRequest || !validMediaKey(mediaKey) || duration <= 0 || !state.episode;
     el('skip-segment').disabled = follower; el('skip-segment-undo').disabled = follower;
@@ -302,10 +317,10 @@ const SkipSegments = (() => {
     };
     preferenceQueue = preferenceQueue.then(write,write);
   };
-  for (const edge of ['start','end']) el('skip-capture-'+edge).onclick = () => {if (!isFollower()) el('skip-edit-'+edge).value = time(PP.state().position);};
+  for (const edge of ['start','end']) el('skip-capture-'+edge).onclick = () => {if (canEdit()) el('skip-edit-'+edge).value = time(PP.state().position);};
   el('skip-edit-cancel').onclick = resetEditor;
   el('skip-segments-form').addEventListener('submit', event => {
-    event.preventDefault(); if (isFollower()) return;
+    event.preventDefault(); if (!canEdit()) return;
     const start = parseTime(el('skip-edit-start').value), end = parseTime(el('skip-edit-end').value), type = el('skip-edit-type').value;
     if (!validMediaKey(mediaKey)) {el('skip-segments-status').textContent = 'Дождитесь определения текущего файла.'; return;}
     if (!types.includes(type) || !Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start || !duration || end > duration) {

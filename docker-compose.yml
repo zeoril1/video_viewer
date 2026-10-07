@@ -121,6 +121,7 @@ services:
       # STREAM_DATA_DIR отключает спул.
       STREAM_DATA_DIR: ${STREAM_DATA_DIR:-/app/cache}
       HLS_WORK_ROOT: /app/hls-cache
+      AUTH_URL: http://auth:8083
       # Анализ полностью загруженных серий и постоянное хранение интервалов.
       SEGMENTS_CATALOG_URL: http://catalog:8081
       SEGMENTS_ANALYSIS_ENABLED: ${SEGMENTS_ANALYSIS_ENABLED:-true}

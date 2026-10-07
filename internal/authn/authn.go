@@ -14,6 +14,11 @@ import (
 // SessionCookieName — имя куки с токеном сессии (то же, что в auth-сервисе).
 const SessionCookieName = "video_viewer_session"
 
+// CanEditSegments разрешает менять границы пропусков администраторам и модераторам.
+func CanEditSegments(u db.User) bool {
+	return u.Role == db.RoleAdmin || u.Role == db.RoleModerator
+}
+
 // Current возвращает пользователя по куке сессии (валидность проверяется по БД).
 func Current(repo *db.Repo, r *http.Request) (db.User, bool) {
 	if repo == nil {
@@ -37,7 +42,7 @@ func RequireAdmin(repo *db.Repo, w http.ResponseWriter, r *http.Request) (db.Use
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return db.User{}, false
 	}
-	if u.Role != "admin" {
+	if u.Role != db.RoleAdmin {
 		http.Error(w, "forbidden: admin only", http.StatusForbidden)
 		return db.User{}, false
 	}

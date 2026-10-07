@@ -1,0 +1,90 @@
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+
+function fixture() {
+  const handlers = {}, events = {}, requests = [], intervals = [];
+  const state = { active: true, id: 'tt1234567', magnet: 'magnet:?xt=urn:btih:' + 'a'.repeat(40),
+    file: 2, season: 1, episode: 3, position: 345, duration: 1200 };
+  const video = { paused: false, ended: false, seeking: false, readyState: 4,
+    addEventListener(name, fn) { (handlers[name] ||= []).push(fn); } };
+  let sequence = 0, ready = true, visible = true;
+  const context = vm.createContext({
+    PP: { available: true, state: () => state, ready: () => ready, playing: () => visible },
+    VV: { onAuth() {} },
+    document: { getElementById: () => video },
+    window: { addEventListener(name, fn) { (events[name] ||= []).push(fn); } },
+    crypto: { getRandomValues(array) { array.fill(++sequence); return array; } },
+    fetch: async (url, options) => { requests.push({ url, ...options, body: JSON.parse(options.body) }); return { ok: true }; },
+    setInterval(fn) { intervals.push(fn); },
+  });
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../web/viewing.js'), 'utf8'), context);
+  const emit = (name, target = events) => { for (const fn of target[name] || []) fn(); };
+  return { state, video, requests, intervals, emit, media: name => emit(name, handlers),
+    setReady: value => { ready = value; }, setVisible: value => { visible = value; } };
+}
+const flush = () => new Promise(resolve => setImmediate(resolve));
+
+test('viewing reports source position and excludes pauses, loading and seeking', async () => {
+  const f = fixture();
+  f.emit('playbackchange'); await flush();
+  assert.equal(f.requests.at(-1).body.position, 345);
+  assert.equal(f.requests.at(-1).body.playing, true);
+  f.media('stalled'); await flush();
+  assert.equal(f.requests.at(-1).body.playing, true);
+  assert.equal('username' in f.requests.at(-1).body, false);
+  f.media('waiting'); await flush();
+  assert.equal(f.requests.at(-1).body.playing, false);
+  f.media('playing'); await flush();
+  assert.equal(f.requests.at(-1).body.playing, true);
+  f.video.paused = true; f.media('pause'); await flush();
+  assert.equal(f.requests.at(-1).body.playing, false);
+  f.video.paused = false; f.video.seeking = true; f.media('seeking'); await flush();
+  assert.equal(f.requests.at(-1).body.playing, false);
+  f.video.seeking = false; f.media('seeked'); await flush();
+  assert.equal(f.requests.at(-1).body.playing, true);
+  f.setReady(false); f.intervals[0](); await flush();
+  assert.equal(f.requests.at(-1).body.playing, false);
+});
+
+test('switching episodes ends old session; pagehide sends keepalive deletion', async () => {
+  const f = fixture();
+  f.emit('playbackchange'); await flush();
+  const oldSession = f.requests[0].body.session;
+  f.state.file = 4; f.state.episode = 4;
+  f.emit('playbackchange'); await flush();
+  assert.equal(f.requests[1].method, 'DELETE');
+  assert.equal(f.requests[1].body.session, oldSession);
+  assert.equal(f.requests[2].method, 'POST');
+  assert.notEqual(f.requests[2].body.session, oldSession);
+  f.emit('pagehide');
+  assert.equal(f.requests.at(-1).method, 'DELETE');
+  assert.equal(f.requests.at(-1).keepalive, true);
+  const count = f.requests.length;
+  f.intervals[0](); await flush();
+  assert.equal(f.requests.length, count);
+  f.emit('pageshow'); await flush();
+  assert.equal(f.requests.at(-1).method, 'POST');
+});
+
+test('viewing permits automatic movie file and does not report inactive preloading', async () => {
+  const f = fixture();
+  f.state.active = false; f.emit('playbackchange'); await flush();
+  assert.equal(f.requests.length, 0);
+  f.state.active = true; f.state.file = -1; f.setVisible(false);
+  f.emit('playbackchange'); await flush();
+  assert.equal(f.requests[0].body.file, -1);
+  assert.equal(f.requests[0].body.playing, false);
+  f.state.active = false; f.emit('playbackchange'); await flush();
+  assert.equal(f.requests.at(-1).method, 'DELETE');
+});
+
+test('a queued playback report cannot recreate a stopped session after pagehide', async () => {
+  const f = fixture();
+  f.emit('playbackchange');
+  f.emit('pagehide');
+  await flush();
+  assert.deepEqual(f.requests.map(item => item.method), ['DELETE']);
+});

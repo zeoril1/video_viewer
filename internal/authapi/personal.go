@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/zeoril1/video_viewer/internal/authn"
 	"github.com/zeoril1/video_viewer/internal/db"
 	"github.com/zeoril1/video_viewer/internal/httpx"
 )
@@ -54,6 +55,10 @@ func (h *authHandler) personal(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid item", 400)
 		return
 	}
+	if !canWritePersonal(u, kind, key) {
+		http.Error(w, "forbidden: moderator or admin required to edit skip marks", http.StatusForbidden)
+		return
+	}
 	if r.Method == "DELETE" {
 		if err := h.repo.DeletePersonal(r.Context(), u.ID, kind, key); err != nil {
 			http.Error(w, "database unavailable", 503)
@@ -75,6 +80,10 @@ func (h *authHandler) personal(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	w.WriteHeader(204)
+}
+
+func canWritePersonal(u db.User, kind, key string) bool {
+	return kind != "preferences" || !strings.HasPrefix(key, "segments.") || authn.CanEditSegments(u)
 }
 func writePersonalJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")

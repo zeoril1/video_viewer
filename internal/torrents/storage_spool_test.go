@@ -199,7 +199,7 @@ func TestSpoolClientClose(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Осиротевший спул-файл (как после сбоя процесса).
-	orphan := filepath.Join(dir, "deadbeef.3.spool")
+	orphan := filepath.Join(dir, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.3.spool")
 	if err := os.WriteFile(orphan, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +221,7 @@ func TestSpoolClientClose(t *testing.T) {
 func TestManagerSpoolCleanup(t *testing.T) {
 	silenceLogs(t)
 	dir := t.TempDir()
-	orphan := filepath.Join(dir, "orphan.spool")
+	orphan := filepath.Join(dir, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.3.spool")
 	other := filepath.Join(dir, "keep.txt")
 	if err := os.WriteFile(orphan, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)

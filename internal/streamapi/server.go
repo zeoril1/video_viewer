@@ -12,12 +12,14 @@ import (
 
 	"github.com/zeoril1/video_viewer/internal/catalog"
 	"github.com/zeoril1/video_viewer/internal/httpx"
+	"github.com/zeoril1/video_viewer/internal/remoteauth"
 	"github.com/zeoril1/video_viewer/internal/tmdb"
 	"github.com/zeoril1/video_viewer/internal/torrents"
 )
 
 // Config — зависимости HTTP-сервиса стриминга.
 type Config struct {
+	AuthURL                   string
 	Context                   context.Context
 	AnalysisStoreURL          string
 	DisableSegmentAnalysis    bool
@@ -48,6 +50,13 @@ func NewServer(cfg Config) (http.Handler, func()) {
 	go hls.cleanup()
 	go hls.watchResources()
 	analyzer := newEpisodeAnalyzer(hls, cfg)
+	access := remoteauth.New(cfg.AuthURL)
+	viewers := newViewingStore()
+	mux.HandleFunc("POST /api/stream/viewing", viewers.handle(cfg.Torrents, access))
+	mux.HandleFunc("DELETE /api/stream/viewing", viewers.handle(cfg.Torrents, access))
+	storage := &storageHandler{mgr: cfg.Torrents, hls: hls, access: access, viewers: viewers}
+	mux.HandleFunc("GET /api/admin/storage", storage.list)
+	mux.HandleFunc("DELETE /api/admin/storage/{hash}", storage.remove)
 	mux.HandleFunc("POST /api/stream/prepare", prepareHandler(cfg.Torrents, analyzer))
 	mux.HandleFunc("GET /api/stream/download-status", downloadStatusHandler(cfg.Torrents))
 

@@ -70,13 +70,14 @@ func removeLegacySpool(dir string) {
 
 var errSpoolClosed = errors.New("spool: storage closed")
 
+var ownedSpoolName = regexp.MustCompile(`^[a-fA-F0-9]{40}\.[0-9]+\.spool$`)
+
 // Each spool directory belongs to one stream process. Completion maps live in
 // memory, so data from an earlier process cannot safely be reused after restart.
 func removeAbandonedSpool(dir string) {
-	owned := regexp.MustCompile(`^[a-fA-F0-9]{40}\.[0-9]+\.spool$`)
 	entries, _ := os.ReadDir(dir)
 	for _, entry := range entries {
-		if !entry.IsDir() && owned.MatchString(entry.Name()) {
+		if !entry.IsDir() && ownedSpoolName.MatchString(entry.Name()) {
 			_ = os.Remove(filepath.Join(dir, entry.Name()))
 		}
 	}
@@ -94,6 +95,9 @@ type spoolTorrent struct {
 	// (операции держат RLock, Close — Lock).
 	mu     sync.RWMutex
 	closed bool
+	// Retain once when an idle torrent is replaced during per-file eviction.
+	// Torrent.Drop waits for storage users before calling Close.
+	retainOnClose bool
 }
 
 // spoolFile — дисковый файл серии; создаётся лениво (пока серия не качается, файла нет).
@@ -104,8 +108,11 @@ type spoolFile struct {
 	offset int64 // глобальное смещение серии в торренте
 	size   int64 // полный размер серии
 
-	mu sync.Mutex
-	f  *os.File // nil — в серию ещё ничего не писали
+	mu        sync.Mutex
+	f         *os.File    // nil — в серию ещё ничего не писали
+	ranges    []byteRange // actual written bytes, excluding holes and duplicate writes
+	present   bool        // cached data can remain after a failed removal/reopen
+	allocated int64       // last known physical size if a retained handle cannot reopen
 }
 
 // pieceSeg — часть куска торрента, попадающая в конкретную серию.
@@ -295,6 +302,9 @@ func (c *spoolClient) Close() error {
 		return errors.Join(append(errs, err)...)
 	}
 	for _, p := range matches {
+		if !ownedSpoolName.MatchString(filepath.Base(p)) {
+			continue
+		}
 		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
 			errs = append(errs, fmt.Errorf("spool: remove %s: %w", p, err))
 		}
@@ -307,6 +317,11 @@ func (c *spoolClient) Close() error {
 // закрытие клиента → данные с диска освобождаются).
 func (t *spoolTorrent) Close() error {
 	t.mu.Lock()
+	if t.retainOnClose {
+		t.retainOnClose = false
+		t.mu.Unlock()
+		return nil
+	}
 	t.closed = true
 	t.mu.Unlock()
 
@@ -326,12 +341,17 @@ func (t *spoolTorrent) Close() error {
 func (f *spoolFile) exists() bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.f != nil
+	return f.f != nil || f.present
 }
 
 func (f *spoolFile) reader() *os.File {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.f == nil && f.present {
+		// A failed removal may temporarily lose its handle (for example when
+		// another process replaces its sharing mode). Never truncate retained data.
+		f.f, _ = os.OpenFile(f.path, os.O_RDWR, 0)
+	}
 	return f.f
 }
 
@@ -341,18 +361,28 @@ func (f *spoolFile) writeAt(off int64, b []byte) (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.f == nil {
-		file, err := os.OpenFile(f.path, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0o644)
+		flags := os.O_CREATE | os.O_RDWR | os.O_TRUNC
+		if f.present {
+			flags = os.O_RDWR
+		}
+		file, err := os.OpenFile(f.path, flags, 0o644)
 		if err != nil {
 			return 0, err
 		}
 		f.f = file
-		_ = f.budget.Resize(f.path, 0)
+		if !f.present {
+			_ = f.budget.Resize(f.path, 0)
+		}
+		f.present = true
 	}
 	high := max(f.high, off+int64(len(b)))
 	if err := f.budget.Resize(f.path, high); err != nil {
 		return 0, err
 	}
 	n, err := f.f.WriteAt(b, off)
+	if n > 0 {
+		f.ranges = addWrittenRange(f.ranges, off, off+int64(n))
+	}
 	if info, e := f.f.Stat(); e == nil {
 		f.high = info.Size()
 		_ = f.budget.Resize(f.path, f.high)
@@ -369,6 +399,10 @@ func (f *spoolFile) Close() error {
 	f.mu.Lock()
 	file := f.f
 	f.f = nil
+	f.high = 0
+	f.ranges = nil
+	f.present = false
+	f.allocated = 0
 	f.mu.Unlock()
 
 	if file == nil {

@@ -54,6 +54,7 @@ type Manager struct {
 	fileWants  map[string]map[int]int      // востребованные файлы (серии) по hash
 	cacheTTL   time.Duration               // TTL тёплого кеша
 	maxCached  int                         // лимит тёплых торрентов
+	rates      map[string]downloadSample   // samples used by the storage dashboard
 }
 
 // NewManager создаёт торрент-клиент (хранилище — спул либо RAM). Берём
@@ -101,6 +102,7 @@ func NewManager(cfg Config) (*Manager, error) {
 		fileWants:  make(map[string]map[int]int),
 		cacheTTL:   cacheTTL,
 		maxCached:  maxCached,
+		rates:      make(map[string]downloadSample),
 	}, nil
 }
 
@@ -163,6 +165,9 @@ func (m *Manager) Acquire(item catalog.Item) (*torrent.Torrent, func(), error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	// A file eviction leaves its replacement torrent suspended so it cannot
+	// silently recreate the file. An explicit playback/prepare request resumes it.
+	t.AllowDataDownload()
 
 	m.readers[hash]++
 	if tm, ok := m.dropTimers[hash]; ok {
@@ -201,6 +206,9 @@ func (m *Manager) drop(hash string) {
 
 // dropLocked выгружает торрент немедленно (только под m.mu); true — был открыт и выгружен.
 func (m *Manager) dropLocked(hash string) bool {
+	if tm := m.dropTimers[hash]; tm != nil {
+		tm.Stop()
+	}
 	delete(m.dropTimers, hash)
 	// За время ожидания торрент могли снова начать читать.
 	if m.readers[hash] > 0 {
@@ -213,6 +221,7 @@ func (m *Manager) dropLocked(hash string) bool {
 	}
 	delete(m.keepUntil, hash)
 	delete(m.fileWants, hash)
+	delete(m.rates, hash)
 	return ok
 }
 

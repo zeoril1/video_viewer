@@ -93,7 +93,7 @@ async function fixture(options = {}) {
       }
       destroy() { this.dead = true; }
     };
-    window.VV = { user: { id: 'test-user' } };
+    window.VV = { user: options.guest ? null : { id: 'test-user', role: options.role || 'moderator' } };
     window.Personal = {
       get: (kind, key) => fixture.personal.has(key) ? { data: fixture.personal.get(key) } : null,
       put: async (kind, key, data) => {
@@ -297,6 +297,21 @@ test('TV arrows move focus from skip toolbar without seeking the video', async (
     await f.page.evaluate(() => VideoViewerTV.handleBack());
     assert.equal(await f.page.locator('#skip-segments-panel').isVisible(), false);
     assert.equal(await f.page.evaluate(() => PP.state().position), 15);
+    assert.deepEqual(f.errors, []);
+  } finally { await f.context.close(); }
+});
+
+test('ordinary users can skip but the mark editor and editing buttons remain unavailable', async () => {
+  const f = await fixture({ role: 'user', chapters: [{ type: 'intro', start: 10, end: 40, auto_skip: true }] });
+  try {
+    await position(f.page, 15, 30); await f.page.locator('#skip-segments-open').click();
+    assert.equal(await f.page.locator('#skip-segments-form').isVisible(), false);
+    assert.equal(await f.page.locator('#skip-edit-permission').isVisible(), true);
+    assert.equal(await f.page.locator('#skip-edit-save').isDisabled(), true);
+    assert.equal(await f.page.locator('.skip-segments-edit-action').first().isVisible(), false);
+    assert.equal(await f.page.locator('#skip-mode-intro').isDisabled(), false);
+    await f.page.locator('#skip-segments-close').click();await f.page.locator('#skip-segment').click();
+    assert.equal(await f.page.evaluate(() => PP.state().position), 40);
     assert.deepEqual(f.errors, []);
   } finally { await f.context.close(); }
 });
