@@ -37,7 +37,7 @@ const SECTIONS = [
   { key: 'other', ru: 'Другое', en: 'Other' },
 ];
 
-// Подборки категорий (hover-меню): «Лучшие…» — чарт top_rated (IMDb+TMDB),
+// Подборки категорий: «Лучшие…» — чарт top_rated (IMDb+TMDB),
 // «Популярные…» — чарт популярности. Пустой ключ — обычный список категории.
 const COLLECTIONS = {
   movie: [
@@ -443,18 +443,21 @@ async function refreshMeta() {
 function renderSections(kinds) {
   sectionsEl.innerHTML = '';
   // Сортировка скрыта в подборках — там порядок чарта; подборки есть только у «Фильмов»/«Сериалов».
-  sortEl.hidden = currentCollection !== '';
   if (currentSection !== 'movie' && currentSection !== 'series') currentCollection = '';
+  sortEl.hidden = currentCollection !== '';
+  sortEl.closest('.catalog-select-field').hidden = sortEl.hidden;
   // «Все» — сумма по секциям, без псевдо-секции popular (её записи уже в категориях — двойной учёт).
   let total = 0;
   for (const k in kinds) if (k !== 'popular') total += kinds[k];
 
   const select = (key, coll) => {
     const c = coll || '';
+    closeCollections();
     if (currentSection === key && currentCollection === c) return;
     currentSection = key;
     currentCollection = c;
     renderSections(metaKinds);
+    sectionsEl.querySelector(`[data-section="${key}"]`)?.focus({ preventScroll: true });
     fetchPage(1);
   };
 
@@ -486,41 +489,64 @@ function renderSections(kinds) {
     }
     const wrap = document.createElement('div');
     wrap.className = 'sec-menu';
-    const btn = mkButton(s.key, label, c, active);
-    btn.classList.add('has-menu');
-    btn.addEventListener('click', () => select(s.key, ''));
-    wrap.appendChild(btn);
     const drop = document.createElement('div');
     drop.className = 'sec-drop';
     drop.id = 'collection-menu-' + s.key;
-    const toggle = document.createElement('button');
-    toggle.type = 'button';
-    toggle.className = 'collection-toggle';
-    toggle.textContent = '⌄';
-    toggle.setAttribute('aria-label', (lang === 'ru' ? 'Подборки: ' : 'Collections: ') + label);
+    const toggle = mkButton(s.key, label, c, active);
+    toggle.classList.add('has-menu', 'collection-toggle');
+    toggle.insertAdjacentHTML('beforeend', '<svg class="collection-chevron" viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="m5 7.5 5 5 5-5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>');
     toggle.setAttribute('aria-controls', drop.id);
     toggle.setAttribute('aria-expanded', 'false');
-    toggle.addEventListener('click', () => {
-      const open = !wrap.classList.contains('menu-open');
+    const setOpen = open => {
       closeCollections();
       wrap.classList.toggle('menu-open', open);
       toggle.setAttribute('aria-expanded', String(open));
+      if (open) {
+        drop.style.left = '';
+        const bounds = drop.getBoundingClientRect();
+        const shift = Math.max(16 - bounds.left, Math.min(0, window.innerWidth - 16 - bounds.right));
+        drop.style.left = `${shift}px`;
+      }
+    };
+    toggle.addEventListener('click', () => {
+      setOpen(!wrap.classList.contains('menu-open'));
     });
     wrap.addEventListener('keydown', ev => {
       if (ev.key === 'Escape') {
+        ev.preventDefault();
         closeCollections();
         toggle.focus();
+      } else if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(ev.key)) {
+        ev.preventDefault();
+        if (!wrap.classList.contains('menu-open')) setOpen(true);
+        const choices = [...drop.querySelectorAll('button')];
+        const index = choices.indexOf(document.activeElement);
+        const target = ev.key === 'Home' ? 0 : ev.key === 'End' ? choices.length - 1
+          : index < 0 ? (ev.key === 'ArrowUp' ? choices.length - 1 : 0)
+          : (index + (ev.key === 'ArrowUp' ? -1 : 1) + choices.length) % choices.length;
+        choices[target]?.focus();
+      }
+    });
+    wrap.addEventListener('focusout', ev => {
+      if (!wrap.contains(ev.relatedTarget)) {
+        wrap.classList.remove('menu-open');
+        toggle.setAttribute('aria-expanded', 'false');
       }
     });
     wrap.appendChild(toggle);
     const ul = document.createElement('ul');
-    for (const o of defs) {
+    const all = { key: '', ru: s.key === 'movie' ? 'Все фильмы' : 'Все сериалы',
+      en: s.key === 'movie' ? 'All movies' : 'All series' };
+    for (const o of [all, ...defs]) {
       const li = document.createElement('li');
       const item = document.createElement('button');
       item.type = 'button';
       item.className = 'sec-drop-item' + (currentSection === s.key && currentCollection === o.key ? ' active' : '');
       item.textContent = lang === 'ru' ? o.ru : o.en;
-      item.addEventListener('click', () => select(s.key, o.key));
+      item.addEventListener('click', () => {
+        select(s.key, o.key);
+        sectionsEl.querySelector(`[data-section="${s.key}"]`)?.focus({ preventScroll: true });
+      });
       li.appendChild(item);
       ul.appendChild(li);
     }
@@ -539,6 +565,7 @@ function closeCollections() {
 document.addEventListener('click', ev => {
   if (!ev.target.closest('.sec-menu')) closeCollections();
 });
+window.addEventListener('resize', closeCollections);
 
 function populateGenres(genres) {
   genreEl.innerHTML = '';

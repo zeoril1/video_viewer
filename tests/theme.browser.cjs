@@ -25,6 +25,9 @@ const films = titles.map((title, i) => ({
 const history = [0, 3].map(i => ({ ...films[i], film_id: films[i].id, position: 1430 + i * 180,
   duration: 7600, season: i === 3 ? 1 : 0, episode: i === 3 ? 4 : 0,
   file: 0, magnet: 'magnet:?xt=urn:btih:' + 'a'.repeat(40), updated_at: now.toISOString() }));
+const carouselHistory = films.map((film, i) => ({ ...film, film_id: film.id, position: 1430 + i * 180,
+  duration: 7600, season: i === 3 ? 1 : 0, episode: i === 3 ? 4 : 0,
+  file: 0, magnet: 'magnet:?xt=urn:btih:' + 'a'.repeat(40), updated_at: now.toISOString() }));
 const personal = [0, 1, 2, 3].map(i => ({ kind: 'watchlist', key: films[i].id, data: films[i], updated_at: now.toISOString() }));
 let server, browser, base;
 const requests = [];
@@ -132,6 +135,18 @@ async function expectNoOverflow(page, label) {
       .slice(0, 8).map(el => el.id || el.className || el.tagName) }));
   assert.ok(size.scroll <= size.width + 1, label + ': ' + JSON.stringify(size));
 }
+async function useCarouselHistory(page) {
+  let items = [...carouselHistory];
+  await page.route(/\/api\/history(?:[/?]|$)/, route => {
+    const url = new URL(route.request().url());
+    if (url.origin !== base) return route.abort();
+    if (route.request().method() === 'DELETE') {
+      items = items.filter(item => item.film_id !== decodeURIComponent(url.pathname.split('/').pop()));
+      return route.fulfill({ contentType: 'application/json', body: '{}' });
+    }
+    return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ items: url.searchParams.has('film_id') ? [] : items }) });
+  });
+}
 
 test('all eleven pages load the common theme before content and use the new brand', () => {
   assert.equal(htmlPages.length, 11);
@@ -235,6 +250,160 @@ test('catalog search uses its original field and preserves continue watching aft
     await f.page.locator('#search').fill('');
     await f.page.locator('#continue').waitFor({ state: 'visible' });
     await f.page.waitForFunction(() => document.querySelectorAll('#grid .card').length === 8);
+    assert.deepEqual(f.errors, []);
+  } finally { await f.context.close(); }
+});
+
+test('one category button opens its collection menu and keeps genre and sort beside the categories', async () => {
+  const f = await fixture();
+  try {
+    await f.page.goto(base);
+    const toggle = f.page.locator('[aria-controls="collection-menu-movie"]');
+    const allMovies = f.page.getByRole('button', { name: 'Все фильмы', exact: true });
+    await toggle.waitFor();
+    assert.equal(await f.page.locator('.sec-menu:has(#collection-menu-movie) > button').count(), 1, 'Category and chevron share one button');
+    assert.equal(await toggle.evaluate(el => el.matches('.section-btn.collection-toggle')), true);
+    await toggle.focus();
+    await f.page.keyboard.press('Enter');
+    assert.equal(await toggle.getAttribute('aria-expanded'), 'true');
+    await allMovies.waitFor({ state: 'visible' });
+    await toggle.press('Escape');
+    assert.equal(await toggle.getAttribute('aria-expanded'), 'false');
+    assert.equal(await toggle.evaluate(el => el === document.activeElement), true);
+    await toggle.click();
+    const [request] = await Promise.all([
+      f.page.waitForRequest(req => {
+        const url = new URL(req.url());
+        return url.pathname === '/api/catalog' && url.searchParams.get('section') === 'movie' && !url.searchParams.has('collection');
+      }),
+      allMovies.click(),
+    ]);
+    assert.ok(request);
+    assert.equal(await toggle.getAttribute('aria-expanded'), 'false');
+    assert.equal(await toggle.getAttribute('aria-pressed'), 'true');
+    // Selecting the already current entry must dismiss the menu as well.
+    await toggle.click();
+    await allMovies.click();
+    assert.equal(await toggle.getAttribute('aria-expanded'), 'false');
+    await toggle.press('ArrowDown');
+    assert.equal(await allMovies.evaluate(el => el === document.activeElement), true);
+    await f.page.keyboard.press('End');
+    assert.equal(await f.page.getByRole('button', { name: 'Популярные фильмы', exact: true }).evaluate(el => el === document.activeElement), true);
+    await f.page.keyboard.press('Home');
+    assert.equal(await allMovies.evaluate(el => el === document.activeElement), true);
+    await f.page.keyboard.press('ArrowDown');
+    assert.equal(await f.page.getByRole('button', { name: 'Лучшие фильмы', exact: true }).evaluate(el => el === document.activeElement), true);
+    await f.page.keyboard.press('Escape');
+    assert.equal(await toggle.evaluate(el => el === document.activeElement), true);
+    await toggle.click();
+    await f.page.locator('.catalog-heading').click();
+    assert.equal(await toggle.getAttribute('aria-expanded'), 'false');
+    const layout = await f.page.evaluate(() => {
+      const box = id => {
+        const el = document.getElementById(id), rect = el.getBoundingClientRect();
+        return { top: rect.top, right: rect.right, left: rect.left, height: rect.height };
+      };
+      return { sections: box('sections'), genre: box('genre'), sort: box('sort') };
+    });
+    assert.ok(layout.sections.right <= layout.genre.left + 1, 'Genre is beside the category group: ' + JSON.stringify(layout));
+    assert.ok(Math.abs(layout.sections.top - layout.genre.top) <= 2, 'Genre aligns with the category row');
+    assert.ok(Math.abs(layout.genre.top - layout.sort.top) <= 2, 'Genre and sort align together');
+    assert.deepEqual(f.errors, []);
+  } finally { await f.context.close(); }
+});
+
+test('continue arrows scroll by a page and update at boundaries, after search, removal and resize', async () => {
+  const f = await fixture({ reducedMotion: 'reduce' });
+  try {
+    await useCarouselHistory(f.page);
+    await f.page.goto(base);
+    await f.page.waitForFunction(() => document.querySelectorAll('#continue-list .continue-card').length === 8);
+    const navigation = f.page.locator('#continue-navigation');
+    const previous = f.page.locator('#continue-prev'), next = f.page.locator('#continue-next');
+    await navigation.waitFor({ state: 'visible' });
+    assert.equal(await previous.isDisabled(), true, 'Initial rail: ' + JSON.stringify(await f.page.locator('#continue-list').evaluate(el => ({ left: el.scrollLeft, width: el.clientWidth, scrollWidth: el.scrollWidth }))));
+    assert.equal(await next.isDisabled(), false);
+    assert.equal(await previous.getAttribute('aria-label'), 'Предыдущие фильмы');
+    assert.equal(await next.getAttribute('aria-label'), 'Следующие фильмы');
+    const scrollLeft = () => f.page.locator('#continue-list').evaluate(el => el.scrollLeft);
+    const settleRail = () => f.page.waitForFunction(() => {
+      const list = document.getElementById('continue-list'), limit = list.scrollWidth - list.clientWidth;
+      return document.getElementById('continue-prev').disabled === (list.scrollLeft <= 1)
+        && document.getElementById('continue-next').disabled === (list.scrollLeft >= limit - 1);
+    });
+    await next.focus();
+    await f.page.keyboard.press('Enter');
+    await f.page.waitForFunction(() => document.getElementById('continue-list').scrollLeft > 1);
+    await settleRail();
+    assert.equal(await previous.isDisabled(), false);
+    for (let i = 0; i < carouselHistory.length && !await next.isDisabled(); i++) {
+      const before = await scrollLeft();
+      await next.click();
+      await f.page.waitForFunction(value => document.getElementById('continue-list').scrollLeft > value + 1, before);
+      await settleRail();
+    }
+    await f.page.waitForFunction(() => document.getElementById('continue-next').disabled);
+    const edge = await f.page.locator('#continue-list').evaluate(el => ({ left: el.scrollLeft, max: el.scrollWidth - el.clientWidth }));
+    assert.ok(Math.abs(edge.left - edge.max) <= 2, 'Last page ends at the rail edge: ' + JSON.stringify(edge));
+    for (let i = 0; i < carouselHistory.length && !await previous.isDisabled(); i++) {
+      const before = await scrollLeft();
+      await previous.click();
+      await f.page.waitForFunction(value => document.getElementById('continue-list').scrollLeft < value - 1, before);
+      await settleRail();
+    }
+    await f.page.waitForFunction(() => document.getElementById('continue-prev').disabled);
+    assert.ok(await scrollLeft() <= 2, 'Previous returns to the first page');
+    await f.page.locator('.profile-toggle').click();
+    await f.page.locator('#lang-en').click();
+    assert.equal(await previous.getAttribute('aria-label'), 'Previous titles');
+    assert.equal(await next.getAttribute('aria-label'), 'Next titles');
+    await f.page.locator('#lang-ru').click();
+    await f.page.locator('.profile-menu').evaluate(el => { el.open = false; });
+    await f.page.locator('#search').fill('Интерстеллар');
+    await f.page.waitForFunction(() => document.querySelector('#continue').hidden && document.querySelector('#continue-navigation').hidden);
+    await f.page.locator('#search').fill('');
+    await navigation.waitFor({ state: 'visible' });
+    // Deleting saved titles rerenders the list; navigation must disappear once two cards fit.
+    for (let count = carouselHistory.length; count > 2; count--) {
+      await f.page.locator('#continue .continue-remove').first().click();
+      await f.page.waitForFunction(value => document.querySelectorAll('#continue-list .continue-card').length === value, count - 1);
+    }
+    await f.page.waitForFunction(() => document.getElementById('continue-navigation').hidden);
+    assert.equal(await previous.isDisabled(), true);
+    assert.equal(await next.isDisabled(), true);
+    await f.page.setViewportSize({ width: 390, height: 844 });
+    await f.page.waitForFunction(() => !document.getElementById('continue-navigation').hidden);
+    await expectNoOverflow(f.page, 'mobile continue rail');
+    await f.page.setViewportSize({ width: 1440, height: 1000 });
+    await f.page.waitForFunction(() => document.getElementById('continue-navigation').hidden);
+    await f.page.locator('#continue .continue-remove').first().click();
+    await f.page.waitForFunction(() => document.querySelectorAll('#continue-list .continue-card').length === 1);
+    await f.page.setViewportSize({ width: 390, height: 844 });
+    await f.page.waitForFunction(() => document.getElementById('continue-list').scrollWidth <= document.getElementById('continue-list').clientWidth + 2);
+    assert.equal(await navigation.evaluate(el => el.hidden), true);
+    assert.deepEqual(f.errors, []);
+  } finally { await f.context.close(); }
+});
+
+test('catalog controls with a full continue rail fit desktop and mobile in both themes', async () => {
+  const f = await fixture({ reducedMotion: 'reduce' });
+  try {
+    await useCarouselHistory(f.page);
+    for (const theme of ['light', 'dark']) {
+      await f.page.setViewportSize({ width: 1440, height: 1000 });
+      await f.page.goto(base);
+      await selectTheme(f.page, theme);
+      await expectTheme(f.page, theme);
+      await f.page.waitForFunction(() => document.querySelectorAll('#continue-list .continue-card').length === 8 && !document.querySelector('#continue-navigation').hidden);
+      await expectNoOverflow(f.page, 'full catalog/' + theme + '/desktop');
+      assert.equal(await f.page.locator('#continue-list').evaluate(el => getComputedStyle(el).scrollbarWidth), 'none');
+      await f.page.screenshot({ path: path.join(output, 'catalog-controls-' + theme + '-desktop.png'), fullPage: true, animations: 'disabled' });
+      await f.page.setViewportSize({ width: 390, height: 844 });
+      await f.page.locator('#filter-toggle').click();
+      await f.page.locator('#genre').waitFor({ state: 'visible' });
+      await expectNoOverflow(f.page, 'full catalog/' + theme + '/mobile/filters');
+      await f.page.screenshot({ path: path.join(output, 'catalog-controls-' + theme + '-mobile.png'), fullPage: true, animations: 'disabled' });
+    }
     assert.deepEqual(f.errors, []);
   } finally { await f.context.close(); }
 });

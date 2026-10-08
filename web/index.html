@@ -8,7 +8,7 @@
   <link rel="stylesheet" href="style.css?v=22" />
   <link rel="stylesheet" href="tv.css?v=2" />
   <link rel="stylesheet" href="features.css?v=2" />
-  <link rel="stylesheet" href="redesign.css?v=1" />
+  <link rel="stylesheet" href="redesign.css?v=2" />
 </head>
 <body data-page="catalog">
   <header class="topbar">
@@ -28,7 +28,17 @@
 
   <main>
     <section id="continue" class="continue" aria-labelledby="continue-title" hidden>
-      <h2 id="continue-title" class="continue-title"></h2>
+      <div class="continue-heading">
+        <h2 id="continue-title" class="continue-title"></h2>
+        <div id="continue-navigation" class="continue-navigation" role="group" aria-label="Перелистывание истории просмотра" hidden>
+          <button id="continue-prev" class="continue-nav-btn" type="button" aria-controls="continue-list" aria-label="Предыдущие фильмы" disabled>
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m14 6-6 6 6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" /></svg>
+          </button>
+          <button id="continue-next" class="continue-nav-btn" type="button" aria-controls="continue-list" aria-label="Следующие фильмы" disabled>
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m10 6 6 6-6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" /></svg>
+          </button>
+        </div>
+      </div>
       <div id="continue-list" class="continue-list"></div>
     </section>
     <div class="catalog-topline">
@@ -38,16 +48,26 @@
     <div id="catalog-filters" class="filters">
       <nav id="sections" class="sections" aria-label="Разделы"></nav>
       <div id="filter-controls" class="filter-controls">
-        <label class="released-toggle"><input id="hide-watched" type="checkbox"> Скрыть просмотренное</label>
-        <label class="released-toggle" title="Показывать только вышедшие фильмы">
-          <input type="checkbox" id="released" checked />
-          <span data-i18n="onlyReleased">Только вышедшие</span>
-        </label>
-        <select id="genre" class="genre-select" aria-label="Жанр">
-          <option value="">Все жанры</option>
-        </select>
-        <select id="sort" class="genre-select" aria-label="Сортировка"></select>
-        <button id="catalog-reset" class="auth-btn catalog-reset" type="button" data-i18n="resetFilters">Сбросить фильтры</button>
+        <div class="catalog-selects">
+          <div class="catalog-select-field">
+            <select id="genre" class="genre-select" aria-label="Жанр">
+              <option value="">Все жанры</option>
+            </select>
+            <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="m5 7.5 5 5 5-5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </div>
+          <div class="catalog-select-field">
+            <select id="sort" class="genre-select" aria-label="Сортировка"></select>
+            <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="m5 7.5 5 5 5-5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </div>
+        </div>
+        <div class="catalog-options">
+          <label class="released-toggle"><input id="hide-watched" type="checkbox"> Скрыть просмотренное</label>
+          <label class="released-toggle" title="Показывать только вышедшие фильмы">
+            <input type="checkbox" id="released" checked />
+            <span data-i18n="onlyReleased">Только вышедшие</span>
+          </label>
+          <button id="catalog-reset" class="auth-btn catalog-reset" type="button" data-i18n="resetFilters">Сбросить фильтры</button>
+        </div>
       </div>
     </div>
     <div id="grid" class="grid" aria-label="Каталог фильмов и сериалов" aria-busy="false"></div>
@@ -58,7 +78,8 @@
   <script src="shared.js?v=3"></script>
   <script src="personal.js?v=2"></script>
   <script src="features.js?v=1"></script>
-  <script src="catalog.js?v=2"></script>
+  <script src="catalog.js?v=3"></script>
+  <script src="continue-rail.js?v=1"></script>
   <script src="tv.js?v=3"></script>
 </body>
 </html>
