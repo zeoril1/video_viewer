@@ -1,10 +1,10 @@
 'use strict';
 
 /* Страница фильма/сериала (/film.html?id=…): описание, выбор сезона/озвучки/серии.
- * Сериалы играются прямо здесь (плеер внизу карточки, player.js) — отдельной страницы
+ * Сериалы играются прямо здесь (плеер рядом со списком серий, player.js) — отдельной страницы
  * просмотра для них нет; у фильмов остаётся /watch.html. */
 
-const filmTitleEl = document.getElementById('film-title');
+const filmTitleEl = document.getElementById('details-title');
 const detailsEl = document.getElementById('details');
 const detailsPoster = document.getElementById('details-poster');
 const detailsTitle = document.getElementById('details-title');
@@ -15,6 +15,7 @@ const detailsDirector = document.getElementById('details-director');
 const detailsActors = document.getElementById('details-actors');
 const detailsPlot = document.getElementById('details-plot');
 const detailsNote = document.getElementById('details-note');
+const detailsOriginal = document.getElementById('details-original');
 const sourcesEl = document.getElementById('sources');
 const sourcesTitle = document.getElementById('sources-title');
 const sourcesEmpty = document.getElementById('sources-empty');
@@ -280,7 +281,7 @@ function renderSources(items, id) {
 function syncWatchBtn() {
   if (!watchBtn) return;
   const hasItems = Array.isArray(lastSourceItems) && lastSourceItems.length;
-  watchBtn.hidden = !(hasItems && !wantPlay);
+  watchBtn.hidden = !(hasItems && !wantPlay && resumeBtn.hidden);
   watchBtn.textContent = t('watch');
 }
 
@@ -389,6 +390,10 @@ function renderEpisodeGrid(id) {
   for (let e = 1; e <= total; e++) list.push(e);
   // Серии видны всегда: пока список не готов — подсказка «загружаю…».
   sourcesEpisodesWrap.hidden = false;
+  const opened = new Set([...sourcesEpisodes.querySelectorAll('.episode-description[open]')].map(el => el.dataset.episode));
+  const focused = document.activeElement?.closest('.episode-card');
+  const focusedEpisode = focused && sourcesEpisodes.contains(focused) ? focused.dataset.episode : null;
+  const focusedDescription = !!document.activeElement?.matches('.episode-description > summary');
   sourcesEpisodes.innerHTML = '';
   showNote(episodesNote, list.length ? '' : t('episodesLoading'));
   if (!list.length) return;
@@ -399,18 +404,49 @@ function renderEpisodeGrid(id) {
     });
   }
   list.forEach((ep) => {
+    const metadata = typeof SeriesCatalog !== 'undefined'
+      ? SeriesCatalog.episodes(id, selectedSeason).find(e => e.episode === ep) : null;
+    const entry = typeof episodeHistoryEntry === 'function' ? episodeHistoryEntry(id, selectedSeason, ep) : null;
+    const name = metadata?.name || t('episodeLabel') + ' ' + ep;
+    const meta = [];
+    if (/^\d{4}-\d{2}-\d{2}$/.test(metadata?.air_date || '')) {
+      const date = new Date(metadata.air_date + 'T12:00:00');
+      if (!Number.isNaN(date.getTime())) meta.push(date.toLocaleDateString(filmText('ru-RU', 'en-US'), { day: 'numeric', month: 'short', year: 'numeric' }));
+    }
+    if (Number.isFinite(Number(metadata?.runtime)) && metadata.runtime > 0) meta.push(metadata.runtime + ' ' + t('minShort'));
+    const row = document.createElement('article');
+    row.className = 'episode-card';
+    row.dataset.episode = String(ep);
     const btn = document.createElement('button');
     btn.type = 'button';
-    btn.className = 'ep-btn' + (ep === selectedEpisode ? ' active' : '');
-    btn.textContent = t('episodeLabel') + ' ' + ep;
-    if (typeof SeriesCatalog !== 'undefined') {
-      const metadata = SeriesCatalog.episodes(id,selectedSeason).find(e => e.episode === ep);
-      if (metadata) btn.title = [metadata.name,metadata.air_date].filter(Boolean).join(' · ');
-    }
+    btn.className = 'ep-btn episode-main' + (ep === selectedEpisode ? ' active' : '');
+    btn.setAttribute('aria-label', [t('episodeLabel') + ' ' + ep, name, ...meta].join(' · '));
+    if (ep === selectedEpisode) btn.setAttribute('aria-current', 'true');
+    if (metadata) btn.title = [metadata.name, metadata.air_date].filter(Boolean).join(' · ');
+    const percent = entry && entry.duration > 0 && entry.position > 0
+      ? Math.min(100, Math.max(0, Math.round(entry.position / entry.duration * 100))) : 0;
+    btn.innerHTML = `<span class="episode-number">${ep}</span><span class="episode-content"><span class="episode-name">${escapeHtml(name)}</span>${meta.length ? `<span class="episode-meta">${escapeHtml(meta.join(' · '))}</span>` : ''}</span><svg class="episode-play" viewBox="0 0 28 28" fill="none" aria-hidden="true"><circle cx="14" cy="14" r="12" stroke="currentColor"/><path d="m11 8 9 6-9 6Z" fill="currentColor"/></svg>${percent ? `<span class="episode-progress"><span style="width:${percent}%"></span></span>` : ''}`;
     btn.disabled = !eps.includes(ep) && !(can > 0 && seasonReleaseSources(lastSourceItems, selectedSeason).length);
     btn.addEventListener('click', () => onPickEpisode(ep));
-    sourcesEpisodes.appendChild(btn);
+    row.appendChild(btn);
+    if (metadata?.overview) {
+      const description = document.createElement('details');
+      description.className = 'episode-description';
+      description.dataset.episode = String(ep);
+      description.open = opened.has(String(ep));
+      const summary = document.createElement('summary');
+      summary.textContent = filmText('Подробнее о серии', 'Episode details');
+      const plot = document.createElement('p');
+      plot.textContent = metadata.overview;
+      description.append(summary, plot);
+      row.appendChild(description);
+    }
+    sourcesEpisodes.appendChild(row);
   });
+  if (focusedEpisode) {
+    const selector = focusedDescription ? '.episode-description > summary' : '.ep-btn';
+    sourcesEpisodes.querySelector(`.episode-card[data-episode="${focusedEpisode}"] ${selector}`)?.focus({ preventScroll: true });
+  }
 }
 
 // Выбор серии: ищем раздачу с выбранной озвучкой (или «богатую») и уходим в просмотр.
@@ -515,9 +551,10 @@ async function playEpisode(id, season, ep) {
       ep: useEp,
       voice: voice || '',
     });
-    if (playerWrapEl && typeof playerWrapEl.scrollIntoView === 'function') {
-      playerWrapEl.scrollIntoView({ block: 'nearest' });
-    }
+    requestAnimationFrame(() => {
+      syncFilmLayout();
+      playerWrapEl?.scrollIntoView({ block: 'nearest' });
+    });
     return true;
   }
   openWatch(id, src, f, useSeason, useEp, voice);
@@ -543,6 +580,7 @@ async function watchNow() {
   syncWatchBtn();
   if (lastSourceId) await startWanted(lastSourceId);
 }
+watchBtn?.addEventListener('click', watchNow);
 
 // Открывает запрошенный из URL (или первый доступный) сезон/серию.
 // true — просмотр открыт (страница сменилась), false — открыть не удалось.
@@ -577,46 +615,63 @@ function updateResumeBtn(it) {
   if (!resumeBtn) return;
   const id = it && (it.imdb_id || it.id);
   const entry = id ? historyEntry(id) : null;
-  if (!VV.user || !entry || !entry.magnet || !id) {
-    resumeBtn.hidden = true;
-    return;
+  const saved = !!(VV.user && entry && entry.magnet && id);
+  const canResume = saved && entry.position >= 30 && !(entry.duration > 0 && entry.duration - entry.position < 30);
+  resumeBtn.hidden = !canResume;
+  const series = isSeriesKind(it && it.kind);
+  const restart = document.getElementById('startover-btn');
+  const note = document.getElementById('film-resume-note');
+  const progressWrap = document.getElementById('film-progress-wrap');
+  restart.hidden = !saved || !(entry.position > 0);
+  note.hidden = !canResume;
+  progressWrap.hidden = !saved || !(entry.duration > 0) || !(entry.position > 0);
+  if (canResume) {
+    resumeBtn.textContent = series && entry.season > 0 && entry.episode > 0
+      ? '▶ ' + t('resume') + ' · ' + t('seasonLabel') + ' ' + entry.season + ', ' + t('episodeLabel').toLowerCase() + ' ' + entry.episode
+      : '▶ ' + t('resumeFrom') + ' ' + fmtTime(entry.position);
+    note.textContent = filmText('Вы остановились на ', 'You stopped at ') + fmtTime(entry.position);
   }
-  // Позиция в «резюмируемом» диапазоне: не в самом начале и не у конца.
-  if (entry.position < 30 || (entry.duration > 0 && entry.duration - entry.position < 30)) {
-    resumeBtn.hidden = true;
-    return;
+  if (!progressWrap.hidden) {
+    const percent = Math.min(100, Math.max(0, Math.round(entry.position / entry.duration * 100)));
+    document.getElementById('film-progress-fill').style.width = percent + '%';
+    document.getElementById('film-progress').setAttribute('aria-valuenow', String(percent));
+    document.getElementById('film-progress-text').textContent = fmtTime(entry.position) + ' / ' + fmtTime(entry.duration);
   }
-  resumeBtn.hidden = false;
-  resumeBtn.textContent = '▶ ' + t('resumeFrom') + ' ' + fmtTime(entry.position);
-  resumeBtn.onclick = () => {
+  const playSaved = position => {
+    if (!saved) return;
     storeItem(currentItem);
-    // Сериал продолжаем на этой же странице (раздача и файл берутся из истории).
-    if (PP.available && isSeriesKind(currentItem && currentItem.kind)) {
-      PP.start({
-        id: id,
-        magnet: entry.magnet,
-        file: typeof entry.file === 'number' ? entry.file : -1,
-        season: entry.season || 0,
-        ep: entry.episode || 0,
-        pos: entry.position || 0,
-        voice: entry.voice || '',
-      });
-      return;
-    }
-    go(watchUrl(id, {
+    const options = {
+      id,
       magnet: entry.magnet,
       file: typeof entry.file === 'number' ? entry.file : -1,
       season: entry.season || 0,
       ep: entry.episode || 0,
-      pos: entry.position || 0,
+      pos: position,
       voice: entry.voice || '',
-    }));
+    };
+    if (typeof entry.track === 'number') options.track = entry.track;
+    if (typeof entry.subs === 'number') options.subs = entry.subs;
+    if (entry.quality) options.quality = entry.quality;
+    // Сериал продолжаем на этой же странице (раздача и файл берутся из истории).
+    if (PP.available && isSeriesKind(currentItem && currentItem.kind)) {
+      PP.start(options);
+      requestAnimationFrame(() => {
+        syncFilmLayout();
+        playerWrapEl?.scrollIntoView({ block: 'nearest' });
+      });
+      return;
+    }
+    go(watchUrl(id, options));
   };
+  resumeBtn.onclick = () => playSaved(entry.position || 0);
+  restart.onclick = () => playSaved(0);
+  syncWatchBtn();
 }
 
 // ---- Карточка фильма ----
 
 function showDetails(it) {
+  document.body.classList.toggle('film-series', isSeriesKind(it.kind));
   if (typeof FilmFeatures !== 'undefined') { FilmFeatures.render(it); FilmFeatures.explore(it); }
   detailsEl.hidden = false;
   const poster = posterSrc(it.poster_url || it.poster || '');
@@ -625,27 +680,106 @@ function showDetails(it) {
   else detailsPoster.removeAttribute('src');
 
   detailsTitle.textContent = dispTitle(it);
-  detailsRating.textContent = fmtRating(it);
+  detailsRating.replaceChildren();
+  for (const [label, value, cls] of [['IMDb', it.rating || it.rating_imdb, 'rating-imdb'], ['TMDB', it.rating_tmdb, 'rating-tmdb']]) {
+    const number = Number(value);
+    if (!Number.isFinite(number) || number <= 0 || number > 10) continue;
+    const badge = document.createElement('span');
+    badge.className = 'film-rating-badge ' + cls;
+    const name = document.createElement('span');
+    name.className = 'film-rating-label';
+    name.textContent = label;
+    const score = document.createElement('span');
+    score.className = 'film-rating-value';
+    score.textContent = number.toFixed(1);
+    badge.append(name, score);
+    detailsRating.appendChild(badge);
+  }
 
   const alt = dispTitleAlt(it);
   const year = it.year ? String(it.year) : '';
   const dur = fmtDuration(it.movie_length || it.duration);
-  detailsSubtitle.textContent = [alt, year, dur].filter(Boolean).join(' · ');
+  detailsOriginal.textContent = alt;
+  detailsOriginal.hidden = !alt || alt.trim() === dispTitle(it).trim();
+  const series = isSeriesKind(it.kind);
+  const length = series && it.seasons > 0 ? it.seasons + ' ' + filmText('сез.', 'seasons')
+    : dur + (series && dur ? filmText(' / серия', ' / episode') : '');
+  detailsSubtitle.textContent = [year, length].filter(Boolean).join(' · ');
 
   const countries = (it.countries || []).join(', ');
   const genres = (it.genres || []).map(dispGenre).join(', ');
-  detailsMeta.textContent = [countries, genres].filter(Boolean).join(' · ');
+  detailsMeta.textContent = genres;
+  const country = document.getElementById('details-country');
+  country.hidden = !countries;
+  country.textContent = filmText('Страна: ', 'Country: ') + countries;
 
   const director = dispDirector(it);
   detailsDirector.textContent = director ? t('directorLabel') + ': ' + director : '';
+  detailsDirector.hidden = !director;
   const actors = dispActors(it).join(', ');
   detailsActors.textContent = actors ? t('actorsLabel') + ': ' + actors : '';
+  detailsActors.hidden = !actors;
   if (typeof FilmFeatures !== 'undefined') FilmFeatures.renderCredits();
 
   detailsPlot.textContent = dispPlot(it) || t('noPlot');
   filmTitleEl.textContent = dispTitle(it);
   document.title = dispTitle(it) + ' — Кинотека';
+  detailsNote.hidden = true;
+  translateFilmPage();
+  syncFilmLayout();
 }
+
+function filmText(ru, en) { return lang === 'en' ? en : ru; }
+
+function translateFilmPage() {
+  document.getElementById('film-back').textContent = filmText('← Назад в каталог', '← Back to catalog');
+  document.getElementById('film-about-title').textContent = isSeriesKind(currentItem?.kind)
+    ? filmText('О сериале', 'About the series') : filmText('О фильме', 'About the film');
+  document.getElementById('film-options-title').textContent = filmText('Варианты просмотра', 'Playback options');
+  document.getElementById('startover-btn').textContent = filmText('С начала', 'Start over');
+  document.getElementById('film-progress').setAttribute('aria-label', filmText('Прогресс просмотра', 'Viewing progress'));
+  document.getElementById('film-watch-order').setAttribute('aria-label', filmText('Порядок просмотра', 'Watch order'));
+}
+
+function syncFilmLayout() {
+  const layout = document.getElementById('film-watch-layout');
+  const column = document.getElementById('film-playback-column');
+  const caption = document.getElementById('film-playing-title');
+  const status = document.getElementById('film-source-status');
+  if (!layout || !column) return;
+  const series = isSeriesKind(currentItem?.kind);
+  const visible = playerWrapEl && !playerWrapEl.hidden;
+  const trailer = playerWrapEl?.classList.contains('trailer-mode');
+  layout.hidden = !visible && !(series && !sourcesEl.hidden);
+  layout.classList.toggle('no-player', !visible);
+  column.hidden = !visible;
+  sourcesEl.classList.toggle('film-movie-sources', !series);
+  if (series) {
+    const title = filmText('Сезоны и серии', 'Seasons and episodes');
+    if (sourcesTitle.textContent !== title) sourcesTitle.textContent = title;
+  }
+  const state = PP.available ? PP.state() : {};
+  caption.hidden = !visible || (!trailer && !state.active);
+  caption.textContent = trailer ? filmText('Трейлер', 'Trailer')
+    : state.season > 0 && state.episode > 0
+      ? t('seasonLabel') + ' ' + state.season + ' · ' + t('episodeLabel') + ' ' + state.episode
+      : dispTitle(currentItem || {});
+  const message = !series && !sourcesEl.hidden
+    ? (sourcesEmpty.hidden ? sourcesTitle.textContent : sourcesEmpty.textContent) : '';
+  status.hidden = !message;
+  if (status.textContent !== message) status.textContent = message;
+}
+
+let filmLayoutFrame = 0;
+function scheduleFilmLayout() {
+  if (filmLayoutFrame) return;
+  filmLayoutFrame = requestAnimationFrame(() => { filmLayoutFrame = 0; syncFilmLayout(); });
+}
+const filmLayoutObserver = new MutationObserver(scheduleFilmLayout);
+filmLayoutObserver.observe(playerWrapEl, { attributes: true, attributeFilter: ['hidden', 'class'] });
+filmLayoutObserver.observe(sourcesEl, { attributes: true, attributeFilter: ['hidden'], childList: true, subtree: true });
+window.addEventListener('playbackstage', scheduleFilmLayout);
+window.addEventListener('playbackstop', scheduleFilmLayout);
 
 function hasFilmExtras(f) {
   return !!(f && (f.director || f.actors || f.movie_length || (f.countries && f.countries.length)));
@@ -739,6 +873,7 @@ function onPlayerState(st) {
     renderSeasonVoices(lastSourceItems, lastSourceId);
   }
   syncFilmUrl(st);
+  syncFilmLayout();
 }
 
 function syncFilmUrl(st) {
@@ -789,7 +924,7 @@ async function onReleaseEnd() {
 
 // Escape на карточке сериала — остановить просмотр (страница остаётся открытой).
 document.addEventListener('keydown', (e) => {
-  if (e.key !== 'Escape') return;
+  if (e.key !== 'Escape' || e.defaultPrevented || e.target?.closest?.('.profile-menu')) return;
   if (PP.playing()) {
     PP.stop();
     flashFilmNote(t('viewingClosed'));
@@ -839,6 +974,7 @@ async function initFilmPage() {
   restoreWatchSelection();
   if (!filmId) {
     filmTitleEl.textContent = t('empty');
+    detailsEl.hidden = false;
     if (filmNote) {
       filmNote.textContent = t('empty');
       filmNote.hidden = false;
@@ -866,7 +1002,8 @@ onLang(() => {
   else if (seriesUiReady) showSeriesSkeleton();
   syncWatchBtn();
   updateResumeBtn(currentItem);
-  if (detailsNote) detailsNote.textContent = t('noMagnet');
+  translateFilmPage();
+  syncFilmLayout();
   if (seriesUiReady) {
     renderSeasonChips(lastSourceItems, lastSourceId);
     renderSeasonVoices(lastSourceItems, lastSourceId);

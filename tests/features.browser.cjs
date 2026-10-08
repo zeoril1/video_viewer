@@ -209,7 +209,7 @@ const server = http.createServer(async (req, res) => {
     );
     await page.goto(base + "/film.html?id=tt200");
     await page
-      .getByRole("button", { name: "Подписаться на новые серии", exact: true })
+      .getByRole("button", { name: "Подписаться", exact: true })
       .click();
     await page
       .getByRole("button", { name: "✓ Подписка оформлена", exact: true })

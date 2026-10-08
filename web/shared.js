@@ -651,7 +651,7 @@ function watchUrl(id, opts) {
   if (typeof o.file === 'number' && o.file >= 0) p.set('file', String(o.file));
   if (o.season) p.set('season', String(o.season));
   if (o.ep) p.set('ep', String(o.ep));
-  if (o.pos) p.set('pos', String(Math.round(o.pos)));
+  if (typeof o.pos === 'number' && Number.isFinite(o.pos) && o.pos >= 0) p.set('pos', String(Math.round(o.pos)));
   if (o.track) p.set('track', String(o.track));
   if (o.subs >= 0) p.set('subs', String(o.subs));
   if (o.voice) p.set('voice', o.voice);

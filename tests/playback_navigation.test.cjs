@@ -35,6 +35,13 @@ test('watch navigation transfers parameters without exposing them in the URL', (
   assert.equal(c.playbackPageParams().get('voice'), 'voice');
 });
 
+test('starting a movie over retains an explicit zero position', () => {
+  const c = setup();
+  c.watchUrl('tt1', { magnet: 'magnet:saved', file: 0, pos: 0 });
+  c.location.pathname = '/watch.html';
+  assert.equal(c.playbackPageParams().get('pos'), '0');
+});
+
 test('room invitation URLs remain usable', () => {
   const c = setup('?id=tt1&room=invite');
   assert.equal(c.playbackPageParams().get('room'), 'invite');
@@ -153,10 +160,14 @@ test('canonical episodes can be selected before torrent metadata arrives', async
     seriesEpisodes: {}, filmSeasonEps: { tt1: { 1: 3 } },
     lastSourceId: 'tt1', lastSourceItems: [{ magnet: 'cached' }],
     sourcesEpisodesWrap: {}, episodesNote: {},
-    sourcesEpisodes: { appendChild: b => buttons.push(b) },
-    document: { createElement: () => ({ addEventListener() {} }) },
+    sourcesEpisodes: { appendChild() {}, querySelectorAll: () => [], contains: () => false },
+    document: { createElement: tag => {
+      const element = { dataset: {}, appendChild() {}, addEventListener() {}, setAttribute() {} };
+      if (tag === 'button') buttons.push(element);
+      return element;
+    } },
     seasonEpisodeCount: () => 3, seasonReleaseSources: items => items,
-    showNote() {}, t: s => s,
+    showNote() {}, t: s => s, filmText: ru => ru, escapeHtml: s => s,
     playEpisode: async (...args) => { played = args; },
   });
   vm.runInContext(film.slice(film.indexOf('function renderEpisodeGrid('), film.indexOf('async function playEpisode(')), c);
