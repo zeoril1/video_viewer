@@ -3,26 +3,27 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Фильм — Video Viewer</title>
-  <link rel="stylesheet" href="style.css?v=21" />
-  <link rel="stylesheet" href="tv.css?v=1" />
-  <link rel="stylesheet" href="features.css?v=3" />
-  <link rel="stylesheet" href="playback-extras.css?v=1">
-  <link rel="stylesheet" href="skip-segments.css?v=1">
+  <title>Фильм — Кинотека</title>
+  <script src="theme.js?v=1"></script>
+  <link rel="stylesheet" href="style.css?v=22" />
+  <link rel="stylesheet" href="tv.css?v=2" />
+  <link rel="stylesheet" href="features.css?v=4" />
+  <link rel="stylesheet" href="playback-extras.css?v=2">
+  <link rel="stylesheet" href="skip-segments.css?v=2">
+  <link rel="stylesheet" href="redesign.css?v=1" />
 </head>
 <body data-page="film">
   <header class="topbar">
-    <a class="logo" id="back-link" href="/">🎬 Video Viewer</a>
+    <a class="logo" id="back-link" href="/">Кинотека</a>
     <div class="lang-switch" role="group" aria-label="Язык / Language">
       <button id="lang-ru" class="lang-btn" data-lang="ru" type="button">RU</button>
       <button id="lang-en" class="lang-btn" data-lang="en" type="button">EN</button>
     </div>
     <div class="user-area" id="user-area" hidden>
-      <a id="admin-link" class="auth-btn" href="/admin.html" hidden>🛠 Админ</a>
       <span id="user-name" class="user-name"></span>
+      <a id="admin-link" class="auth-btn" href="/admin.html" hidden>Администрирование</a>
       <button id="auth-logout" class="auth-btn" type="button">Выйти</button>
     </div>
-    <a id="iptv-link" class="auth-btn" href="/iptv.html" title="IPTV">📺 IPTV</a>
     <a id="auth-open" class="auth-btn auth-btn-primary" href="/login.html" hidden>Войти</a>
   </header>
 
@@ -127,8 +128,8 @@
   </main>
 
   <script src="vendor/hls.min.js"></script>
-  <script src="shared.js?v=2"></script>
-  <script src="personal.js?v=1"></script>
+  <script src="shared.js?v=3"></script>
+  <script src="personal.js?v=2"></script>
   <script src="features.js?v=2"></script>
   <script src="series.js?v=2"></script>
   <script src="series-catalog.js?v=1"></script>
@@ -139,8 +140,8 @@
   <script src="skip-segments.js?v=2"></script>
   <script src="watch-order.js?v=1"></script>
   <script src="film-features.js?v=3"></script>
-  <script src="film.js?v=3"></script>
+  <script src="film.js?v=4"></script>
   <script src="recovery.js?v=1"></script>
-  <script src="tv.js?v=2"></script>
+  <script src="tv.js?v=3"></script>
 </body>
 </html>

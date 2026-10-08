@@ -9,7 +9,7 @@
 }
 .feature-nav {
   padding: 10px 24px;
-  border-bottom: 1px solid #303348;
+  border-bottom: 1px solid var(--border);
 }
 .feature-page {
   max-width: 1250px;
@@ -24,10 +24,10 @@
 .feature-form input,
 .feature-form select {
   padding: 10px;
-  border: 1px solid #43465e;
+  border: 1px solid var(--border-strong);
   border-radius: 8px;
-  background: #181b2b;
-  color: #eee;
+  background: var(--input-bg);
+  color: var(--text);
   max-width: 100%;
 }
 .feature-form {
@@ -42,8 +42,8 @@
 }
 .feature-message {
   padding: 12px;
-  border-left: 3px solid #9084ff;
-  color: #ddd;
+  border-left: 3px solid var(--info);
+  color: var(--text);
 }
 .feature-grid {
   display: grid;
@@ -54,10 +54,10 @@
   display: block;
   color: inherit;
   text-decoration: none;
-  border: 1px solid #303348;
+  border: 1px solid var(--border);
   border-radius: 12px;
   overflow: hidden;
-  background: #1b1d2c;
+  background: var(--panel);
 }
 .feature-card img {
   width: 100%;
@@ -70,12 +70,12 @@
   padding: 8px 12px;
 }
 .feature-card small {
-  color: #b8b9c8;
+  color: var(--muted);
 }
 .feature-card:focus-visible,
 .feature-nav a:focus-visible,
 button:focus-visible {
-  outline: 3px solid #a99bff;
+  outline: 3px solid var(--focus);
   outline-offset: 3px;
 }
 .feature-card button {
@@ -88,34 +88,34 @@ button:focus-visible {
 }
 .calendar-day {
   min-height: 120px;
-  background: #1b1d2c;
-  border: 1px solid #34374b;
+  background: var(--panel);
+  border: 1px solid var(--border);
   padding: 8px;
   border-radius: 8px;
 }
 .calendar-day.today {
-  border-color: #a99bff;
+  border-color: var(--focus);
 }
 .calendar-event {
   display: block;
   margin-top: 8px;
   padding: 6px;
-  background: #2b2e47;
-  color: #fff;
+  background: var(--panel-2);
+  color: var(--text);
   text-decoration: none;
   font-size: 12px;
   border-radius: 4px;
   overflow-wrap: anywhere;
 }
 .calendar-event.series {
-  border-left: 3px solid #5fcfae;
+  border-left: 3px solid var(--success);
 }
 .calendar-event.movie {
-  border-left: 3px solid #be91ff;
+  border-left: 3px solid var(--info);
 }
 .calendar-event small {
   display: block;
-  color: #c8c9d4;
+  color: var(--muted);
 }
 .calendar-empty {
   background: transparent;
@@ -143,10 +143,10 @@ button:focus-visible {
 }
 #film-personal input {
   padding: 8px;
-  border: 1px solid #43465e;
+  border: 1px solid var(--border-strong);
   border-radius: 8px;
-  background: #181b2b;
-  color: #eee;
+  background: var(--input-bg);
+  color: var(--text);
 }
 #manual-sources > summary {
   cursor: pointer;
@@ -200,14 +200,14 @@ button:focus-visible {
 .epg-table th,
 .epg-table td {
   padding: 12px;
-  border: 1px solid #34374b;
+  border: 1px solid var(--border);
   vertical-align: top;
   text-align: left;
 }
 .epg-table th {
   position: sticky;
   top: 0;
-  background: #242638;
+  background: var(--panel-2);
 }
 .epg-program {
   display: block;
@@ -217,24 +217,26 @@ button:focus-visible {
   white-space: normal;
 }
 .feature-actions .active {
-  background: #6353b8;
+  background: var(--accent);
+  color: var(--on-accent);
 }
 .feature-section details {
   padding: 12px;
-  border: 1px solid #34374b;
+  border: 1px solid var(--border);
   border-radius: 8px;
 }
 .recovery-offer {
   margin: 12px 0;
   padding: 12px;
-  border: 1px solid #ad9863;
+  border: 1px solid var(--warning-border);
   border-radius: 8px;
+  background: var(--warning-bg);
 }
 .feature-page button:disabled {
   opacity: 0.5;
 }
 .feature-help {
-  color: #b9bbcb;
+  color: var(--muted);
   font-size: 14px;
 }
 .feature-hidden {
@@ -269,12 +271,12 @@ button:focus-visible {
   }
 }
 .watch-order-list { padding-left: 2rem; max-height: 32rem; overflow: auto; }
-.watch-order-list li { padding: .7rem .8rem; border-bottom: 1px solid #ffffff18; }
+.watch-order-list li { padding: .7rem .8rem; border-bottom: 1px solid var(--border-subtle); }
 .watch-order-list small { display: block; opacity: .7; margin-top: .3rem; }
 .watch-order-list .auth-btn { margin-top: .5rem; }
-.watch-order-current { background: #659dff20; border-radius: .5rem; }
+.watch-order-current { background: var(--info-bg); border-radius: .5rem; }
 .watch-order-heading { font-weight: 600; }
 #film-watch-order details { margin: 1rem 0; }
 #film-watch-order summary { cursor: pointer; }
-#film-watch-order a { overflow-wrap: anywhere; color: #ceddff; }
-#film-watch-order a:focus-visible { outline: 2px solid #ceddff; outline-offset: 3px; }
+#film-watch-order a { overflow-wrap: anywhere; color: var(--link); }
+#film-watch-order a:focus-visible { outline: 2px solid var(--link); outline-offset: 3px; }

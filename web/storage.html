@@ -3,21 +3,23 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Файлы и загрузки — Video Viewer</title>
-  <link rel="stylesheet" href="style.css?v=21" />
-  <link rel="stylesheet" href="storage.css?v=1" />
+  <title>Файлы и загрузки — Кинотека</title>
+  <script src="theme.js?v=1"></script>
+  <link rel="stylesheet" href="style.css?v=22" />
+  <link rel="stylesheet" href="storage.css?v=2" />
+  <link rel="stylesheet" href="redesign.css?v=1" />
 </head>
 <body>
   <header class="topbar">
-    <h1 class="logo">Файлы и загрузки</h1>
+    <a class="logo" href="/">Кинотека</a>
     <div class="user-area">
       <span id="storage-user" class="user-name"></span>
       <a class="auth-btn" href="/admin.html">Администрирование</a>
-      <a class="auth-btn" href="/">← Каталог</a>
       <button id="storage-logout" class="auth-btn" type="button">Выйти</button>
     </div>
   </header>
   <main class="storage-main">
+    <h1 class="page-heading">Файлы и загрузки</h1>
     <p id="storage-deny" class="empty" hidden>Нет доступа. Страница доступна только администратору.</p>
     <div id="storage-content" hidden>
       <div class="storage-toolbar">

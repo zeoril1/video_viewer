@@ -71,6 +71,7 @@ async function fetchPage(page, append) {
     catalogGen++;
     loadingMore = false;
     allLoaded = false;
+    showCatalogLoading();
   }
   const gen = catalogGen;
 
@@ -122,9 +123,21 @@ async function fetchPage(page, append) {
   } finally {
     if (gen === catalogGen) {
       loadingMore = false;
+      grid.setAttribute('aria-busy', 'false');
       updateSentinel();
     }
   }
+}
+
+function showCatalogLoading() {
+  sentinel.hidden = true;
+  grid.setAttribute('aria-busy', 'true');
+  grid.innerHTML = Array.from({ length: 6 }, () =>
+    '<div class="card catalog-skeleton" aria-hidden="true"><div class="thumb"></div>'
+    + '<div class="meta"><div class="skeleton-line"></div><div class="skeleton-line short"></div></div></div>'
+  ).join('');
+  emptyEl.hidden = false;
+  emptyEl.textContent = t('catalogLoading');
 }
 
 function render() {
@@ -203,6 +216,14 @@ function makeCard(it) {
     <div class="meta">${cardMetaHtml(it)}</div>
   `;
   markPosterLoaded(card);
+  const status = Personal.get('watched', it.imdb_id || it.id) ? t('watched')
+    : watchHistory.some(e => e.film_id === (it.imdb_id || it.id)) ? t('watching') : '';
+  if (status) {
+    const badge = document.createElement('span');
+    badge.className = 'catalog-status';
+    badge.textContent = status;
+    card.querySelector('.thumb').append(badge);
+  }
 
   card.addEventListener('click', () => storeItem(it));
 
@@ -237,6 +258,7 @@ function initInfiniteScroll() {
 
 function loadMore() {
   if (loadingMore || allLoaded) return;
+  if (grid.getAttribute('aria-busy') === 'true') return;
   if (currentPage >= totalPages) {
     allLoaded = true;
     updateSentinel();
@@ -246,41 +268,24 @@ function loadMore() {
   fetchPage(currentPage + 1, true);
 }
 
-// Тело карточки: название+рейтинг, альт. название·год·длительность, страна·жанры,
-// режиссёр, актёры + бейджи; пустые строки не выводятся.
+// Compact catalogue metadata; full credits remain on the film page.
 function cardMetaHtml(it) {
   const rating = fmtRating(it);
   const head =
     '<div class="card-head">' +
     '<h3 class="title">' + escapeHtml(dispTitle(it)) + '</h3>' +
-    (rating ? '<span class="card-rating">' + rating + '</span>' : '') +
     '</div>';
-
-  const alt = dispTitleAlt(it);
   const year = it.year ? String(it.year) : '';
   const dur = fmtDuration(it.movie_length || it.duration);
-  const line2 = [alt, year, dur].filter(Boolean).join(' · ');
-
-  const countries = (it.countries || []).join(', ');
   const genres = (it.genres || []).map(dispGenre).join(', ');
-  const line3 = [countries, genres].filter(Boolean).join(' · ');
-
-  const director = dispDirector(it);
-  const line4 = director ? t('directorLabel') + ': ' + escapeHtml(director) : '';
-  const actors = dispActors(it).join(', ');
-  const line5 = actors ? t('actorsLabel') + ': ' + escapeHtml(actors) : '';
-
-  const tags = it.seasons
-    ? `<span class="badge">${it.seasons} ${t('seasonsOf')}</span>`
-    : '';
-
   return (
     head +
-    (line2 ? `<div class="card-line">${escapeHtml(line2)}</div>` : '') +
-    (line3 ? `<div class="card-line">${escapeHtml(line3)}</div>` : '') +
-    (line4 ? `<div class="card-line">${line4}</div>` : '') +
-    (line5 ? `<div class="card-line">${line5}</div>` : '') +
-    (tags ? `<div class="tags">${tags}</div>` : '')
+    '<div class="card-summary">'
+    + (rating ? `<span class="card-rating">${escapeHtml(rating)}</span>` : '')
+    + (year ? `<span class="card-year">${escapeHtml(year)}</span>` : '')
+    + (dur ? `<span class="card-runtime">${escapeHtml(dur)}</span>` : '')
+    + '</div>'
+    + (genres ? `<div class="card-line">${escapeHtml(genres)}</div>` : '')
   );
 }
 
@@ -346,7 +351,7 @@ function renderContinue() {
   continueTitle.textContent = t('continueWatching');
   continueList.innerHTML = '';
   watchHistory.forEach((e) => {
-    const card = document.createElement('div');
+    const card = document.createElement('article');
     card.className = 'continue-card';
     const poster = posterImgHtml(e.poster_url);
     const sub = isSeriesKind(e.kind) && e.season > 0
@@ -354,25 +359,47 @@ function renderContinue() {
       : '';
     const pct = e.duration > 0 ? Math.min(100, Math.max(0, Math.round((e.position / e.duration) * 100))) : 0;
     card.innerHTML = `
+      <a class="continue-link" href="${escapeHtml(resumeUrl(e))}">
       <div class="thumb">${poster}</div>
       <div class="continue-meta">
+        <div class="continue-head">
         <div class="continue-name">${escapeHtml(dispTitle(e))}</div>
+        <span class="continue-action"><svg viewBox="0 0 28 28" aria-hidden="true"><circle cx="14" cy="14" r="14" fill="currentColor"/><path d="m11 8 9 6-9 6Z" fill="var(--on-accent)"/></svg>${t('resume')}</span>
+        </div>
         ${sub ? `<div class="continue-sub">${escapeHtml(sub)}</div>` : ''}
         <div class="continue-progress"><div class="continue-bar" style="width:${pct}%"></div></div>
         <div class="continue-time">${fmtTime(e.position)} / ${fmtTime(e.duration)}</div>
       </div>
-      <button class="continue-remove" type="button" title="${t('removeFromHistory')}">✕</button>
+      </a>
+      <button class="continue-remove" type="button" title="${t('removeFromHistory')}" aria-label="${escapeHtml(t('removeFromHistory') + ': ' + dispTitle(e))}">✕</button>
     `;
     markPosterLoaded(card);
-    card.addEventListener('click', (ev) => {
-      if (ev.target.closest('.continue-remove')) {
-        removeHistoryEntry(e.film_id);
-        return;
-      }
+    card.querySelector('.continue-remove').addEventListener('click', () => removeHistoryEntry(e.film_id));
+    card.querySelector('.continue-link').addEventListener('click', (ev) => {
+      if (ev.ctrlKey || ev.metaKey || ev.shiftKey || ev.altKey) return;
+      ev.preventDefault();
       resumeItem(e);
     });
     continueList.appendChild(card);
   });
+}
+
+function resumeUrl(e) {
+  const p = new URLSearchParams({ id: e.film_id });
+  if (e.magnet) p.set('magnet', e.magnet);
+  if (typeof e.file === 'number' && e.file >= 0) p.set('file', String(e.file));
+  if (typeof e.track === 'number') p.set('track', String(e.track));
+  if (e.season) p.set('season', String(e.season));
+  if (e.episode) p.set('ep', String(e.episode));
+  if (e.voice) p.set('voice', e.voice);
+  if (e.position > 0) p.set('pos', String(Math.round(e.position)));
+  if (e.quality) p.set('quality', e.quality);
+  if (typeof e.subs === 'number') p.set('subs', String(e.subs));
+  if (isSeriesKind(e.kind)) {
+    p.set('autoplay', '1');
+    return '/film.html?' + p.toString();
+  }
+  return '/watch.html?' + p.toString();
 }
 
 // Продолжение просмотра: раздача, серия и позиция берутся из записи истории.
@@ -384,23 +411,8 @@ function resumeItem(e) {
     imdb_id: e.film_id, id: e.film_id, title: e.title, title_ru: e.title_ru,
     kind: e.kind, year: e.year, poster_url: e.poster_url,
   });
-  const file = typeof e.file === 'number' ? e.file : -1;
-  const pos = e.position || 0;
-  if (isSeriesKind(e.kind)) {
-    const p = new URLSearchParams({ id: e.film_id });
-    if (e.season) p.set('season', String(e.season));
-    if (e.episode) p.set('ep', String(e.episode));
-    if (e.voice) p.set('voice', e.voice);
-    p.set('magnet', e.magnet);
-    if (file >= 0) p.set('file', String(file));
-    if (pos) p.set('pos', String(Math.round(pos)));
-    p.set('autoplay', '1');
-    go('/film.html?' + p.toString());
-    return;
-  }
-  go(watchUrl(e.film_id, {
-    magnet: e.magnet, file: file, season: e.season || 0, ep: e.episode || 0, pos: pos, voice: e.voice || '',
-  }));
+  const url = new URL(resumeUrl(e), location.href);
+  go(playbackPageUrl(url.pathname, url.searchParams));
 }
 
 // ---- Разделы, жанры, сортировка ----
@@ -451,6 +463,7 @@ function renderSections(kinds) {
     b.type = 'button';
     b.className = 'section-btn' + (active ? ' active' : '');
     b.dataset.section = key;
+    b.setAttribute('aria-pressed', String(active));
     b.innerHTML = `${escapeHtml(label)} <span class="count">${count}</span>`;
     return b;
   };
@@ -479,6 +492,27 @@ function renderSections(kinds) {
     wrap.appendChild(btn);
     const drop = document.createElement('div');
     drop.className = 'sec-drop';
+    drop.id = 'collection-menu-' + s.key;
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'collection-toggle';
+    toggle.textContent = '⌄';
+    toggle.setAttribute('aria-label', (lang === 'ru' ? 'Подборки: ' : 'Collections: ') + label);
+    toggle.setAttribute('aria-controls', drop.id);
+    toggle.setAttribute('aria-expanded', 'false');
+    toggle.addEventListener('click', () => {
+      const open = !wrap.classList.contains('menu-open');
+      closeCollections();
+      wrap.classList.toggle('menu-open', open);
+      toggle.setAttribute('aria-expanded', String(open));
+    });
+    wrap.addEventListener('keydown', ev => {
+      if (ev.key === 'Escape') {
+        closeCollections();
+        toggle.focus();
+      }
+    });
+    wrap.appendChild(toggle);
     const ul = document.createElement('ul');
     for (const o of defs) {
       const li = document.createElement('li');
@@ -495,6 +529,16 @@ function renderSections(kinds) {
     sectionsEl.appendChild(wrap);
   }
 }
+
+function closeCollections() {
+  sectionsEl.querySelectorAll('.menu-open').forEach(menu => {
+    menu.classList.remove('menu-open');
+    menu.querySelector('.collection-toggle').setAttribute('aria-expanded', 'false');
+  });
+}
+document.addEventListener('click', ev => {
+  if (!ev.target.closest('.sec-menu')) closeCollections();
+});
 
 function populateGenres(genres) {
   genreEl.innerHTML = '';
@@ -604,3 +648,26 @@ if (DEBUG) showDebug();
 
 window.addEventListener('personalchange', () => render());
 document.getElementById('hide-watched')?.addEventListener('change', () => render());
+
+const filterToggle = document.getElementById('filter-toggle');
+filterToggle?.addEventListener('click', () => {
+  const open = document.getElementById('catalog-filters').classList.toggle('filters-open');
+  filterToggle.setAttribute('aria-expanded', String(open));
+});
+document.getElementById('catalog-reset')?.addEventListener('click', () => {
+  clearTimeout(searchTimer);
+  searchEl.value = '';
+  currentSection = 'all';
+  currentCollection = '';
+  currentGenre = '';
+  currentSort = 'year';
+  onlyReleased = true;
+  releasedEl.checked = true;
+  document.getElementById('hide-watched').checked = false;
+  genreEl.value = '';
+  sortEl.value = 'year';
+  renderSections(metaKinds);
+  renderContinue();
+  fetchPage(1);
+  refreshMeta();
+});

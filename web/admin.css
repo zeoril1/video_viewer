@@ -14,7 +14,7 @@
 
 .admin-tabs .section-btn.active {
   border-color: var(--accent);
-  color: var(--accent);
+  color: var(--on-accent);
 }
 
 .admin-tables {
@@ -43,7 +43,7 @@
 
 .admin-table-wrap {
   overflow-x: auto;
-  border: 1px solid #222736;
+  border: 1px solid var(--border-subtle);
   border-radius: var(--radius);
   background: var(--panel);
 }
@@ -59,12 +59,12 @@
   position: sticky;
   top: 0;
   z-index: 1;
-  background: #161a24;
+  background: var(--panel-2);
   color: var(--muted);
   font-weight: 600;
   text-align: left;
   padding: 6px 4px;
-  border-bottom: 1px solid #2a3040;
+  border-bottom: 1px solid var(--border);
   font-size: 11px;
   line-height: 1.25;
   overflow-wrap: anywhere;
@@ -72,7 +72,7 @@
 
 .admin-table td {
   padding: 4px 3px;
-  border-bottom: 1px solid #1b202c;
+  border-bottom: 1px solid var(--border-subtle);
   vertical-align: top;
 }
 
@@ -82,8 +82,8 @@
   min-width: 0;
   max-width: 100%;
   box-sizing: border-box;
-  background: #0f1117;
-  border: 1px solid #2a3040;
+  background: var(--bg);
+  border: 1px solid var(--border);
   border-radius: 6px;
   color: var(--text);
   font-size: 11px;
@@ -122,7 +122,7 @@
 .btn-save,
 .btn-refresh {
   border-radius: 6px;
-  border: 1px solid #2a3040;
+  border: 1px solid var(--border);
   background: var(--panel-2);
   color: var(--text);
   font-size: 12px;
@@ -131,8 +131,8 @@
 }
 
 .btn-save:hover {
-  border-color: #22c55e;
-  color: #22c55e;
+  border-color: var(--success);
+  color: var(--success);
 }
 
 .btn-refresh:hover {
@@ -145,7 +145,7 @@
   width: 100%;
   display: block;
   border-radius: 6px;
-  border: 1px solid #2a3040;
+  border: 1px solid var(--border);
   background: var(--panel-2);
   color: var(--text);
   font-size: 12px;
@@ -154,8 +154,8 @@
 }
 
 .btn-unmark:hover {
-  border-color: #ef4444;
-  color: #ef4444;
+  border-color: var(--error);
+  color: var(--error);
 }
 
 .btn-refresh:disabled {
@@ -170,16 +170,16 @@
 }
 
 tr.flash-ok {
-  background: rgba(34, 197, 94, 0.12);
+  background: var(--success-bg);
 }
 
 tr.flash-err {
-  background: rgba(239, 68, 68, 0.14);
+  background: var(--error-bg);
 }
 
 /* ---- Лог ---- */
 .admin-log-wrap {
-  border: 1px solid #222736;
+  border: 1px solid var(--border-subtle);
   border-radius: var(--radius);
   background: var(--panel);
   padding: 10px;
@@ -196,7 +196,7 @@ tr.flash-err {
   font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
   font-size: 12px;
   line-height: 1.5;
-  background: #0b0e14;
+  background: var(--log-bg);
   border-radius: 8px;
   padding: 8px;
 }
@@ -211,9 +211,9 @@ tr.flash-err {
 }
 
 .log-ok {
-  color: #22c55e;
+  color: var(--success);
 }
 
 .log-error {
-  color: #ef4444;
+  color: var(--error);
 }

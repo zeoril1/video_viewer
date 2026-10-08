@@ -6,7 +6,7 @@
    ========================================================================== */
 
 body.tv {
-  background: #0a0e13;
+  background: var(--bg);
   overflow-x: hidden;
 }
 
@@ -33,7 +33,7 @@ body.tv .continue-card {
 
 /* Хорошо заметный фокусный контур для пульта */
 body.tv :focus {
-  outline: 3px solid #3ec2ff !important;
+  outline: 3px solid var(--focus) !important;
   outline-offset: 2px;
   border-radius: 8px;
 }
@@ -42,7 +42,7 @@ body.tv :focus {
 body.tv .card:focus,
 body.tv .continue-card:focus {
   outline: none !important;
-  box-shadow: 0 0 0 4px #0a0e13, 0 0 0 7px #3ec2ff !important;
+  box-shadow: 0 0 0 4px var(--bg), 0 0 0 7px var(--focus) !important;
   transform: scale(1.04);
   z-index: 3;
   position: relative;

@@ -34,7 +34,7 @@
   // Кликабельные/фокусируемые элементы.
   var SEL = [
     'a[href]', 'button', 'select', 'textarea', 'input:not([type=hidden])',
-    '.card', '.continue-card', '.chip', '.ep-btn', '.sec-drop-item',
+    '.card', '.continue-link', '.chip', '.ep-btn', '.sec-drop-item',
     '.resume-btn', '.watch-btn', '.q-btn',
     '[role="button"]', '[tabindex]:not([tabindex="-1"])'
   ].join(',');
@@ -45,6 +45,8 @@
 
   // Самый верхний (последний в DOM среди видимых) открытый модал.
   function topModal() {
+    var profile = document.querySelector('.profile-menu[open]');
+    if (profile) return profile;
     var found = null;
     for (var i = 0; i < MODALS.length; i++) {
       var m = document.querySelector(MODALS[i]);
@@ -141,7 +143,7 @@
     if (!el) return false;
     var tag = (el.tagName || '').toUpperCase();
     if (tag === 'BUTTON' || tag === 'A' || tag === 'INPUT' ||
-        tag === 'SELECT' || tag === 'TEXTAREA' || tag === 'VIDEO' || tag === 'AUDIO') return true;
+        tag === 'SELECT' || tag === 'TEXTAREA' || tag === 'VIDEO' || tag === 'AUDIO' || tag === 'SUMMARY') return true;
     var role = el.getAttribute('role');
     return role === 'button' || role === 'tab';
   }
@@ -177,7 +179,7 @@
       }
       var card = document.querySelector('.grid .card');
       if (card && isVisible(card)) return card;
-      var cont = document.querySelector('.continue .continue-card');
+      var cont = document.querySelector('.continue .continue-link');
       if (cont && isVisible(cont)) return cont;
       var any = document.querySelector('.card, .section-btn, .chip, .ep-btn, .resume-btn, .watch-btn');
       return (any && isVisible(any)) ? any : null;
@@ -186,6 +188,7 @@
       var ab = $('#iptv-f-name', container);
       if (ab) return ab;
     }
+    if (container.classList.contains('profile-menu')) return $('.profile-links a', container);
     var b = $('button, .close', container);
     return (b && isVisible(b)) ? b : null;
   }
@@ -247,6 +250,11 @@
     if (!dir && k !== 'Enter' && k !== 'Space') return;
     // В текстовых полях (поиск, логин) стрелки/Enter отдаём браузеру/IME.
     if (isTyping(t)) return;
+    if (topModal() && dir) {
+      e.preventDefault(); e.stopPropagation();
+      moveFocus(dir, t);
+      return;
+    }
 
     var pOpen = playerOpen();
 
@@ -294,7 +302,7 @@
       if (tvFocus && isVisible(tvFocus)) {
         focusEl(tvFocus);
       } else {
-        var c = document.querySelector('.grid .card, .continue .continue-card');
+        var c = document.querySelector('.grid .card, .continue .continue-link');
         if (c && isVisible(c)) focusEl(c);
       }
     }
@@ -312,7 +320,7 @@
     document.addEventListener('keydown', onKeyDown, true);
     try {
       var obs = new MutationObserver(onDomChange);
-      obs.observe(document.body, { subtree: true, attributes: true, attributeFilter: ['hidden', 'class'] });
+      obs.observe(document.body, { subtree: true, attributes: true, attributeFilter: ['hidden', 'class', 'open'] });
     } catch (e) { /* очень старый WebView — работаем без автофокуса модалок */ }
     if (window.console) console.log('[tv] TV-режим включён');
   }
@@ -320,6 +328,13 @@
   // ---- Мост для нативной обёртки: кнопка Back ----------------------------
   function handleBack() {
     try {
+      var profile = document.querySelector('.profile-menu[open]');
+      if (profile) {
+        profile.open = false;
+        var summary = $('summary', profile);
+        if (summary) focusEl(summary);
+        return 'consumed';
+      }
       var skipPanel = document.getElementById('skip-segments-panel');
       if (skipPanel && !skipPanel.hidden) {
         var skipClose = document.getElementById('skip-segments-close');

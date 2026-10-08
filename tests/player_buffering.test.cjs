@@ -69,6 +69,7 @@ function playbackHarness() {
     on(event, handler) { this.handlers.set(event, handler); }
     loadSource(url) { this.url = url; }
     attachMedia() {}
+    startLoad(position) { this.restartPosition = position; }
     destroy() { this.destroyed = true; }
   }
   const player = { currentTime: 0, readyState: 4, paused: false, buffered: { length: 0 },
@@ -91,6 +92,25 @@ function playbackHarness() {
 }
 
 const missingFragment = { fatal: true, type: 'networkError', details: 'fragLoadError', response: { code: 404 } };
+
+test('fragment timeouts retry the same stream at its relative position, with a bounded budget', () => {
+  const f = playbackHarness(), active = f.instances[0];
+  const timeout = { fatal: true, type: 'networkError', details: 'fragLoadTimeOut' };
+  f.context.player.currentTime = 13;
+  active.handlers.get('error')(null, { ...timeout, fatal: false });
+  assert.equal(f.context.streamRestarts, 0);
+  for (let retry = 0; retry < 3; retry++) {
+    active.handlers.get('error')(null, timeout);
+    assert.equal(active.restartPosition, 13);
+    assert.equal(f.context.streamRestarts, retry + 1);
+    assert.equal(f.instances.length, 1);
+    assert.equal(active.destroyed, undefined);
+    assert.equal(f.dispatched.length, 0);
+  }
+  active.handlers.get('error')(null, timeout);
+  assert.equal(active.destroyed, true);
+  assert.deepEqual(f.dispatched, ['playbackfailure']);
+});
 
 test('repeated missing fragments stop after three recoveries even when every manifest loads', () => {
   const f = playbackHarness();

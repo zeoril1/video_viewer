@@ -644,7 +644,7 @@ function showDetails(it) {
 
   detailsPlot.textContent = dispPlot(it) || t('noPlot');
   filmTitleEl.textContent = dispTitle(it);
-  document.title = dispTitle(it) + ' — Video Viewer';
+  document.title = dispTitle(it) + ' — Кинотека';
 }
 
 function hasFilmExtras(f) {

@@ -151,25 +151,6 @@ const Personal = (() => {
 })();
 
 (() => {
-  const bar = document.querySelector(".topbar");
-  if (bar) {
-    const nav = document.createElement("nav");
-    nav.className = "feature-nav";
-    nav.setAttribute("aria-label", "Медиатека");
-    [
-      ["/library.html", "Моё"],
-      ["/calendar.html", "Календарь"],
-      ["/discover.html", "Что посмотреть"],
-      ["/device.html?mode=approve", "Вход на ТВ"],
-    ].forEach(([url, title]) => {
-      const a = document.createElement("a");
-      a.href = url;
-      a.className = "auth-btn";
-      a.textContent = title;
-      nav.append(a);
-    });
-    bar.after(nav);
-  }
   if (typeof onAuth === "function")
     onAuth(() => Personal.load().catch(() => {}));
 })();

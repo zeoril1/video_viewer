@@ -112,7 +112,7 @@ const server = http.createServer(async (req, res) => {
       items: [series],
       cast: [{ id: 10, name: "Актёр" }],
       directors: [{ id: 20, name: "Режиссёр" }],
-      trailer: "https://www.youtube.com/watch?v=test",
+      trailer: "https://www.youtube.com/watch?v=abcdefghijk",
     });
   if (u.pathname.endsWith("/sources"))
     return send({ items: [], status: "ready", seasons: [] });
@@ -192,10 +192,8 @@ const server = http.createServer(async (req, res) => {
     await page
       .getByRole("button", { name: "✓ В списке", exact: true })
       .waitFor();
-    await page
-      .getByText("Трейлер, похожие фильмы и участники", { exact: true })
-      .click();
-    await page.getByRole("link", { name: "▶ Смотреть трейлер" }).waitFor();
+    await page.locator("#film-explore .feature-carousel").waitFor();
+    await page.locator("#trailer-toggle").waitFor();
     assert.ok(
       await page.getByRole("link", { name: "Актёр", exact: true }).count(),
     );
@@ -292,6 +290,7 @@ const server = http.createServer(async (req, res) => {
     });
     await page.goto(base + "/library.html");
     await page.locator("#feature-content .feature-card").waitFor();
+    await page.locator(".profile-toggle").click();
     await page.getByRole("button", { name: "Выйти", exact: true }).click();
     await page.waitForFunction(
       () => document.querySelector("#feature-content").children.length === 0,

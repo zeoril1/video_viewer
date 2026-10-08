@@ -277,7 +277,8 @@ const PP = (() => {
       levelLoadingMaxRetry: 4,
       levelLoadingRetryDelay: 2000,
       levelLoadingMaxRetryTimeout: 60000,
-      fragLoadingTimeOut: 20000,
+      // Large source-quality fragments can take more than 20s on a slow link.
+      fragLoadingTimeOut: 60000,
       fragLoadingMaxRetry: 6,
       fragLoadingRetryDelay: 1500,
       fragLoadingMaxRetryTimeout: 90000,
@@ -398,19 +399,33 @@ const PP = (() => {
         const stats = (d.part || d.frag).stats || {};
         const loading = stats.loading || {};
         const milliseconds = Math.max(0, (loading.end || 0) - (loading.start || 0));
+        const firstByteMs = Math.max(0, (loading.first || 0) - (loading.start || 0));
         dbg('hls: фрагмент ' + d.frag.sn + ' @ ' + Math.round(d.frag.start) + 's'
           + ' | ' + (stats.total || 0) + ' bytes / ' + Math.round(milliseconds) + 'ms'
+          + ' | первый байт=' + Math.round(firstByteMs) + 'ms'
           + ' | buffer=' + bufferedAhead().toFixed(1) + 's');
       });
       hls.on(Hls.Events.ERROR, (_evt, data) => {
         // Игнорируем ошибки от уже заменённого потока.
         if (hlsPlayer !== hls) return;
         const resp = data && data.response ? ' (http ' + data.response.code + ')' : '';
-        dbg('hls: ERROR type=' + (data && data.type) + ' details=' + (data && data.details) + resp);
+        dbg('hls: ERROR type=' + (data && data.type) + ' details=' + (data && data.details)
+          + ' fatal=' + !!(data && data.fatal) + resp);
         // Фатальная ошибка: на сырой поток не фолбэчим — там AC3/DTS, звука не будет.
         // Ошибку показываем, НО плеер не скрываем: селекторы дорожек/качества остаются
         // доступными — можно выбрать другую дорожку или вариант с H.264.
         if (data && data.fatal) {
+          // Retry the existing server stream after hls.js exhausts its request
+          // retries. Do not discard downloaded media or change the source.
+          if (data.type === 'networkError' && data.details === 'fragLoadTimeOut'
+              && currentPlay && streamRestarts < maxStreamRestarts) {
+            streamRestarts++;
+            dbg('hls: таймаут доставки с сервера — повтор загрузки (попытка '
+              + streamRestarts + '/' + maxStreamRestarts + ')');
+            stage('buffering');
+            hls.startLoad(player.currentTime || 0);
+            return;
+          }
           dbg('hls: ФАТАЛЬНАЯ ошибка, воспроизведение остановлено');
           // Простой >90с (пауза/свёрнутая вкладка) — cleanup убил ffmpeg-сессию и файлы, hls.js
           // получает 404 на сегмент: вместо фатальной ошибки прозрачно перезапускаем поток с текущей

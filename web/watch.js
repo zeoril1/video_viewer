@@ -35,7 +35,7 @@ function setWatchTitle() {
     parts.push(t('seasonLabel') + ' ' + wantSeason + (wantEp > 0 ? ' · ' + t('episodeLabel') + ' ' + wantEp : ''));
   }
   watchTitle.textContent = parts.filter(Boolean).join(' — ');
-  document.title = parts.filter(Boolean).join(' — ') + ' — Video Viewer';
+  document.title = parts.filter(Boolean).join(' — ') + ' — Кинотека';
 }
 
 // Адрес страницы держим в актуальном виде: перезагрузка (F5) откроет ту же серию.

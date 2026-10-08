@@ -52,7 +52,13 @@ function showDebug() {
 // ---- Локализация интерфейса ----
 const I18N = {
   ru: {
-    searchPlaceholder: 'Поиск по каталогу...',
+    searchPlaceholder: 'Найти фильм или сериал',
+    filters: 'Фильтры',
+    resetFilters: 'Сбросить фильтры',
+    catalogLoading: 'Загружаем каталог…',
+    resume: 'Продолжить',
+    watching: 'Смотрю',
+    watched: 'Просмотрено',
     empty: 'Ничего не найдено.',
     searching: 'Идёт поиск...',
     notFoundImdb: 'Ничего не найдено в каталоге, IMDb и TMDB.',
@@ -136,6 +142,12 @@ const I18N = {
   },
   en: {
     searchPlaceholder: 'Search the catalog...',
+    filters: 'Filters',
+    resetFilters: 'Reset filters',
+    catalogLoading: 'Loading catalog…',
+    resume: 'Continue',
+    watching: 'Watching',
+    watched: 'Watched',
     empty: 'Nothing found.',
     searching: 'Searching...',
     notFoundImdb: 'Nothing found in the catalog, IMDb or TMDB.',
@@ -219,7 +231,9 @@ const I18N = {
   },
 };
 
-let lang = localStorage.getItem('lang') || 'ru';
+let lang = 'ru';
+try { lang = localStorage.getItem('lang') === 'en' ? 'en' : 'ru'; }
+catch (_) { /* Language selection still works without browser storage. */ }
 if (!I18N[lang]) lang = 'ru';
 
 function t(key) {
@@ -395,7 +409,7 @@ function applyLang() {
 langBtns.forEach((b) => {
   b.addEventListener('click', () => {
     lang = b.dataset.lang;
-    localStorage.setItem('lang', lang);
+    try { localStorage.setItem('lang', lang); } catch (_) {}
     applyLang();
   });
 });
