@@ -7,12 +7,14 @@ const vm = require('node:vm');
 function fixture() {
   const handlers = {}, events = {}, requests = [], intervals = [];
   const state = { active: true, id: 'tt1234567', magnet: 'magnet:?xt=urn:btih:' + 'a'.repeat(40),
-    file: 2, season: 1, episode: 3, position: 345, duration: 1200 };
+    file: 2, season: 1, episode: 3, position: 345, duration: 1200,
+    stream_start: 300, track: 1, subs: -1, quality: 'source' };
   const video = { paused: false, ended: false, seeking: false, readyState: 4,
     addEventListener(name, fn) { (handlers[name] ||= []).push(fn); } };
   let sequence = 0, ready = true, visible = true;
   const context = vm.createContext({
-    PP: { available: true, state: () => state, ready: () => ready, playing: () => visible },
+    PP: { available: true, state: () => state, ready: () => ready, playing: () => visible,
+      session: () => 'b'.repeat(32) },
     VV: { onAuth() {} },
     document: { getElementById: () => video },
     window: { addEventListener(name, fn) { (events[name] ||= []).push(fn); } },
@@ -32,6 +34,11 @@ test('viewing reports source position and excludes pauses, loading and seeking',
   f.emit('playbackchange'); await flush();
   assert.equal(f.requests.at(-1).body.position, 345);
   assert.equal(f.requests.at(-1).body.playing, true);
+  assert.equal(f.requests.at(-1).body.hls_session, 'b'.repeat(32));
+  assert.equal(f.requests.at(-1).body.stream_start, 300);
+  assert.equal(f.requests.at(-1).body.track, 1);
+  assert.equal(f.requests.at(-1).body.subs, -1);
+  assert.equal(f.requests.at(-1).body.quality, 'source');
   f.media('stalled'); await flush();
   assert.equal(f.requests.at(-1).body.playing, true);
   assert.equal('username' in f.requests.at(-1).body, false);

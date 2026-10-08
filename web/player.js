@@ -59,8 +59,10 @@ const PP = (() => {
   let currentQuality = 'source';
   let currentVideoCodec = '';
   let currentVideoHeight = 0;
-  const maxStreamRestarts = 3; // перезапуск после простоя ffmpeg (>90 с → 404 на сегмент)
+  const maxStreamRestarts = 3; // восстановление потерянной серверной сессии
   let streamRestarts = 0;
+  let lastContinuationPosition = -1;
+  let shortContinuations = 0;
   let selectedVoice = '';
   let selectedAudio = null; // Track identity survives reordered/unnamed tracks across episodes.
   let tracksGeneration = 0;
@@ -156,6 +158,9 @@ const PP = (() => {
       position: absTime(),
       duration: totalDuration,
       quality: currentQuality,
+      stream_start: streamStart,
+      track: currentTrack,
+      subs: currentSubs,
       season: curSeason,
       episode: curEpisode,
       voice: selectedVoice,
@@ -246,6 +251,39 @@ const PP = (() => {
     });
   }
 
+  function playbackHlsConfig() {
+    return {
+      // ffmpeg already applies the absolute seek; every returned HLS timeline
+      // starts at zero, even when a cached file has been remuxed far ahead.
+      startPosition: 0,
+      lowLatencyMode: false,
+      liveDurationInfinity: true,
+      maxBufferLength: 60,
+      maxMaxBufferLength: 120,
+      maxBufferSize: 96 * 1024 * 1024,
+      backBufferLength: 30,
+      // The growing playlist represents a file, rather than a live broadcast.
+      // Keep its live start at the first fragment regardless of generated length.
+      // max latency retains hls.js's Infinity default; explicitly setting both
+      // values to Infinity fails its strict max > sync config validation.
+      liveSyncDurationCount: Infinity,
+      maxLiveSyncPlaybackRate: 1,
+      debug: DEBUG,
+      manifestLoadingTimeOut: 60000,
+      manifestLoadingMaxRetry: 2,
+      manifestLoadingRetryDelay: 2000,
+      manifestLoadingMaxRetryTimeout: 60000,
+      levelLoadingTimeOut: 30000,
+      levelLoadingMaxRetry: 4,
+      levelLoadingRetryDelay: 2000,
+      levelLoadingMaxRetryTimeout: 60000,
+      fragLoadingTimeOut: 20000,
+      fragLoadingMaxRetry: 6,
+      fragLoadingRetryDelay: 1500,
+      fragLoadingMaxRetryTimeout: 90000,
+    };
+  }
+
   // Запуск HLS-потока файла: дорожка track, смещение start, качество
   // (source|2160|1080|720|480), субтитр subs (-1 — без субтитров). Смена дорожки/качества/
   // субтитра перезапускает ffmpeg; вкл/выкл текущей дорожки делает hls.js (subtitleTrack).
@@ -320,36 +358,13 @@ const PP = (() => {
     dbg('playHls: id=' + id + ' file=' + currentFile + ' track=' + currentTrack + ' subs=' + currentSubs + ' start=' + streamStart + ' q=' + currentQuality);
 
     if (window.Hls && Hls.isSupported()) {
-      const hlsConfig = {
-        liveDurationInfinity: true,
-        debug: DEBUG,
-        manifestLoadingTimeOut: 60000,
-        manifestLoadingMaxRetry: 2,
-        manifestLoadingRetryDelay: 2000,
-        manifestLoadingMaxRetryTimeout: 60000,
-        levelLoadingTimeOut: 30000,
-        levelLoadingMaxRetry: 4,
-        levelLoadingRetryDelay: 2000,
-        levelLoadingMaxRetryTimeout: 60000,
-        fragLoadingTimeOut: 20000,
-        fragLoadingMaxRetry: 6,
-        fragLoadingRetryDelay: 1500,
-        fragLoadingMaxRetryTimeout: 90000,
-        // Поток — прогрессивный файл БЕЗ #EXT-X-ENDLIST, поэтому hls.js считает его «живым»:
-        // ставит позицию у края буфера и делает «догоняющий» seek вперёд, из-за чего видео
-        // «перепрыгивает» от точки старта/перемотки. Для нас это VOD — живую синхронизацию
-        // отключаем: liveSyncDurationCount большой (старт = начало потока),
-        // liveMaxLatencyDurationCount=Infinity, maxLiveSyncPlaybackRate=1 (не ускорять).
-        liveSyncDurationCount: 100,
-        liveMaxLatencyDurationCount: Infinity,
-        maxLiveSyncPlaybackRate: 1,
-      };
+      const hlsConfig = playbackHlsConfig();
       dbg('hls.js: создаём поток v' + (Hls.version || '?') + ' [' + hlsLogSrc(src) + ']'
         + ' | live=' + hlsConfig.liveDurationInfinity
         + ' manifestTO=' + hlsConfig.manifestLoadingTimeOut
         + ' levelTO=' + hlsConfig.levelLoadingTimeOut
         + ' fragTO=' + hlsConfig.fragLoadingTimeOut
-        + ' liveSync=' + hlsConfig.liveSyncDurationCount + '/' + hlsConfig.liveMaxLatencyDurationCount
+        + ' start=' + hlsConfig.startPosition + ' buffer=' + hlsConfig.maxBufferLength + '/' + hlsConfig.maxMaxBufferLength + 's'
         + ' | плеер readyState=' + player.readyState + ' t=' + Math.round(player.currentTime || 0));
       const hls = new Hls(hlsConfig);
       hlsPlayer = hls;
@@ -364,7 +379,6 @@ const PP = (() => {
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
         // Игнорируем событие уже заменённого плеера.
         if (hlsPlayer !== hls) return;
-        streamRestarts = 0; // поток успешно стартовал — свежие попытки перезапуска
         dbg('hls: манифест получен (уровней: ' + (hls.levels ? hls.levels.length : 0) + ' субтитров: ' + (hls.subtitleTracks ? hls.subtitleTracks.length : 0) + ')');
         // Субтитры включаем, если поток запущен с выбранной дорожкой и hls.js видит SUBTITLES.
         if (hls.subtitleTracks) {
@@ -376,7 +390,18 @@ const PP = (() => {
  autoPlay();
       });
       hls.on(Hls.Events.LEVEL_SWITCHED, (_e, d) => dbg('hls: уровень переключён: ' + d.level));
-      hls.on(Hls.Events.FRAG_BUFFERED, (_e, d) => dbg('hls: фрагмент ' + d.frag.sn + ' @ ' + Math.round(d.frag.start) + 's'));
+      hls.on(Hls.Events.FRAG_BUFFERED, (_e, d) => {
+        if (hlsPlayer !== hls || !d || !d.frag) return;
+        // A manifest can succeed while every fragment is still 404. Reset the
+        // recovery budget only after real media reached the browser buffer.
+        if (d.frag.sn !== 'initSegment') streamRestarts = 0;
+        const stats = (d.part || d.frag).stats || {};
+        const loading = stats.loading || {};
+        const milliseconds = Math.max(0, (loading.end || 0) - (loading.start || 0));
+        dbg('hls: фрагмент ' + d.frag.sn + ' @ ' + Math.round(d.frag.start) + 's'
+          + ' | ' + (stats.total || 0) + ' bytes / ' + Math.round(milliseconds) + 'ms'
+          + ' | buffer=' + bufferedAhead().toFixed(1) + 's');
+      });
       hls.on(Hls.Events.ERROR, (_evt, data) => {
         // Игнорируем ошибки от уже заменённого потока.
         if (hlsPlayer !== hls) return;
@@ -386,8 +411,6 @@ const PP = (() => {
         // Ошибку показываем, НО плеер не скрываем: селекторы дорожек/качества остаются
         // доступными — можно выбрать другую дорожку или вариант с H.264.
         if (data && data.fatal) {
-          window.dispatchEvent(new Event('playbackfailure'));
- if(data.response&&data.response.code===503)stage('error','Сервер занят или достигнут лимит диска. Подождите немного и повторите запуск.');
           dbg('hls: ФАТАЛЬНАЯ ошибка, воспроизведение остановлено');
           // Простой >90с (пауза/свёрнутая вкладка) — cleanup убил ffmpeg-сессию и файлы, hls.js
           // получает 404 на сегмент: вместо фатальной ошибки прозрачно перезапускаем поток с текущей
@@ -403,6 +426,8 @@ const PP = (() => {
             playHls(currentPlay.id, currentPlay.magnet, currentFile, currentTrack, restartPos, currentQuality, currentSubs);
             return;
           }
+          window.dispatchEvent(new Event('playbackfailure'));
+ if(data.response&&data.response.code===503)stage('error','Сервер занят или достигнут лимит диска. Подождите немного и повторите запуск.');
           if (hlsPlayer === hls) hlsPlayer = null;
           hls.destroy();
           const detail = [data.type, data.details].filter(Boolean).join(' / ') + resp;
@@ -811,6 +836,28 @@ const PP = (() => {
     }
   }
 
+  function bufferedContains(target) {
+    const relative = target - streamStart;
+    if (!Number.isFinite(relative) || relative < 0) return false;
+    try {
+      const ranges = player.buffered;
+      for (let i = 0; i < ranges.length; i++) {
+        if (relative >= ranges.start(i) && relative <= ranges.end(i)) return true;
+      }
+    } catch (_) { /* No usable media ranges yet. */ }
+    return false;
+  }
+
+  function bufferedAhead() {
+    try {
+      const ranges = player.buffered, position = player.currentTime || 0;
+      for (let i = 0; i < ranges.length; i++) {
+        if (position >= ranges.start(i) && position <= ranges.end(i)) return ranges.end(i) - position;
+      }
+    } catch (_) { /* No usable media ranges yet. */ }
+    return 0;
+  }
+
   // Абсолютная позиция: streamStart + currentTime (при перемотке ffmpeg стартует с позиции).
   function absTime() {
     if (completedPlayback && totalDuration > 0) return totalDuration;
@@ -844,8 +891,8 @@ const PP = (() => {
     maybeSaveProgress(false);
   }
 
-  // Клик по полосе — перемотка: внутри [streamStart, буфер] двигаем currentTime,
-  // иначе (раньше streamStart или за переданной границей) перезапускаем ffmpeg с позиции.
+  // Клик по полосе — перемотка внутри сохранённого диапазона браузера;
+  // для удалённого старого буфера или ещё не переданных данных создаём новый поток.
   if (available && ctrlBar) {
     ctrlBar.addEventListener('click', (e) => {
       if(follower)return;
@@ -854,7 +901,7 @@ const PP = (() => {
       const dur = totalDuration || streamStart + (player.duration || 0);
       const target = Math.max(0, Math.min(dur, frac * dur));
       completedPlayback = false;
-      if (target >= streamStart && target <= absBufEnd() + 5) {
+      if (bufferedContains(target)) {
         player.currentTime = target - streamStart;
       } else if (isFinite(target) && currentPlay) {
         seekTo(target);
@@ -880,12 +927,33 @@ const PP = (() => {
     const dur = totalDuration || streamStart + (player.duration || 0);
     const target = Math.max(0, isFinite(dur) ? Math.min(dur, absTime() + delta) : absTime() + delta);
     completedPlayback = false;
-    if (target >= streamStart && target <= absBufEnd() + 5) {
+    if (bufferedContains(target)) {
       player.currentTime = target - streamStart;
     } else if (isFinite(target)) {
       seekTo(target);
     }
     updatePlayerUI();
+  }
+
+  // A bounded server HLS window can end before the underlying file does.
+  // Open its next window without treating that temporary end as an episode end.
+  function continueStream() {
+    if (!currentPlay || trailerActive || pendingPlayback || completedPlayback || totalDuration <= 0) return false;
+    const position = absTime();
+    if (!Number.isFinite(position) || position >= totalDuration - 3) return false;
+    shortContinuations = lastContinuationPosition < 0 || position > lastContinuationPosition + 5 ? 0 : shortContinuations + 1;
+    lastContinuationPosition = position;
+    if (shortContinuations >= maxStreamRestarts) {
+      const message = 'Серверный поток завершается раньше времени. Повторите запуск.';
+      playerError.textContent = message;
+      playerError.hidden = false;
+      stage('error', message);
+      window.dispatchEvent(new Event('playbackfailure'));
+      return true;
+    }
+    dbg('hls: продолжение файла с ' + position.toFixed(1) + 's / ' + totalDuration.toFixed(1) + 's');
+    playHls(currentPlay.id, currentPlay.magnet, currentFile, currentTrack, position, currentQuality, currentSubs);
+    return true;
   }
 
   function toggleFullscreen() {
@@ -1017,6 +1085,7 @@ const PP = (() => {
     }
 
     player.addEventListener('ended', () => {
+      if (continueStream()) return;
       if (follower || autoNextFired) return;
       autoNextFired = true;
       playNeighbor(1, true);
@@ -1040,6 +1109,12 @@ const PP = (() => {
     player.addEventListener('playing', () => {
       if (trailerActive) { player.pause(); return; }
       playbackReady = true;
+    });
+    player.addEventListener('waiting', () => {
+      if (!currentPlay || trailerActive) return;
+      dbg('player: ожидание @ ' + absTime().toFixed(1) + 's'
+        + ' | buffer=' + bufferedAhead().toFixed(1) + 's readyState=' + player.readyState
+        + ' q=' + currentQuality + ' codec=' + (currentVideoCodec || '?'));
     });
     player.addEventListener('pause', () => maybeSaveProgress(true));
     player.addEventListener('progress', updatePlayerUI);
@@ -1123,6 +1198,8 @@ const PP = (() => {
     currentPlay = { id: o.id, magnet: o.magnet };
     releaseTitle = o.release || '';
     streamRestarts = 0;
+    lastContinuationPosition = -1;
+    shortContinuations = 0;
     autoNextFired = false;
     lastFiles = [];
     curSeason = o.season || 0;
@@ -1194,6 +1271,7 @@ const PP = (() => {
     setTrailer,
     playing: () => !!currentPlay && !!playerWrap && !playerWrap.hidden && !trailerActive,
     state,
+    session: () => playbackSession,
     season: () => curSeason,
     episode: () => curEpisode,
     fileIndex: () => currentFile,
@@ -1224,7 +1302,7 @@ const PP = (() => {
     },
     seek: target => {
       completedPlayback = false;
-      if (target >= streamStart && target <= absBufEnd()) player.currentTime = target - streamStart;
+      if (bufferedContains(target)) player.currentTime = target - streamStart;
       else seekTo(target);
     },
     skipSegment: target => {
@@ -1241,7 +1319,7 @@ const PP = (() => {
         return true;
       }
       completedPlayback = false;
-      if (target >= streamStart && target <= absBufEnd()) player.currentTime = target - streamStart;
+      if (bufferedContains(target)) player.currentTime = target - streamStart;
       else seekTo(target);
       return false;
     },

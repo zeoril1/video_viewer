@@ -54,7 +54,7 @@ async function fixture(options = {}) {
       } },
       duration: { get: () => Infinity }, paused: { get: () => media.paused },
       readyState: { get: () => media.ready },
-      buffered: { get: () => ({ length: media.buffered > 0 ? 1 : 0, end: () => media.buffered }) },
+      buffered: { get: () => ({ length: media.buffered > 0 ? 1 : 0, start: () => 0, end: () => media.buffered }) },
     });
     video.load = () => { media.time = 0; media.buffered = 0; media.ready = 0; };
     video.pause = () => { if (!media.paused) { media.paused = true; emit('pause'); } };

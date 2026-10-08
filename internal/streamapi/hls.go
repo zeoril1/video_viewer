@@ -53,19 +53,26 @@ func selectSubtitle(items []subtitleTrack, ordinal int) (subtitleTrack, error) {
 
 // hlsSession — запущенный ffmpeg-процесс HLS (видео копируется или перекодируется, звук — в AAC).
 type hlsSession struct {
-	done     chan struct{}
-	id       string
-	magnet   string
-	file     int // индекс файла в торренте (серия); -1 — авто
-	track    int
-	subs     int     // выбранная субтитр-дорожка (-1 — без субтитров)
-	start    float64 // позиция в секундах, с которой начата сессия (перемотка)
-	quality  string  // "source", "2160", "1080", "720", "480"
-	dir      string
-	playlist string
-	cmd      *exec.Cmd
-	lastUsed time.Time
-	segments int // счётчик отданных сегментов (для диагностики)
+	done                chan struct{}
+	id                  string
+	magnet              string
+	file                int // индекс файла в торренте (серия); -1 — авто
+	track               int
+	subs                int     // выбранная субтитр-дорожка (-1 — без субтитров)
+	start               float64 // позиция в секундах, с которой начата сессия (перемотка)
+	quality             string  // "source", "2160", "1080", "720", "480"
+	dir                 string
+	playlist            string
+	cmd                 *exec.Cmd
+	lastUsed            time.Time
+	segments            int       // счётчик отданных сегментов (для диагностики)
+	generation          uint64    // URL старого запуска не должен читать сегменты нового seek.
+	playhead            float64   // позиция клиента относительно начала HLS-сессии.
+	lastPlayback        time.Time // heartbeat просмотра, независимо от скачивания сегментов.
+	resourceLimited     bool      // producer stopped at the cache limit; completed output survives.
+	resourcePlaylist    []byte
+	resourceSubPlaylist []byte
+	requestedSegments   map[string]bool
 
 	// subsLabel — имя субтитр-дорожки для master-плейлиста (#EXT-X-MEDIA NAME).
 	subsLabel string
@@ -388,7 +395,7 @@ func (m *hlsManager) ensure(ctx context.Context, id, magnet string, file, track,
 		return nil, ctx.Err()
 	}
 	if s, ok := m.sessions[key]; ok {
-		if s.magnet == magnet && s.file == file && s.track == track && s.subs == subs && s.start == start && s.quality == quality && !(s.exited && s.exitErr != nil) {
+		if s.magnet == magnet && s.file == file && s.track == track && s.subs == subs && s.start == start && s.quality == quality && !(s.exited && s.exitErr != nil && !s.resourceLimited) {
 			s.lastUsed = time.Now()
 			m.mu.Unlock()
 			return s, nil
@@ -460,21 +467,8 @@ func (m *hlsManager) ensure(ctx context.Context, id, magnet string, file, track,
 		seekStart = vstart
 		log.Printf("hls: ensure %s: видео стартует с %.3fs — поток с этой позиции (A/V согласованы)", id, vstart)
 	}
-	args := []string{"-hide_banner", "-loglevel", "error", "-y"}
-	if seekStart > 0 {
-		// Быстрый input-seek по HTTP-стриму (Range).
-		args = append(args, "-ss", strconv.FormatFloat(seekStart, 'f', -1, 64))
-		// ВАЖНО: при -c:v copy точный seek берёт видео с ключевого кадра, а звук —
-		// ровно с seekStart (звук отстаёт на GOP). noaccurate_seek синхронизирует
-		// A/V; при перекодировании видео точный seek корректен.
-		if qualityHeight(quality) == 0 {
-			args = append(args, "-noaccurate_seek")
-		}
-	}
-	args = append(args,
-		"-i", m.inputURL(id, magnet, file),
-		"-map", "0:v:0",
-	)
+	args := hlsInputArgs(m.inputURL(id, magnet, file), seekStart, quality)
+	args = append(args, "-map", "0:v:0")
 	// track — ПОРЯДКОВЫЙ номер аудио-потока (ordinal в /tracks): -map 0:a:N не
 	// зависит от глобального индекса, а маппинг по индексу (у MKV 0 — видео)
 	// давал два видео-потока без звука → bufferAppendError у hls.js.
@@ -502,14 +496,8 @@ func (m *hlsManager) ensure(ctx context.Context, id, magnet string, file, track,
 	}
 	args = append(args,
 		"-c:a", "aac", "-b:a", "192k", "-ac", "2",
-		"-f", "hls",
-		"-hls_time", "6",
-		"-hls_list_size", "0",
-		// fMP4: hls.js/MSE играет HEVC только во fMP4 (в MPEG-TS — нет).
-		"-hls_segment_type", "fmp4",
-		"-hls_flags", "independent_segments",
-		"-hls_segment_filename", segPattern,
 	)
+	args = append(args, hlsMuxArgs(segPattern)...)
 	if hasSubs {
 		// WebVTT + master-плейлист: sgroup связывает видеовариант с субтитром.
 		args = append(args, "-c:s", "webvtt")
@@ -528,7 +516,7 @@ func (m *hlsManager) ensure(ctx context.Context, id, magnet string, file, track,
 		log.Printf("ffmpeg %s track=%d: start failed: %v", id, track, err)
 		return nil, err
 	}
-	s := &hlsSession{done: make(chan struct{}), id: id, magnet: magnet, file: file, track: track, subs: subs, subsLabel: subsLabel, start: start, quality: quality, dir: dir, playlist: playlist, cmd: cmd, lastUsed: time.Now()}
+	s := &hlsSession{done: make(chan struct{}), id: id, magnet: magnet, file: file, track: track, subs: subs, subsLabel: subsLabel, start: start, quality: quality, dir: dir, playlist: playlist, cmd: cmd, lastUsed: time.Now(), generation: generation}
 	if !m.publishSession(ctx, key, generation, s) {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
@@ -551,6 +539,33 @@ func (m *hlsManager) ensure(ctx context.Context, id, magnet string, file, track,
 	}()
 	log.Printf("hls: start %s track=%d subs=%d", id, track, subs)
 	return s, nil
+}
+
+// A cached source can be remuxed much faster than playback. Without pacing a
+// large film immediately creates a second full copy and trips the HLS quota.
+// A 90-second initial burst keeps startup/seek quick and gives playback a buffer;
+// subsequent ingestion follows media time, including source-quality streamcopy.
+func hlsInputArgs(input string, seekStart float64, quality string) []string {
+	args := []string{"-hide_banner", "-loglevel", "error", "-y"}
+	if seekStart > 0 {
+		args = append(args, "-ss", strconv.FormatFloat(seekStart, 'f', -1, 64))
+		// Copy retains the preceding keyframe: seek audio to the same point.
+		if qualityHeight(quality) == 0 {
+			args = append(args, "-noaccurate_seek")
+		}
+	}
+	return append(args, "-readrate", "1", "-readrate_initial_burst", "90", "-i", input)
+}
+
+func hlsMuxArgs(segmentPattern string) []string {
+	return []string{
+		"-f", "hls", "-hls_time", "6", "-hls_list_size", "0",
+		"-hls_playlist_type", "event",
+		// HEVC/MSE requires fMP4; publish only complete, atomically renamed files.
+		"-hls_segment_type", "fmp4",
+		"-hls_flags", "independent_segments+temp_file",
+		"-hls_segment_filename", segmentPattern,
+	}
 }
 
 // stop убивает ffmpeg и удаляет временные файлы (Wait делает горутина-наблюдатель).
@@ -789,6 +804,7 @@ func (m *hlsManager) serveMaster(w http.ResponseWriter, r *http.Request, s *hlsS
 	if session := r.URL.Query().Get("session"); session != "" {
 		common += "&session=" + url.QueryEscape(session)
 	}
+	common += hlsGenerationParam(s)
 	// media-плейлист: /hls/pl.m3u8 (он же playlist.m3u8 в каталоге сессии).
 	mediaURL := "/api/films/" + url.PathEscape(id) + "/hls/pl.m3u8" + common
 	// субтитр-плейлист: /hls/subs/0.m3u8 (единственный WebVTT-рендеринг).
@@ -804,11 +820,12 @@ func (m *hlsManager) serveMaster(w http.ResponseWriter, r *http.Request, s *hlsS
 	}
 	body = strings.ReplaceAll(body, `DEFAULT=YES`, `DEFAULT=NO`)
 	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+	w.Header().Set("Cache-Control", "no-store")
 	_, _ = io.WriteString(w, body)
 }
 
 // findSession ищет сессию фильма с теми же источником/дорожкой/серией.
-func (m *hlsManager) findSession(id, magnet string, track, file int) (*hlsSession, bool) {
+func (m *hlsManager) findSession(id, magnet string, track, file int, generation ...string) (*hlsSession, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	s, ok := m.sessions[id]
@@ -816,6 +833,9 @@ func (m *hlsManager) findSession(id, magnet string, track, file int) (*hlsSessio
 		return nil, false
 	}
 	if s.magnet != magnet || s.track != track || (file >= 0 && s.file != file) {
+		return nil, false
+	}
+	if len(generation) > 0 && !hlsGenerationValueMatches(generation[0], s) {
 		return nil, false
 	}
 	s.lastUsed = time.Now()
@@ -833,7 +853,7 @@ func (m *hlsManager) serveMediaPlaylist(w http.ResponseWriter, r *http.Request) 
 	}
 	track := trackParam(r)
 	file := fileParam(r)
-	s, ok := m.findSession(hlsSessionKey(id, r.URL.Query().Get("session")), magnet, track, file)
+	s, ok := m.findSession(hlsSessionKey(id, r.URL.Query().Get("session")), magnet, track, file, r.URL.Query().Get("generation"))
 	if !ok {
 		http.NotFound(w, r)
 		return
@@ -843,7 +863,7 @@ func (m *hlsManager) serveMediaPlaylist(w http.ResponseWriter, r *http.Request) 
 
 func (m *hlsManager) serveMediaPlaylistFrom(w http.ResponseWriter, r *http.Request, s *hlsSession) {
 	id := r.PathValue("id")
-	data, err := os.ReadFile(s.playlist)
+	data, err := m.readSessionPlaylist(s, false)
 	if err != nil {
 		http.Error(w, "read playlist: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -854,9 +874,11 @@ func (m *hlsManager) serveMediaPlaylistFrom(w http.ResponseWriter, r *http.Reque
 	if session := r.URL.Query().Get("session"); session != "" {
 		common += "&session=" + url.QueryEscape(session)
 	}
+	common += hlsGenerationParam(s)
 	re := regexp.MustCompile(`(init\.mp4|seg_\d+\.(?:m4s|ts))`)
 	body := re.ReplaceAllString(string(data), segmentBaseURL(id, common))
 	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+	w.Header().Set("Cache-Control", "no-store")
 	_, _ = io.WriteString(w, body)
 }
 
@@ -871,12 +893,12 @@ func (m *hlsManager) serveSubPlaylist(w http.ResponseWriter, r *http.Request) {
 	}
 	track := trackParam(r)
 	file := fileParam(r)
-	s, ok := m.findSession(hlsSessionKey(id, r.URL.Query().Get("session")), magnet, track, file)
+	s, ok := m.findSession(hlsSessionKey(id, r.URL.Query().Get("session")), magnet, track, file, r.URL.Query().Get("generation"))
 	if !ok || s.subs < 0 {
 		http.NotFound(w, r)
 		return
 	}
-	data, err := os.ReadFile(filepath.Join(s.dir, "playlist_vtt.m3u8"))
+	data, err := m.readSessionPlaylist(s, true)
 	if err != nil {
 		http.Error(w, "read subtitle playlist: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -885,9 +907,11 @@ func (m *hlsManager) serveSubPlaylist(w http.ResponseWriter, r *http.Request) {
 	if session := r.URL.Query().Get("session"); session != "" {
 		common += "&session=" + url.QueryEscape(session)
 	}
+	common += hlsGenerationParam(s)
 	re := regexp.MustCompile(`(playlist\d+\.vtt)`)
 	body := re.ReplaceAllString(string(data), segmentBaseURL(id, common))
 	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+	w.Header().Set("Cache-Control", "no-store")
 	_, _ = io.WriteString(w, body)
 }
 
@@ -895,6 +919,11 @@ func (m *hlsManager) serveSubPlaylist(w http.ResponseWriter, r *http.Request) {
 func (m *hlsManager) serveSegment(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	name := r.PathValue("name")
+	// In-progress .tmp files and arbitrary names are never published.
+	if !hlsSegmentName.MatchString(name) {
+		http.NotFound(w, r)
+		return
+	}
 	magnet := strings.TrimSpace(r.URL.Query().Get("magnet"))
 	if magnet == "" {
 		http.Error(w, "missing magnet", http.StatusBadRequest)
@@ -907,27 +936,28 @@ func (m *hlsManager) serveSegment(w http.ResponseWriter, r *http.Request) {
 	if ok {
 		// Параметры обязаны совпадать: «хвостовые» запросы старого плейлиста
 		// не должны получить сегменты новой сессии.
-		if s.magnet != magnet || s.track != track || (file >= 0 && s.file != file) {
+		if s.magnet != magnet || s.track != track || (file >= 0 && s.file != file) || !hlsGenerationMatches(r, s) {
 			ok = false
 		} else {
 			s.lastUsed = time.Now()
 			s.segments++
+			if s.requestedSegments == nil {
+				s.requestedSegments = make(map[string]bool)
+			}
+			s.requestedSegments[name] = true
 		}
 	}
+	firstSegment := ok && s.segments == 1
 	m.mu.Unlock()
 	if !ok {
 		log.Printf("hls: сегмент %s/%s: сессия не найдена (track=%d file=%d)", id, name, track, file)
 		http.NotFound(w, r)
 		return
 	}
-	if s.segments == 1 {
+	if firstSegment {
 		log.Printf("hls: первый сегмент %s %s (track=%d)", id, name, track)
 	}
-	// Только имена сегментов, без обхода каталога.
-	if name == "" || strings.ContainsAny(name, "/\\") || name == "." || name == ".." {
-		http.NotFound(w, r)
-		return
-	}
+	w.Header().Set("Cache-Control", "no-store")
 	// fMP4 (.m4s/.mp4), субтитры .vtt, старые .ts — тоже отдаём.
 	switch {
 	case strings.HasSuffix(name, ".m4s"):
@@ -940,6 +970,42 @@ func (m *hlsManager) serveSegment(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "video/mp2t")
 	}
 	http.ServeFile(w, r, filepath.Join(s.dir, name))
+}
+
+var hlsSegmentName = regexp.MustCompile(`^(?:init\.mp4|seg_\d+\.(?:m4s|ts)|playlist\d+\.vtt)$`)
+
+func (m *hlsManager) readSessionPlaylist(s *hlsSession, subtitles bool) ([]byte, error) {
+	m.mu.Lock()
+	sealed := s.resourcePlaylist
+	path := s.playlist
+	if subtitles {
+		sealed = s.resourceSubPlaylist
+		path = filepath.Join(s.dir, "playlist_vtt.m3u8")
+	}
+	m.mu.Unlock()
+	if sealed != nil {
+		return sealed, nil
+	}
+	return os.ReadFile(path)
+}
+
+func hlsGenerationParam(s *hlsSession) string {
+	if s.generation == 0 {
+		return ""
+	}
+	return "&generation=" + strconv.FormatUint(s.generation, 10)
+}
+
+func hlsGenerationMatches(r *http.Request, s *hlsSession) bool {
+	return hlsGenerationValueMatches(r.URL.Query().Get("generation"), s)
+}
+
+func hlsGenerationValueMatches(generation string, s *hlsSession) bool {
+	// Old integrations without a generation retain their existing behaviour.
+	if generation == "" {
+		return true
+	}
+	return generation == strconv.FormatUint(s.generation, 10)
 }
 
 // ffmpegLogWriter пишет stderr ffmpeg в лог целыми строками (ffmpeg шлёт куски).

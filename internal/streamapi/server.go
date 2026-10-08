@@ -52,8 +52,10 @@ func NewServer(cfg Config) (http.Handler, func()) {
 	analyzer := newEpisodeAnalyzer(hls, cfg)
 	access := remoteauth.New(cfg.AuthURL)
 	viewers := newViewingStore()
-	mux.HandleFunc("POST /api/stream/viewing", viewers.handle(cfg.Torrents, access))
-	mux.HandleFunc("DELETE /api/stream/viewing", viewers.handle(cfg.Torrents, access))
+	go viewers.cleanup(hls.done)
+	go hls.pruneConsumed()
+	mux.HandleFunc("POST /api/stream/viewing", viewers.handle(cfg.Torrents, access, hls))
+	mux.HandleFunc("DELETE /api/stream/viewing", viewers.handle(cfg.Torrents, access, hls))
 	storage := &storageHandler{mgr: cfg.Torrents, hls: hls, access: access, viewers: viewers}
 	mux.HandleFunc("GET /api/admin/storage", storage.list)
 	mux.HandleFunc("DELETE /api/admin/storage/{hash}", storage.remove)

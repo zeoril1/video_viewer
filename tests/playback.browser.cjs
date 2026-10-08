@@ -24,11 +24,11 @@ Object.defineProperty(video,'readyState',{get:()=>4});
 video.load=()=>{video.currentTime=0;};
 video.play=async()=>{if(paused){paused=false;video.dispatchEvent(new Event('play'));video.dispatchEvent(new Event('playing'));}};
 video.pause=()=>{if(!paused){paused=true;video.dispatchEvent(new Event('pause'));}};
-window.hlsRequests=[];
+window.hlsRequests=[];window.hlsConfigs=[];
 window.Hls=class {
  static Events={MANIFEST_PARSED:'manifest',SUBTITLE_TRACKS_UPDATED:'subs',LEVEL_SWITCHED:'level',FRAG_BUFFERED:'frag',ERROR:'error'};
  static isSupported(){return true;}
- constructor(){this.handlers={};this.subtitleTracks=[];}
+ constructor(config){this.handlers={};this.subtitleTracks=[];window.hlsConfigs.push(config);}
  on(name,fn){this.handlers[name]=fn;}
  loadSource(src){window.lastHlsSource=src;window.hlsRequests.push(src);}
  attachMedia(){setTimeout(()=>{if(!this.dead&&this.handlers.manifest)this.handlers.manifest();},150);}
@@ -81,6 +81,19 @@ const server=http.createServer((req,res)=>{
   assert.match(await host.locator('#loading-detail').textContent(),/Сервер занят/);
   await host.locator('#loading-retry').click();
   await host.waitForFunction(()=>document.getElementById('loading-state').hidden);
+  assert.equal(await host.evaluate(()=>window.hlsConfigs.at(-1).startPosition),0);
+  assert.equal(await host.evaluate(()=>window.hlsConfigs.at(-1).lowLatencyMode),false);
+  assert.equal(await host.evaluate(()=>window.hlsConfigs.at(-1).backBufferLength),30);
+  const launchesBeforeWindowEnd=await host.evaluate(()=>window.hlsRequests.length);
+  await host.evaluate(()=>{video.currentTime=60;video.dispatchEvent(new Event('ended'));});
+  await host.waitForFunction(count=>window.hlsRequests.length===count+1&&!video.paused,launchesBeforeWindowEnd);
+  assert.equal(await host.evaluate(()=>new URL(window.lastHlsSource,location.href).searchParams.get('start')),'70',
+    'A truncated server window continues from absolute file position instead of changing episode');
+  assert.equal(await host.evaluate(()=>PP.state().episode),1);
+  assert.equal(await host.evaluate(()=>PP.state().stream_start),70);
+  assert.equal(await host.evaluate(()=>PP.state().track),0);
+  assert.equal(await host.evaluate(()=>PP.state().subs),-1);
+  assert.equal(await host.evaluate(()=>new URL(window.lastHlsSource,location.href).searchParams.get('session')===PP.session()),true);
   await host.locator('summary').click();
   await host.locator('#subtitle-size').selectOption('130');
   await host.locator('#subtitle-language').selectOption('rus');
@@ -152,6 +165,6 @@ const server=http.createServer((req,res)=>{
   assert.equal(await host.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),true);
   if(process.env.PLAYBACK_SCREENSHOT)await host.screenshot({path:process.env.PLAYBACK_SCREENSHOT,fullPage:true});
   assert.deepEqual(errors,[]);
-  console.log('Playback browser checks passed: loading, subtitle preferences/cue timing, prefetch, host/guest pause/seek/resume, room close, mobile layout.');
+  console.log('Playback browser checks passed: loading, bounded HLS window continuation, subtitle preferences/cue timing, prefetch, host/guest pause/seek/resume, room close, mobile layout.');
  }finally{await browser.close();server.close();}
 })().catch(error=>{console.error(error);process.exitCode=1;server.close();});

@@ -44,6 +44,7 @@ const defaultMaxCached = 16
 
 // Manager владеет торрент-клиентом и кэшем открытых торрентов.
 type Manager struct {
+	closed     bool // guarded by mu; prevents late browser leases after shutdown
 	client     *torrent.Client
 	spool      *spoolClient // дисковый спул (nil — in-memory)
 	mu         sync.Mutex
@@ -110,6 +111,11 @@ func NewManager(cfg Config) (*Manager, error) {
 func (m *Manager) Close() {
 	// Гасим отложенные выгрузки: их таймеры не должны срабатывать после закрытия клиента.
 	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return
+	}
+	m.closed = true
 	for _, tm := range m.dropTimers {
 		tm.Stop()
 	}

@@ -44,6 +44,8 @@
       session, film_id: state.id, magnet: state.magnet, file,
       season: number(state.season), episode: number(state.episode),
       position: number(state.position), duration: number(state.duration),
+      hls_session: PP.session ? PP.session() : '', stream_start: number(state.stream_start),
+      track: state.track ?? 0, subs: state.subs ?? -1, quality: state.quality || 'source',
       playing: !!(!blocked && PP.ready() && PP.playing() && !video.paused &&
         !video.ended && !video.seeking && video.readyState >= 3),
     });

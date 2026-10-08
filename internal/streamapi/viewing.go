@@ -38,6 +38,7 @@ type viewer struct {
 	StartedAt      time.Time `json:"started_at"`
 	LastSeen       time.Time `json:"last_seen"`
 	owner          string
+	release        func()
 }
 
 type viewingStore struct {
@@ -78,6 +79,9 @@ func viewerOwner(r *http.Request) string {
 func (s *viewingStore) pruneLocked(now time.Time) {
 	for key, item := range s.items {
 		if now.Sub(item.LastSeen) > viewerTTL {
+			if item.release != nil {
+				item.release()
+			}
 			delete(s.items, key)
 		}
 	}
@@ -96,6 +100,9 @@ func (s *viewingStore) close(owner, session string) {
 	now := s.now()
 	s.pruneLocked(now)
 	key := owner + ":" + session
+	if item := s.items[key]; item != nil && item.release != nil {
+		item.release()
+	}
 	delete(s.items, key)
 	if len(s.closed) >= 4096 {
 		var oldest string
@@ -112,7 +119,7 @@ func (s *viewingStore) close(owner, session string) {
 
 // The server measures elapsed playback between timely heartbeats. Position is
 // displayed separately; seeking is never counted as minutes watched.
-func (s *viewingStore) update(v viewer) bool {
+func (s *viewingStore) update(v viewer, admit ...func(*viewer, *viewer) bool) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := s.now()
@@ -133,6 +140,16 @@ func (s *viewingStore) update(v viewer) bool {
 			return false
 		}
 	}
+	if len(admit) > 0 && !admit[0](&v, old) {
+		return true
+	}
+	if old != nil && old.release != nil {
+		if old.Hash != v.Hash {
+			old.release()
+		} else if v.release == nil {
+			v.release = old.release
+		}
+	}
 	v.StartedAt, v.LastSeen = now, now
 	if old != nil && old.Hash == v.Hash && old.File == v.File && old.FilmID == v.FilmID {
 		v.StartedAt, v.WatchedSeconds = old.StartedAt, old.WatchedSeconds
@@ -145,6 +162,29 @@ func (s *viewingStore) update(v viewer) bool {
 	}
 	s.items[key] = &v
 	return true
+}
+
+func (s *viewingStore) cleanup(done <-chan struct{}) {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-done:
+			s.mu.Lock()
+			for key, item := range s.items {
+				if item.release != nil {
+					item.release()
+				}
+				delete(s.items, key)
+			}
+			s.mu.Unlock()
+			return
+		case <-ticker.C:
+			s.mu.Lock()
+			s.pruneLocked(s.now())
+			s.mu.Unlock()
+		}
+	}
 }
 
 func (s *viewingStore) snapshot() []viewer {
@@ -163,22 +203,27 @@ func (s *viewingStore) snapshot() []viewer {
 	return items
 }
 
-func (s *viewingStore) handle(mgr *torrents.Manager, auth *remoteauth.Client) http.HandlerFunc {
+func (s *viewingStore) handle(mgr *torrents.Manager, auth *remoteauth.Client, managers ...*hlsManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		if !httpx.CheckOrigin(w, r) {
 			return
 		}
 		var body struct {
-			Session  string  `json:"session"`
-			FilmID   string  `json:"film_id"`
-			Magnet   string  `json:"magnet"`
-			File     int     `json:"file"`
-			Season   int     `json:"season"`
-			Episode  int     `json:"episode"`
-			Position float64 `json:"position"`
-			Duration float64 `json:"duration"`
-			Playing  bool    `json:"playing"`
+			Session     string   `json:"session"`
+			FilmID      string   `json:"film_id"`
+			Magnet      string   `json:"magnet"`
+			File        int      `json:"file"`
+			Season      int      `json:"season"`
+			Episode     int      `json:"episode"`
+			Position    float64  `json:"position"`
+			Duration    float64  `json:"duration"`
+			Playing     bool     `json:"playing"`
+			HLSSession  string   `json:"hls_session"`
+			StreamStart *float64 `json:"stream_start"`
+			Track       *int     `json:"track"`
+			Subs        *int     `json:"subs"`
+			Quality     string   `json:"quality"`
 		}
 		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10))
 		if dec.Decode(&body) != nil || dec.Decode(new(any)) != io.EOF || !viewerSessionPattern.MatchString(body.Session) {
@@ -219,7 +264,29 @@ func (s *viewingStore) handle(mgr *torrents.Manager, auth *remoteauth.Client) ht
 		}
 		v := viewer{owner: owner, Session: body.Session, Username: username, FilmID: body.FilmID, Hash: hash, File: index,
 			Season: body.Season, Episode: body.Episode, Position: body.Position, Duration: body.Duration, Playing: body.Playing}
-		if !s.update(v) {
+		admit := func(v *viewer, old *viewer) bool {
+			if body.HLSSession == "" || len(managers) == 0 {
+				return true
+			}
+			if !viewerSessionPattern.MatchString(body.HLSSession) || body.StreamStart == nil || body.Track == nil || body.Subs == nil {
+				return false
+			}
+			hls := managers[0]
+			if !hls.touchPlayback(body.FilmID, body.HLSSession, body.Magnet, body.File, *body.StreamStart, *body.Track, *body.Subs, body.Quality, body.Position) {
+				return false
+			}
+			if old != nil && old.Hash == v.Hash && old.release != nil {
+				v.release = old.release
+				return true
+			}
+			release, err := mgr.PinCached(v.Hash)
+			if err != nil {
+				return false
+			}
+			v.release = release
+			return true
+		}
+		if !s.update(v, admit) {
 			http.Error(w, "too many viewing sessions", http.StatusTooManyRequests)
 			return
 		}
