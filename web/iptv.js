@@ -27,6 +27,7 @@
       off: 'Выключить',
       disabled: 'выключен',
       channels: 'каналов',
+      entries: 'записей в плейлисте',
       streamError: 'Не удалось открыть канал: ',
       remuxing: 'Перепаковываю поток на сервере (звук провайдера не поддерживается браузером)…',
       noHls: 'Этот браузер не умеет играть HLS-потоки.',
@@ -54,6 +55,7 @@
       off: 'Disable',
       disabled: 'off',
       channels: 'channels',
+      entries: 'playlist entries',
       streamError: 'Cannot open channel: ',
       remuxing: 'Repacking the stream on the server (browser cannot decode the provider audio)…',
       noHls: 'This browser cannot play HLS streams.',
@@ -120,27 +122,31 @@
     loading: false
   };
 
-  var view, grid, groupsEl, emptyEl, searchEl, refreshEl, adminOpenEl, closeEl;
+  // Время берём у сервера (в ответе приходит now): системные часы машины
+  // могут уйти на сутки и больше, и тогда «сейчас» в программе и ход передачи
+  // в карточке сдвинулись бы вместе с ними.
+  var clockOffset = 0;
+
+  function serverNow() { return Date.now() + clockOffset; }
+
+  function setServerTime(iso) {
+    var t = Date.parse(iso);
+    if (!isNaN(t)) clockOffset = t - Date.now();
+  }
+
+  var view, grid, groupsEl, emptyEl, searchEl, refreshEl, adminOpenEl;
   var playerWrap, videoEl, playBtn, logoEl, nameEl, nowEl, volEl, muteBtn, noteEl;
   var epgEl, epgTitleEl, epgListEl, adminEl, adminListEl, formEl;
 
-  // ---- Раздел целиком ----
+  // ---- Страница целиком ----
+  // IPTV — отдельная страница (/iptv.html): каналы грузятся сразу при открытии,
+  // «закрытие» раздела сведено к остановке потока (кнопка Back ТВ-пульта — tv.js).
 
-  function isOpen() { return view && !view.hidden; }
-
-  function open() {
-    if (!view) return;
-    view.hidden = false;
-    document.body.classList.add('iptv-on');
-    if (!state.channels.length) loadChannels();
-    focusFirst();
-  }
+  function isOpen() { return !!state.chan; }
 
   function close() {
     stop();
     hidePanels();
-    if (view) view.hidden = true;
-    document.body.classList.remove('iptv-on');
   }
 
   function focusFirst() {
@@ -170,6 +176,7 @@
     fetch('/api/iptv/channels?' + q.join('&'))
       .then(function (r) { return r.json(); })
       .then(function (data) {
+        setServerTime(data.now);
         state.channels = data.channels || [];
         state.groups = data.groups || [];
         state.playlists = data.playlists || [];
@@ -223,9 +230,10 @@
       return;
     }
     if (emptyEl) emptyEl.hidden = true;
-    state.channels.forEach(function (ch) {
+    (window.IPTVFeatures ? IPTVFeatures.filter(state.channels) : state.channels).forEach(function (ch) {
       grid.appendChild(channelCard(ch));
     });
+    focusFirst();
   }
 
   function channelCard(ch) {
@@ -282,6 +290,7 @@
       body.appendChild(badge);
     }
     card.appendChild(body);
+    if (window.IPTVFeatures) IPTVFeatures.decorate(card, ch);
 
     card.addEventListener('click', function () { play(ch); });
     card.addEventListener('keydown', function (e) {
@@ -296,7 +305,7 @@
   function progressPct(p) {
     var s = Date.parse(p.start), e = Date.parse(p.stop);
     if (!(s && e && e > s)) return 0;
-    return Math.max(0, Math.min(100, ((Date.now() - s) / (e - s)) * 100));
+    return Math.max(0, Math.min(100, ((serverNow() - s) / (e - s)) * 100));
   }
 
   function hhmm(iso) {
@@ -308,6 +317,7 @@
   // ---- Плеер ----
 
   function play(ch) {
+    if (window.IPTVFeatures) IPTVFeatures.playing(ch);
     stop();
     state.chan = ch;
     if (!playerWrap) return;
@@ -328,6 +338,8 @@
     if (noteEl) noteEl.hidden = true;
     state.remux = false;
 
+    videoEl.controls = !!ch.archive;
+    var liveLabel = document.querySelector('.iptv-live'); if(liveLabel)liveLabel.textContent = ch.archive ? 'АРХИВ' : 'LIVE';
     var url = ch.play_url || ('/api/iptv/play/' + ch.id + '.m3u8');
     startHls(url, ch);
     state.playing = true;
@@ -363,6 +375,7 @@
     var hls = new Hls({
       // Живой поток: держим небольшой буфер у «края», перемотка не нужна.
       lowLatencyMode: false,
+      startPosition: ch.archive ? 0 : -1,
       liveSyncDurationCount: 3,
       maxBufferLength: 20,
       backBufferLength: 30,
@@ -382,7 +395,7 @@
         if (!remux) {
           state.remux = true;
           showNote(t('remuxing'));
-          setTimeout(function () { startHls(url + '?remux=1', ch, true); }, 800);
+          setTimeout(function () { startHls(url + (url.indexOf('?') >= 0 ? '&' : '?') + 'remux=1', ch, true); }, 800);
           return;
         }
         hls.recoverMediaError();
@@ -474,6 +487,7 @@
     fetch('/api/iptv/epg?channel=' + encodeURIComponent(ch.id) + '&hours=12')
       .then(function (r) { return r.json(); })
       .then(function (data) {
+        setServerTime(data.now);
         var items = data.programs || [];
         if (!epgListEl) return;
         epgListEl.innerHTML = '';
@@ -486,7 +500,7 @@
           row.className = 'iptv-epg-item';
           var now = false;
           try {
-            now = Date.parse(p.start) <= Date.now() && Date.parse(p.stop) > Date.now();
+            now = Date.parse(p.start) <= serverNow() && Date.parse(p.stop) > serverNow();
           } catch (e) { /* noop */ }
           if (now) row.className += ' now';
           var time = document.createElement('span');
@@ -536,8 +550,12 @@
           row.className = 'iptv-admin-row' + (pl.enabled === false ? ' off' : '');
           var name = document.createElement('span');
           name.className = 'iptv-admin-name';
-          name.textContent = pl.name + ' · ' + (pl.channels || 0) + ' ' + t('channels') + (pl.has_epg ? ' · EPG' : '')
+          // Каналов без дублей (visible) в плейлисте обычно меньше, чем записей
+          // (channels): один канал идёт несколькими потоками — SD/HD/«Архив».
+          var n = pl.visible ? pl.visible : (pl.channels || 0);
+          name.textContent = pl.name + ' · ' + n + ' ' + t('channels') + (pl.has_epg ? ' · EPG' : '')
             + (pl.enabled === false ? ' · ' + t('disabled') : '');
+          if (pl.channels && n !== pl.channels) name.title = pl.channels + ' ' + t('entries');
           row.appendChild(name);
           if (pl.last_error) {
             var err = document.createElement('span');
@@ -646,7 +664,7 @@
       .catch(function () { /* гость — управление скрыто */ });
   }
 
-  // ---- Локализация подсказок (сам текст в HTML переводит app.js) ----
+  // ---- Локализация подсказок (текст в HTML переводит общий applyLang из shared.js) ----
 
   function applyLang() {
     if (searchEl) searchEl.placeholder = t('search');
@@ -668,7 +686,6 @@
     searchEl = $('iptv-search');
     refreshEl = $('iptv-refresh');
     adminOpenEl = $('iptv-admin-open');
-    closeEl = $('iptv-close');
     playerWrap = $('iptv-player-wrap');
     videoEl = $('iptv-player');
     playBtn = $('iptv-play');
@@ -685,9 +702,6 @@
     adminListEl = $('iptv-admin-list');
     formEl = $('iptv-form');
 
-    var openBtn = $('iptv-open');
-    if (openBtn) openBtn.addEventListener('click', function () { isOpen() ? close() : open(); });
-    if (closeEl) closeEl.addEventListener('click', close);
     if (refreshEl) {
       refreshEl.addEventListener('click', function () {
         state.channels = [];
@@ -749,29 +763,20 @@
     if (adminClose) adminClose.addEventListener('click', function () { adminEl.hidden = true; });
     if (formEl) formEl.addEventListener('submit', submitPlaylist);
 
-    // ТВ-пульт жмёт #ctrl-play (кнопка плеера фильмов) — в IPTV перехватываем в capture-фазе.
-    var ctrlPlay = $('ctrl-play');
-    if (ctrlPlay) {
-      ctrlPlay.addEventListener('click', function (e) {
-        if (state.chan) {
-          e.stopPropagation();
-          togglePlay();
-        }
-      }, true);
-    }
-
     checkAdmin();
     applyLang();
     document.addEventListener('vv:lang', applyLang);
+    loadChannels();
   }
 
   window.VideoViewerIPTV = {
     isOpen: isOpen,
-    open: open,
     close: close,
     play: play,
+    channels: function () { return state.channels; },
+    render: renderChannels,
     stop: stop,
-    version: 1
+    version: 2
   };
 
   if (document.readyState === 'loading') {

@@ -1,7 +1,6 @@
 // Package streamapi — HTTP-сервис стриминга (микросервис stream): торрент-клиент,
 // стриминг с поддержкой Range, список файлов торрента, HLS-транскодинг (ffmpeg).
-// БД не использует: магнет берёт из query-параметра либо резолвит по id через
-// catalog-сервис.
+// БД не использует: магнет выбранной раздачи берёт из query-параметра.
 package streamapi
 
 import (
@@ -13,21 +12,22 @@ import (
 
 	"github.com/zeoril1/video_viewer/internal/catalog"
 	"github.com/zeoril1/video_viewer/internal/httpx"
+	"github.com/zeoril1/video_viewer/internal/remoteauth"
 	"github.com/zeoril1/video_viewer/internal/tmdb"
 	"github.com/zeoril1/video_viewer/internal/torrents"
 )
 
-// MagnetResolver — резолв магнет-ссылки по id: в проде клиент catalog-сервиса,
-// nil — /api/stream/{id} без ?magnet= отдаёт 404.
-type MagnetResolver interface {
-	FindMagnet(ctx context.Context, id string) (string, bool)
-}
-
 // Config — зависимости HTTP-сервиса стриминга.
 type Config struct {
-	Torrents *torrents.Manager
-	Addr     string         // адрес прослушивания (для внутреннего URL ffmpeg)
-	Resolver MagnetResolver // опциональный резолв магнета по id (catalog-сервис)
+	AuthURL                   string
+	Context                   context.Context
+	AnalysisStoreURL          string
+	DisableSegmentAnalysis    bool
+	MaxSessions               int
+	MaxHLSBytes, MinFreeBytes int64
+	HLSForwardBytes           int64 // per-viewer prepared media ahead; 0 = 1 GiB.
+	Torrents                  *torrents.Manager
+	Addr                      string // адрес прослушивания (для внутреннего URL ffmpeg)
 	// TMDB — опциональный клиент TMDB (nil — файлы раскладываются только по именам):
 	// нужен, чтобы приводить сезоны трекера к TMDB (сборники нумеруют серии сквозняком).
 	TMDB *tmdb.Client
@@ -43,10 +43,34 @@ func NewServer(cfg Config) (http.Handler, func()) {
 
 	// HLS-транскодинг (ffmpeg): звук в браузере и выбор звуковой дорожки.
 	hls := newHLSManager(selfBase(cfg.Addr))
+	if cfg.MaxSessions > 0 {
+		hls.slots = make(chan struct{}, cfg.MaxSessions)
+	}
+	hls.maxDiskBytes = cfg.MaxHLSBytes
+	hls.minFreeBytes = cfg.MinFreeBytes
+	if cfg.HLSForwardBytes > 0 {
+		hls.forwardBytes = cfg.HLSForwardBytes
+	}
 	go hls.cleanup()
+	go hls.watchResources()
+	analyzer := newEpisodeAnalyzer(hls, cfg)
+	access := remoteauth.New(cfg.AuthURL)
+	viewers := newViewingStore()
+	go viewers.cleanup(hls.done)
+	go hls.pruneConsumed()
+	// Private loopback sink for FFmpeg; a blocked buffer upload has no timeout.
+	mux.HandleFunc("PUT "+hlsOutputPath+"{token}/{name}", hls.serveOutput)
+	// FFmpeg 6.1 uses POST for the nested WebVTT playlist even with -method PUT.
+	mux.HandleFunc("POST "+hlsOutputPath+"{token}/{name}", hls.serveOutput)
+	mux.HandleFunc("POST /api/stream/viewing", viewers.handle(cfg.Torrents, access, hls))
+	mux.HandleFunc("DELETE /api/stream/viewing", viewers.handle(cfg.Torrents, access, hls))
+	storage := &storageHandler{mgr: cfg.Torrents, hls: hls, access: access, viewers: viewers}
+	mux.HandleFunc("GET /api/admin/storage", storage.list)
+	mux.HandleFunc("DELETE /api/admin/storage/{hash}", storage.remove)
+	mux.HandleFunc("POST /api/stream/prepare", prepareHandler(cfg.Torrents, analyzer))
+	mux.HandleFunc("GET /api/stream/download-status", downloadStatusHandler(cfg.Torrents))
 
-	// GET /api/stream/{id} — стриминг с поддержкой Range; необязательный magnet=...
-	// задаёт конкретную раздачу, иначе магнет резолвится по id через catalog-сервис.
+	// GET /api/stream/{id} — стриминг с поддержкой Range; magnet задаёт раздачу.
 	mux.HandleFunc("GET /api/stream/", func(w http.ResponseWriter, r *http.Request) {
 		id := strings.TrimPrefix(r.URL.Path, "/api/stream/")
 		if id == "" || strings.Contains(id, "/") {
@@ -55,16 +79,8 @@ func NewServer(cfg Config) (http.Handler, func()) {
 		}
 		m := strings.TrimSpace(r.URL.Query().Get("magnet"))
 		if m == "" {
-			if cfg.Resolver == nil {
-				http.NotFound(w, r)
-				return
-			}
-			var ok bool
-			m, ok = cfg.Resolver.FindMagnet(r.Context(), id)
-			if !ok {
-				http.NotFound(w, r)
-				return
-			}
+			http.Error(w, "magnet is required", http.StatusBadRequest)
+			return
 		}
 		handleStream(cfg.Torrents, catalog.Item{ID: id, Magnet: m}, cfg.Readahead)(w, r)
 	})
@@ -82,10 +98,27 @@ func NewServer(cfg Config) (http.Handler, func()) {
 	mux.HandleFunc("GET /api/films/{id}/files", func(w http.ResponseWriter, r *http.Request) {
 		handleTorrentFiles(cfg.Torrents, cfg.TMDB)(w, r)
 	})
+	mux.HandleFunc("POST /api/films/{id}/files", func(w http.ResponseWriter, r *http.Request) {
+		var params struct {
+			Magnet string `json:"magnet"`
+			Title  string `json:"title"`
+			TMDB   string `json:"tmdb"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&params); err != nil {
+			http.Error(w, "invalid file request", http.StatusBadRequest)
+			return
+		}
+		q := r.URL.Query()
+		q.Set("magnet", params.Magnet)
+		q.Set("title", params.Title)
+		q.Set("tmdb", params.TMDB)
+		r.URL.RawQuery = q.Encode()
+		handleTorrentFiles(cfg.Torrents, cfg.TMDB)(w, r)
+	})
 
 	// GET /api/films/{imdbID}/tracks — звуковые дорожки торрента (ffprobe).
 	mux.HandleFunc("GET /api/films/{id}/tracks", func(w http.ResponseWriter, r *http.Request) {
-		handleTracks(hls)(w, r)
+		handleTracks(hls, cfg.Torrents)(w, r)
 	})
 
 	// GET /api/films/{imdbID}/hls.m3u8 — HLS-плейлист (ffmpeg, выбранная дорожка).
@@ -137,7 +170,9 @@ func NewServer(cfg Config) (http.Handler, func()) {
 	})
 
 	return httpx.LogMiddleware(mux), func() {
+		analyzer.cancel()
 		// Останавливаем все ffmpeg-сессии, чтобы не оставить осиротевшие процессы.
+		close(hls.done)
 		hls.stopAll()
 	}
 }

@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Вход на ТВ — Кинотека</title>
+    <script src="theme.js?v=1"></script>
+    <link rel="stylesheet" href="style.css?v=22" />
+    <link rel="stylesheet" href="features.css?v=2" />
+    <link rel="stylesheet" href="redesign.css?v=2" />
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="logo" href="/">Кинотека</a>
+      <div class="lang-switch" role="group" aria-label="Язык / Language">
+        <button id="lang-ru" class="lang-btn" data-lang="ru" type="button">RU</button>
+        <button id="lang-en" class="lang-btn" data-lang="en" type="button">EN</button>
+      </div>
+      <div class="user-area" id="user-area" hidden>
+        <span id="user-name" class="user-name"></span>
+        <a id="admin-link" class="auth-btn" href="/admin.html" hidden>Администрирование</a>
+        <button id="auth-logout" class="auth-btn" type="button">Выйти</button>
+      </div>
+      <a id="auth-open" class="auth-btn auth-btn-primary" href="/login.html" hidden>Войти</a>
+    </header>
+    <main class="feature-page">
+      <h1 id="device-title">Вход на телевизоре</h1>
+      <p
+        id="feature-status"
+        class="feature-message"
+        role="status"
+        aria-live="polite"
+      ></p>
+      <section id="device-display">
+        <button id="device-start" class="auth-btn">Получить код</button>
+        <div id="device-code" class="device-code" aria-live="polite"></div>
+        <p id="device-instructions"></p>
+      </section>
+      <form id="device-approve" class="feature-form" hidden>
+        <label
+          >Код с экрана телевизора<input
+            name="code"
+            autocomplete="off"
+            autocapitalize="characters"
+            minlength="8"
+            maxlength="9"
+            pattern="[a-fA-F0-9-]{8,9}"
+            required /></label
+        ><button class="auth-btn">Подтвердить вход на телевизоре</button>
+      </form>
+    </main>
+    <script src="shared.js?v=3"></script>
+    <script src="personal.js?v=2"></script>
+    <script src="features.js?v=1"></script>
+    <script src="device.js?v=1"></script>
+  </body>
+</html>

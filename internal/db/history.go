@@ -8,6 +8,7 @@ import (
 // WatchProgress — позиция просмотра для сохранения в историю.
 type WatchProgress struct {
 	FilmID   string  // imdb_id / id фильма
+	Voice    string  // выбранная озвучка
 	Magnet   string  // магнет-ссылка выбранного источника
 	File     int     // индекс файла (серии) в торренте; -1 — авто
 	Season   int     // сезон (0 — фильм/не определён)
@@ -24,6 +25,7 @@ type HistoryEntry struct {
 	Kind      string    `json:"kind,omitempty"`
 	Year      int       `json:"year"`
 	PosterURL string    `json:"poster_url"`
+	Voice     string    `json:"voice,omitempty"`
 	Magnet    string    `json:"magnet,omitempty"`
 	File      int       `json:"file"`
 	Season    int       `json:"season"`
@@ -47,6 +49,7 @@ CREATE TABLE IF NOT EXISTS watch_history (
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 	UNIQUE (user_id, film_id, magnet, file)
 );
+ALTER TABLE watch_history ADD COLUMN IF NOT EXISTS voice TEXT NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS idx_watch_history_user ON watch_history (user_id, updated_at DESC);
 `
 
@@ -55,19 +58,43 @@ func (r *Repo) ensureHistorySchema(ctx context.Context) error {
 	return err
 }
 
+// ListEpisodeHistory returns every saved file for a title, newest first.
+// Unlike the home-page history, this must not collapse seasons or episodes.
+func (r *Repo) ListEpisodeHistory(ctx context.Context, userID int64, filmID string) ([]HistoryEntry, error) {
+	rows, err := r.conn.QueryContext(ctx, `SELECT film_id, magnet, file, season, episode,
+		position_sec, duration_sec, updated_at, voice FROM watch_history
+		WHERE user_id=$1 AND film_id=$2
+		ORDER BY (updated_at <= now()) DESC, updated_at DESC, id DESC`, userID, filmID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]HistoryEntry, 0)
+	for rows.Next() {
+		var e HistoryEntry
+		if err := rows.Scan(&e.FilmID, &e.Magnet, &e.File, &e.Season, &e.Episode,
+			&e.Position, &e.Duration, &e.UpdatedAt, &e.Voice); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
 // SaveWatchProgress сохраняет/обновляет позицию просмотра (upsert по user+film+magnet+file —
 // один эпизод одного источника = одна запись, чтобы при повторном поиске источников не плодились дубли).
 func (r *Repo) SaveWatchProgress(ctx context.Context, userID int64, p WatchProgress) error {
 	_, err := r.conn.ExecContext(ctx, `
-		INSERT INTO watch_history (user_id, film_id, magnet, file, season, episode, position_sec, duration_sec)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		INSERT INTO watch_history (user_id, film_id, magnet, file, season, episode, position_sec, duration_sec, voice)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		ON CONFLICT (user_id, film_id, magnet, file) DO UPDATE SET
+			voice        = EXCLUDED.voice,
 			season       = EXCLUDED.season,
 			episode      = EXCLUDED.episode,
 			position_sec = EXCLUDED.position_sec,
 			duration_sec = EXCLUDED.duration_sec,
 			updated_at   = now()
-	`, userID, p.FilmID, p.Magnet, p.File, p.Season, p.Episode, p.Position, p.Duration)
+	`, userID, p.FilmID, p.Magnet, p.File, p.Season, p.Episode, p.Position, p.Duration, p.Voice)
 	return err
 }
 
@@ -77,7 +104,7 @@ func (r *Repo) SaveWatchProgress(ctx context.Context, userID int64, p WatchProgr
 func (r *Repo) ListWatchHistory(ctx context.Context, userID int64, limit int) ([]HistoryEntry, error) {
 	rows, err := r.conn.QueryContext(ctx, `
 		SELECT film_id, title, title_ru, kind, year, poster_url,
-		       magnet, file, season, episode, position_sec, duration_sec, updated_at
+		       magnet, file, season, episode, position_sec, duration_sec, updated_at, voice
 		FROM (
 			SELECT DISTINCT ON (wh.film_id)
 			       wh.film_id,
@@ -87,13 +114,14 @@ func (r *Repo) ListWatchHistory(ctx context.Context, userID int64, limit int) ([
 			       COALESCE(NULLIF(SUBSTRING(f.release_date FROM 1 FOR 4), '')::int, 0) AS year,
 			       COALESCE(f.poster_url, '')             AS poster_url,
 			       wh.magnet, wh.file, wh.season, wh.episode,
-			       wh.position_sec, wh.duration_sec, wh.updated_at
+			       wh.position_sec, wh.duration_sec, wh.updated_at, wh.voice
 			FROM watch_history wh
 			LEFT JOIN films f ON f.imdb_id = wh.film_id
 			WHERE wh.user_id = $1
-			ORDER BY wh.film_id, wh.updated_at DESC
+			-- Clock skew in older records must not hide current playback.
+			ORDER BY wh.film_id, (wh.updated_at <= now()) DESC, wh.updated_at DESC, wh.id DESC
 		) sub
-		ORDER BY updated_at DESC
+		ORDER BY (updated_at <= now()) DESC, updated_at DESC
 		LIMIT $2
 	`, userID, limit)
 	if err != nil {
@@ -105,7 +133,7 @@ func (r *Repo) ListWatchHistory(ctx context.Context, userID int64, limit int) ([
 	for rows.Next() {
 		var e HistoryEntry
 		if err := rows.Scan(&e.FilmID, &e.Title, &e.TitleRU, &e.Kind, &e.Year, &e.PosterURL,
-			&e.Magnet, &e.File, &e.Season, &e.Episode, &e.Position, &e.Duration, &e.UpdatedAt); err != nil {
+			&e.Magnet, &e.File, &e.Season, &e.Episode, &e.Position, &e.Duration, &e.UpdatedAt, &e.Voice); err != nil {
 			return nil, err
 		}
 		out = append(out, e)

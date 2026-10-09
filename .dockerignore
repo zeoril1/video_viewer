@@ -10,6 +10,7 @@ video_viewer.exe
 # Логи и локальные данные
 *.log
 data/*.local.json
+output/design-preview
 
 # Jackett — отдельный сервис, его конфиг не нужен в контексте сборки
 jackett

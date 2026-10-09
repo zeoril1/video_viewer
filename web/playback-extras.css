@@ -1,0 +1,21 @@
+.playback-extras{margin:1rem 0;padding:1rem;border:1px solid var(--border);border-radius:12px;background:var(--panel);color:var(--text)}
+.playback-extras [hidden]{display:none!important}
+.playback-extras button,.playback-extras select,.playback-extras input{font:inherit;border:1px solid var(--border-strong);border-radius:7px;padding:.55rem;background:var(--panel-2);color:var(--text);max-width:100%}
+.playback-extras button{cursor:pointer;margin:.25rem}
+.playback-extras button:focus-visible,.playback-extras input:focus-visible,.playback-extras select:focus-visible,.playback-extras summary:focus-visible{outline:3px solid var(--focus);outline-offset:3px}
+.playback-extras summary{cursor:pointer;padding:.5rem 0}
+.playback-settings{display:flex;flex-wrap:wrap;gap:1rem;padding:1rem 0}
+.playback-settings label{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap}
+.playback-settings input[type=number]{width:6rem}
+.playback-extras p{margin:.5rem 0;font-size:.95rem;color:var(--muted)}
+#loading-state{padding:.7rem;border-left:3px solid var(--info);margin-bottom:1rem}
+.playback-loading{position:absolute;inset:0 0 48px;z-index:5;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;gap:.5rem;background:var(--player-overlay);color:var(--player-text);overflow:auto}
+.playback-loading[hidden]{display:none}
+.playback-loading p{margin:.3rem;max-width:38rem;color:var(--player-overlay-muted);font-size:.95rem}
+.playback-loading button{font:inherit;padding:.45rem .8rem;border:1px solid var(--player-control-border);background:var(--player-control-bg);color:var(--player-text);border-radius:7px;cursor:pointer}
+.playback-loading button[hidden]{display:none}
+.playback-loading button:focus-visible{outline:3px solid var(--player-focus)}
+#room-invite{display:block;margin:.6rem 0}#room-link{display:block;width:100%;box-sizing:border-box;margin-top:.4rem}
+.room-guest #ctrl-play,.room-guest #ctrl-prev,.room-guest #ctrl-next,.room-guest #ctrl-seek-b,.room-guest #ctrl-seek-f{display:none}
+.room-guest #ctrl-bar{pointer-events:none}
+@media(max-width:600px){.playback-settings{display:grid}.playback-extras{padding:.7rem}}

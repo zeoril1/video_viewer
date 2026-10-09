@@ -1,6 +1,6 @@
 // stream — микросервис стриминга: торрент-клиент (in-memory), стриминг
 // с поддержкой Range, список файлов торрента, HLS-транскодинг (ffmpeg).
-// Без БД: магнет-ссылку берёт из query-параметра или (по id) через catalog.
+// Без БД: магнет-ссылку берёт из query-параметра выбранной раздачи.
 package main
 
 import (
@@ -12,7 +12,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/zeoril1/video_viewer/internal/client"
 	"github.com/zeoril1/video_viewer/internal/httpx"
 	"github.com/zeoril1/video_viewer/internal/streamapi"
 	"github.com/zeoril1/video_viewer/internal/tmdb"
@@ -23,9 +22,13 @@ func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
 	var (
-		addr       = flag.String("addr", ":8082", "HTTP listen address")
-		port       = flag.Int("port", 0, "torrent client listen port (0 = random)")
-		catalogURL = flag.String("catalog-url", envOr("CATALOG_URL", "http://127.0.0.1:8081"), "catalog-service base URL (для резолва магнета по id)")
+		maxSessions = flag.Int("max-sessions", 4, "maximum concurrent HLS processes")
+		maxCache    = flag.Int64("cache-bytes", 40<<30, "maximum logical spool size in bytes")
+		maxHLS      = flag.Int64("hls-bytes", 8<<30, "maximum HLS output bytes (one-second watchdog)")
+		forwardHLS  = flag.Int64("hls-forward-bytes", 1<<30, "maximum prepared HLS media ahead per viewer in bytes")
+		minFree     = flag.Int64("min-free-bytes", 2<<30, "minimum free disk space")
+		addr        = flag.String("addr", ":8082", "HTTP listen address")
+		port        = flag.Int("port", 0, "torrent client listen port (0 = random)")
 		// spoolDir — каталог дискового спула скачанных кусков (по файлу на
 		// серию; файлы удаляются после просмотра). Пусто — данные в RAM.
 		spoolDir = flag.String("spool-dir", envOr("STREAM_DATA_DIR", ""), "каталог для временного дискового спула, по файлу на серию (пусто — данные в RAM)")
@@ -41,32 +44,26 @@ func main() {
 		tmdbURL = flag.String("tmdb-url", tmdb.DefaultBaseURL, "TMDB API v3 base URL")
 	)
 	flag.Parse()
+	if *maxSessions < 1 || *maxCache < 1 || *maxHLS < 1 || *forwardHLS < 1 || *minFree < 0 {
+		log.Fatal("invalid resource limits")
+	}
 
 	// Контекст приложения для graceful shutdown.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	mgr, err := torrents.NewManager(torrents.Config{
-		ListenPort: *port,
-		SpoolDir:   *spoolDir,
-		CacheTTL:   *cacheTTL,
-		MaxCached:  *cacheMax,
+		MaxCacheBytes: *maxCache,
+		MinFreeBytes:  *minFree,
+		ListenPort:    *port,
+		SpoolDir:      *spoolDir,
+		CacheTTL:      *cacheTTL,
+		MaxCached:     *cacheMax,
 	})
 	if err != nil {
 		log.Fatalf("create torrent manager: %v", err)
 	}
 	defer mgr.Close()
-
-	// Резолв магнет-ссылки по id через catalog-сервис (nil — отключено:
-	// /api/stream/{id} без ?magnet= вернёт 404).
-	resolver := client.NewCatalogClient(*catalogURL)
-	if resolver == nil {
-		log.Printf("warn: CATALOG_URL не задан — резолв магнета по id отключён (нужен явный ?magnet=)")
-	} else {
-		log.Printf("catalog client: %s", *catalogURL)
-	}
-
-	log.Printf("config: addr=%s torrent_port=%d catalog=%v", *addr, *port, resolver != nil)
 
 	// TMDB опционален: нужен, чтобы раскладывать файлы сериалов по сезонам
 	// TMDB (у трекеров своя нарезка, сборники нумеруют серии сквозняком);
@@ -82,11 +79,18 @@ func main() {
 	}
 
 	handler, stopHLS := streamapi.NewServer(streamapi.Config{
-		Torrents:  mgr,
-		Addr:      *addr,
-		Resolver:  resolver,
-		Readahead: *readahead,
-		TMDB:      tmdbClient,
+		AuthURL:                envOr("AUTH_URL", "http://127.0.0.1:8083"),
+		Context:                ctx,
+		AnalysisStoreURL:       envOr("SEGMENTS_CATALOG_URL", "http://127.0.0.1:8081"),
+		DisableSegmentAnalysis: os.Getenv("SEGMENTS_ANALYSIS_ENABLED") == "false",
+		MaxSessions:            *maxSessions,
+		MaxHLSBytes:            *maxHLS,
+		HLSForwardBytes:        *forwardHLS,
+		MinFreeBytes:           *minFree,
+		Torrents:               mgr,
+		Addr:                   *addr,
+		Readahead:              *readahead,
+		TMDB:                   tmdbClient,
 	})
 
 	// При shutdown останавливаем ffmpeg-сессии (иначе процессы осиротеют).

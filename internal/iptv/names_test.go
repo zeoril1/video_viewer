@@ -128,4 +128,9 @@ func TestStreamQuality(t *testing.T) {
 	if q := StreamQuality("Канал (576p)", true); q <= StreamQuality("Канал (576p)", false) {
 		t.Errorf("HLS-вариант (%d) должен выигрывать у TS при равном разрешении", q)
 	}
+	// «Архив» — перемотка канала, а не живой эфир: у одного tvg-id рядом идут
+	// «Звезда», «Звезда HD» и «Звезда (Архив)», и каналом должен остаться прямой поток.
+	if q := StreamQuality("Звезда (Архив)", true); q >= StreamQuality("Звезда", true) {
+		t.Errorf("архивный поток (%d) не должен выигрывать у прямого (%d)", q, StreamQuality("Звезда", true))
+	}
 }

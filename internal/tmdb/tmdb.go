@@ -492,9 +492,11 @@ func (c *Client) SeasonsCount(ctx context.Context, tmdbID int64) (int, error) {
 
 // SeasonInfo — сезон TMDB: номер, число серий и год старта (спецматериалы — сезон 0).
 type SeasonInfo struct {
-	Number   int `json:"season_number"`
-	Episodes int `json:"episode_count"`
-	Year     int `json:"-"`
+	Number   int    `json:"season_number"`
+	Episodes int    `json:"episode_count"`
+	Year     int    `json:"year,omitempty"`
+	Name     string `json:"name,omitempty"`
+	AirDate  string `json:"air_date,omitempty"`
 }
 
 // SeasonStructure возвращает структуру сезонов сериала (число серий и год).
@@ -513,6 +515,7 @@ func (c *Client) SeasonStructure(ctx context.Context, tmdbID int64) ([]SeasonInf
 			Number   int    `json:"season_number"`
 			Episodes int    `json:"episode_count"`
 			AirDate  string `json:"air_date"`
+			Name     string `json:"name"`
 		} `json:"seasons"`
 	}
 	if err := json.Unmarshal(body, &d); err != nil {
@@ -527,7 +530,7 @@ func (c *Client) SeasonStructure(ctx context.Context, tmdbID int64) ([]SeasonInf
 		if len(s.AirDate) >= 4 {
 			year = atoi(s.AirDate[:4])
 		}
-		out = append(out, SeasonInfo{Number: s.Number, Episodes: s.Episodes, Year: year})
+		out = append(out, SeasonInfo{Number: s.Number, Episodes: s.Episodes, Year: year, Name: s.Name, AirDate: s.AirDate})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Number < out[j].Number })
 	return out, nil
@@ -802,44 +805,135 @@ func (c *Client) Overview(ctx context.Context, tmdbID int64, kind, lang string) 
 	return strings.TrimSpace(d.Overview)
 }
 
-// Credits возвращает режиссёра (первый с job "Director") и до 6 актёров:
+// Person — человек из титров TMDB: ID (ключ таблицы переводов имён) и имя на языке запроса.
+type Person struct {
+	ID   int64
+	Name string
+}
+
+// PersonName — имена одного человека: оригинал (исходное написание TMDB) и русский перевод
+// (пустой, если TMDB русского имени не знает).
+type PersonName struct {
+	ID     int64
+	Name   string
+	NameRU string
+}
+
+// Credits — титры фильма: режиссёр и до 6 главных ролей в исходном написании плюс пары имён
+// «оригинал → русский» для таблицы переводов.
+type Credits struct {
+	Director string
+	Actors   []string
+	Names    []PersonName
+}
+
+// creditsResult — титры одного языка с id людей.
+type creditsResult struct {
+	Director Person
+	Actors   []Person
+}
+
+// maxCreditsActors — сколько главных ролей берём из титров (для карточки хватает).
+const maxCreditsActors = 6
+
+// Credits возвращает режиссёра (первый с job "Director") и до 6 актёров в исходном написании TMDB:
 // используется для сверки при поиске по названию и заполнения карточки.
 func (c *Client) Credits(ctx context.Context, tmdbID int64, kind string) (director string, actors []string, err error) {
+	cr, err := c.credits(ctx, tmdbID, kind, "")
+	if err != nil {
+		return "", nil, err
+	}
+	return cr.Director.Name, personNames(cr.Actors), nil
+}
+
+// CreditsLocalized запрашивает титры дважды: в исходном написании и по-русски (TMDB отдаёт имена
+// на языке запроса). Русские имена сопоставляются по id человека — из пар «оригинал → перевод»
+// карточка показывает режиссёра/актёров на языке сайта.
+func (c *Client) CreditsLocalized(ctx context.Context, tmdbID int64, kind string) (Credits, error) {
+	en, err := c.credits(ctx, tmdbID, kind, "")
+	if err != nil {
+		return Credits{}, err
+	}
+	ru, err := c.credits(ctx, tmdbID, kind, "ru-RU")
+	if err != nil {
+		// Без русского варианта пары неполные — не сохраняем ничего, задача повторит позже.
+		return Credits{}, err
+	}
+	ruByID := make(map[int64]string, len(ru.Actors)+1)
+	for _, p := range append([]Person{ru.Director}, ru.Actors...) {
+		if p.ID > 0 && p.Name != "" {
+			ruByID[p.ID] = p.Name
+		}
+	}
+	out := Credits{Director: en.Director.Name, Actors: personNames(en.Actors)}
+	for _, p := range append([]Person{en.Director}, en.Actors...) {
+		if p.ID <= 0 || p.Name == "" {
+			continue
+		}
+		nameRU := ruByID[p.ID]
+		if nameRU == p.Name {
+			nameRU = "" // TMDB отдал то же написание — перевода нет
+		}
+		out.Names = append(out.Names, PersonName{ID: p.ID, Name: p.Name, NameRU: nameRU})
+	}
+	return out, nil
+}
+
+// credits — титры на одном языке (lang пустой — исходное написание): режиссёр и до 6 актёров.
+func (c *Client) credits(ctx context.Context, tmdbID int64, kind, lang string) (creditsResult, error) {
 	path := fmt.Sprintf("/movie/%d/credits", tmdbID)
 	if kind == "tvSeries" || kind == "tvMiniSeries" {
 		path = fmt.Sprintf("/tv/%d/credits", tmdbID)
 	}
-	body, err := c.get(ctx, path, url.Values{})
+	q := url.Values{}
+	if lang != "" {
+		q.Set("language", lang)
+	}
+	body, err := c.get(ctx, path, q)
 	if err != nil {
-		return "", nil, err
+		return creditsResult{}, err
 	}
 	var r struct {
 		Crew []struct {
+			ID   int64  `json:"id"`
 			Job  string `json:"job"`
 			Name string `json:"name"`
 		} `json:"crew"`
 		Cast []struct {
+			ID   int64  `json:"id"`
 			Name string `json:"name"`
 		} `json:"cast"`
 	}
 	if err := json.Unmarshal(body, &r); err != nil {
-		return "", nil, err
+		return creditsResult{}, err
 	}
+	var out creditsResult
 	for _, m := range r.Crew {
 		if m.Job == "Director" && strings.TrimSpace(m.Name) != "" {
-			director = strings.TrimSpace(m.Name)
+			out.Director = Person{ID: m.ID, Name: strings.TrimSpace(m.Name)}
 			break
 		}
 	}
-	for i, m := range r.Cast {
-		if i >= 6 {
+	for _, m := range r.Cast {
+		if len(out.Actors) >= maxCreditsActors {
 			break
 		}
 		if n := strings.TrimSpace(m.Name); n != "" {
-			actors = append(actors, n)
+			out.Actors = append(out.Actors, Person{ID: m.ID, Name: n})
 		}
 	}
-	return director, actors, nil
+	return out, nil
+}
+
+// personNames — имена людей из титров (в порядке следования).
+func personNames(people []Person) []string {
+	out := make([]string, 0, len(people))
+	for _, p := range people {
+		if p.Name != "" {
+			out = append(out, p.Name)
+		}
+	}
+	return out
 }
 
 // getPage выполняет GET и декодирует пагинированный ответ.

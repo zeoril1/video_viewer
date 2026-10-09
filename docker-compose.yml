@@ -35,8 +35,6 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-video_viewer}
       POSTGRES_USER: ${POSTGRES_USER:-video_viewer}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-video_viewer}
-    ports:
-      - "5432:5432"        # PostgreSQL — доступ для pgAdmin 4 / внешних клиентов
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -66,11 +64,19 @@ services:
       jackett:
         condition: service_started
     environment:
+      HTTP_PROXY: http://gluetun:8888
+      HTTPS_PROXY: http://gluetun:8888
+      NO_PROXY: localhost,127.0.0.1,db,jackett,catalog,stream,auth,iptv,192.168.88.0/24
+      http_proxy: http://gluetun:8888
+      https_proxy: http://gluetun:8888
+      no_proxy: localhost,127.0.0.1,db,jackett,catalog,stream,auth,iptv,192.168.88.0/24
       DATABASE_URL: ${DATABASE_URL:-postgres://video_viewer:video_viewer@db:5432/video_viewer?sslmode=disable}
       # Ключи TMDB (api.themoviedb.org). Задайте в .env рядом с
       # docker-compose.yml (TMDB_API_KEY / TMDB_ACCESS_TOKEN) или в окружении.
       TMDB_API_KEY: ${TMDB_API_KEY:-}
       TMDB_ACCESS_TOKEN: ${TMDB_ACCESS_TOKEN:-}
+      SEGMENTS_EXTERNAL_ENABLED: ${SEGMENTS_EXTERNAL_ENABLED:-true}
+      THEINTRODB_API_KEY: ${THEINTRODB_API_KEY:-}
       # Dev-пользователь (SeedDevUser) — создаётся только если заданы оба.
       DEV_USER: ${DEV_USER:-}
       DEV_PASSWORD: ${DEV_PASSWORD:-}
@@ -82,10 +88,8 @@ services:
       JACKETT_URL: ${JACKETT_URL:-http://jackett:9117}
       JACKETT_API_KEY: ${JACKETT_API_KEY:-}
       JACKETT_INDEXER: ${JACKETT_INDEXER:-rutracker-ru}
-    volumes:
-      - ./data:/app/data   # каталог (catalog.json) — правите без пересборки образа
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8081/api/health >/dev/null || exit 1"]
+      test: ["CMD-SHELL", "wget -Y off -qO- http://127.0.0.1:8081/api/health >/dev/null || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 15
@@ -101,30 +105,34 @@ services:
         WITH_FFMPEG: "1"
     image: video-viewer-stream:latest
     container_name: video-viewer-stream
+    mem_limit: ${STREAM_MEMORY_LIMIT:-2g}
+    cpus: ${STREAM_CPUS:-4.0}
+    pids_limit: 256
     restart: unless-stopped
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
-    depends_on:
-      catalog:
-        condition: service_healthy
     environment:
-      # Для резолва магнет-ссылки по id (/api/stream/{id} без ?magnet=).
-      CATALOG_URL: ${CATALOG_URL:-http://catalog:8081}
       # Дисковый спул скачанных кусков (вместо RAM): временный каталог, файлы
       # создаются по одному на серию/файл торрента (место выделяется только
       # под то, что качается) и удаляются после просмотра. Пустая
       # STREAM_DATA_DIR отключает спул.
       STREAM_DATA_DIR: ${STREAM_DATA_DIR:-/app/cache}
+      HLS_WORK_ROOT: /app/hls-cache
+      AUTH_URL: http://auth:8083
+      # Анализ полностью загруженных серий и постоянное хранение интервалов.
+      SEGMENTS_CATALOG_URL: http://catalog:8081
+      SEGMENTS_ANALYSIS_ENABLED: ${SEGMENTS_ANALYSIS_ENABLED:-true}
       # Ключи TMDB — для раскладки файлов сериалов по сезонам TMDB (у трекеров
       # своя нарезка сезонов, сборники нумеруют серии сквозняком).
       TMDB_API_KEY: ${TMDB_API_KEY:-}
       TMDB_ACCESS_TOKEN: ${TMDB_ACCESS_TOKEN:-}
     volumes:
+      - stream-hls-cache:/app/hls-cache
       - stream-cache:/app/cache   # временные данные стриминга (спул)
-    command: ["/app/app", "-addr", ":8082", "-port", "42069"]
+    command: ["/app/app", "-addr", ":8082", "-port", "42069", "-max-sessions", "${STREAM_MAX_SESSIONS:-4}", "-cache-bytes", "${STREAM_CACHE_BYTES:-42949672960}", "-hls-bytes", "${STREAM_HLS_BYTES:-8589934592}", "-min-free-bytes", "${STREAM_MIN_FREE_BYTES:-2147483648}"]
     ports:
       - "42069:42069/udp"  # BitTorrent uTP/DHT (для входящих пиров)
     healthcheck:
@@ -235,9 +243,7 @@ services:
       AUTH_URL: ${AUTH_URL:-http://auth:8083}
       IPTV_URL: ${IPTV_URL:-http://iptv:8084}
     ports:
-      - "8080:8080"        # веб-интерфейс / API (единственный публичный HTTP-порт)
-    volumes:
-      - ./web:/app/web     # фронтенд — правите без пересборки образа
+      - "8090:8080"        # веб-интерфейс / API (единственный публичный HTTP-порт)
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/api/health >/dev/null || exit 1"]
       interval: 10s
@@ -319,6 +325,7 @@ volumes:
   # Временные данные стриминга (дисковый спул stream-сервиса);
   # контейнер удаляет файлы спула после просмотра сам.
   stream-cache:
+  stream-hls-cache:
   # Временные HLS-сессии ffmpeg сервиса IPTV (плейлист и сегменты канала);
   # сессия гасится после бездействия, каталог удаляется.
   iptv-cache:

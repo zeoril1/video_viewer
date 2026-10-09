@@ -17,7 +17,7 @@ import (
 )
 
 // User — учётная запись пользователя сайта (для истории просмотра).
-// Role: "user" (по умолчанию) или "admin" (админ-страница каталога).
+// Role: user, moderator (разметка пропусков) или admin (управление сайтом).
 type User struct {
 	ID       int64     `json:"id"`
 	Username string    `json:"username"`
@@ -50,6 +50,9 @@ func (r *Repo) ensureAuthSchema(ctx context.Context) error {
 	if _, err := r.conn.ExecContext(ctx, "ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'user'"); err != nil {
 		return err
 	}
+	if err := r.ensureUserRoles(ctx); err != nil {
+		return err
+	}
 	_, _ = r.conn.ExecContext(ctx, `DELETE FROM sessions WHERE expires_at < now()`)
 	return nil
 }
@@ -58,7 +61,7 @@ func (r *Repo) ensureAuthSchema(ctx context.Context) error {
 func (r *Repo) CreateUser(ctx context.Context, username, passwordHash string) (int64, error) {
 	var id int64
 	err := r.conn.QueryRowContext(ctx,
-		`INSERT INTO users (username, password_hash) VALUES ($1, $2) RETURNING id`,
+		`INSERT INTO users (username, password_hash, role) VALUES ($1, $2, 'user') RETURNING id`,
 		username, passwordHash,
 	).Scan(&id)
 	return id, err
@@ -121,8 +124,12 @@ func (r *Repo) DeleteSession(ctx context.Context, token string) error {
 	return err
 }
 
-// SetUserRole устанавливает роль пользователя ("user" или "admin"). Используется для выдачи админ-доступа.
+// SetUserRole используется при доверенной начальной настройке.
+// Админ-панель меняет роли через ChangeUserRole, который защищает последнего администратора.
 func (r *Repo) SetUserRole(ctx context.Context, userID int64, role string) error {
+	if !ValidRole(role) {
+		return ErrInvalidRole
+	}
 	_, err := r.conn.ExecContext(ctx,
 		`UPDATE users SET role = $2 WHERE id = $1`, userID, role)
 	return err
@@ -187,17 +194,12 @@ func (r *Repo) SeedDevUser(ctx context.Context, login, password string) error {
 	if login == "" || password == "" {
 		return nil
 	}
-	u, _, exists, err := r.GetUserByUsername(ctx, login)
+	_, _, exists, err := r.GetUserByUsername(ctx, login)
 	if err != nil {
 		return err
 	}
 	if exists {
-		if u.Role != "admin" {
-			if err := r.SetUserRole(ctx, u.ID, "admin"); err != nil {
-				return err
-			}
-			log.Printf("dev user %q promoted to admin", login)
-		}
+		// Subsequent startup must respect role changes made by an administrator.
 		return nil
 	}
 	hash, err := HashPassword(password)

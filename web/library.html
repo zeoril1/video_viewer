@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Моя медиатека — Кинотека</title>
+    <script src="theme.js?v=1"></script>
+    <link rel="stylesheet" href="style.css?v=22" />
+    <link rel="stylesheet" href="features.css?v=2" />
+    <link rel="stylesheet" href="tv.css?v=2" />
+    <link rel="stylesheet" href="redesign.css?v=2" />
+  </head>
+  <body data-feature="library">
+    <header class="topbar">
+      <a class="logo" href="/">Кинотека</a>
+      <div class="lang-switch" role="group" aria-label="Язык / Language">
+        <button id="lang-ru" class="lang-btn" data-lang="ru" type="button">RU</button>
+        <button id="lang-en" class="lang-btn" data-lang="en" type="button">EN</button>
+      </div>
+      <div class="user-area" id="user-area" hidden>
+        <span id="user-name" class="user-name"></span>
+        <a id="admin-link" class="auth-btn" href="/admin.html" hidden>Администрирование</a>
+        <button id="auth-logout" class="auth-btn" type="button">Выйти</button>
+      </div>
+      <a id="auth-open" class="auth-btn auth-btn-primary" href="/login.html" hidden>Войти</a>
+    </header>
+    <main class="feature-page">
+      <h1>Моя медиатека</h1>
+      <div id="feature-toolbar" class="feature-toolbar"></div>
+      <p
+        id="feature-status"
+        class="feature-message"
+        role="status"
+        aria-live="polite"
+        hidden
+      ></p>
+      <div id="feature-content"></div>
+    </main>
+    <script src="shared.js?v=3"></script>
+    <script src="personal.js?v=2"></script>
+    <script src="features.js?v=1"></script>
+    <script src="subscriptions.js?v=1"></script>
+    <script src="tv.js?v=3"></script>
+  </body>
+</html>

@@ -216,18 +216,18 @@ type seasonEpisode struct {
 	Episodes int `json:"episodes"`
 }
 
-// seasonEpisodes отдаёт структуру сезонов из TMDB (nil — нет клиента, это не сериал или нет tmdb_id).
+// seasonEpisodes reads persisted metadata; the source job refreshes TMDB in the background.
 // Нужна для сетки серий: раздачи трекеров покрывают сезон ЧАСТИЧНО (паки «[S01-02x01-41]» и «[01-21]»
 // дают 40 и 21 серию из 50), иначе в сетке было бы столько серий, сколько отдала первая раздача.
 func seasonEpisodes(ctx context.Context, cfg Config, film db.Film) []seasonEpisode {
-	if cfg.TMDB == nil || !isSeriesKind(film.Kind) {
+	if cfg.DB == nil || !isSeriesKind(film.Kind) {
 		return nil
 	}
 	tmdbID, err := strconv.ParseInt(strings.TrimSpace(film.TMDBID), 10, 64)
 	if err != nil || tmdbID <= 0 {
 		return nil
 	}
-	st, refreshErr := cfg.DB.SeriesSeasons(ctx, tmdbID, cfg.TMDB.SeasonStructure)
+	st, refreshErr := cfg.DB.CachedSeriesSeasons(ctx, tmdbID)
 	if refreshErr != nil {
 		log.Printf("seasons: refresh %d: %v", tmdbID, refreshErr)
 	}

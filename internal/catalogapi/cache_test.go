@@ -3,21 +3,39 @@ package catalogapi
 import (
 	"context"
 	"testing"
-
-	"github.com/zeoril1/video_viewer/internal/catalog"
+	"time"
 )
 
-// testCatalogSvc строит сервис каталога только из магнет-записей (без БД)
-// — для проверки кэширования All/Meta.
-func testCatalogSvc(t *testing.T, items []catalog.Item) *catalogService {
+// testCatalogSvc заполняет кэш записями фильмов без подключения к БД.
+func testCatalogSvc(t *testing.T, items []CatalogItem) *catalogService {
 	t.Helper()
-	return newCatalogService(&catalog.Catalog{Items: items}, nil, nil, nil)
+	svc := newCatalogService(nil, nil, nil)
+	for _, item := range items {
+		svc.allCache = append(svc.allCache, catalogEntry{item: item})
+	}
+	svc.allCachedAt = time.Now()
+	return svc
+}
+
+func TestCatalogWithoutDatabase(t *testing.T) {
+	svc := newCatalogService(nil, nil, nil)
+	items := svc.All(context.Background())
+	if items == nil || len(items) != 0 {
+		t.Fatalf("All() = %v, want non-nil empty catalog", items)
+	}
+	if svc.allCache == nil {
+		t.Fatal("empty catalog was not cached")
+	}
+	page, total := svc.SearchPage(context.Background(), "", "all", "", "", "", false, 1, 30)
+	if len(page) != 0 || total != 0 {
+		t.Fatalf("SearchPage() = %v, %d, want empty page", page, total)
+	}
 }
 
 func TestCatalogAllCached(t *testing.T) {
-	svc := testCatalogSvc(t, []catalog.Item{
-		{ID: "m1", Title: "Первый", Magnet: "magnet:?xt=urn:btih:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
-		{ID: "m2", Title: "Второй", Magnet: "magnet:?xt=urn:btih:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+	svc := testCatalogSvc(t, []CatalogItem{
+		{ID: "m1", Title: "Первый"},
+		{ID: "m2", Title: "Второй"},
 	})
 	a := svc.All(context.Background())
 	b := svc.All(context.Background())
@@ -28,13 +46,10 @@ func TestCatalogAllCached(t *testing.T) {
 	if &a[0] != &b[0] {
 		t.Error("All() не кэшируется: повторный вызов вернул другой слайс")
 	}
-	if a[0].item.Source != "magnet" || !a[0].item.HasMagnet {
-		t.Errorf("All()[0] = %+v, want magnet-запись", a[0].item)
-	}
 }
 
 func TestCatalogMetaCached(t *testing.T) {
-	svc := testCatalogSvc(t, []catalog.Item{
+	svc := testCatalogSvc(t, []CatalogItem{
 		{ID: "m1", Title: "Боевик"},
 		{ID: "m2", Title: "Комедия"},
 	})
@@ -46,7 +61,7 @@ func TestCatalogMetaCached(t *testing.T) {
 		t.Error("Meta kinds не кэшируется: повторный вызов вернул другую карту")
 	}
 	delete(k1, "__test__")
-	// Магнеты без типа -> обе записи в секции movie.
+	// Фильмы без типа -> обе записи в секции movie.
 	if k1["movie"] != 2 {
 		t.Errorf("kinds[movie] = %d, want 2", k1["movie"])
 	}

@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/zeoril1/video_viewer/internal/catalog"
 	"github.com/zeoril1/video_viewer/internal/db"
 	"github.com/zeoril1/video_viewer/internal/imdb"
 	"github.com/zeoril1/video_viewer/internal/tmdb"
@@ -40,25 +39,27 @@ type CatalogItem struct {
 	Countries   []string `json:"countries,omitempty"`
 	Director    string   `json:"director,omitempty"`
 	Actors      []string `json:"actors,omitempty"`
-	Source      string   `json:"source"` // "imdb", "tmdb" или "magnet"
-	HasMagnet   bool     `json:"has_magnet"`
+	// DirectorRU/ActorsRU — имена на русском из таблицы переводов person_names;
+	// PeoplePending — перевода ещё нет, его добирает фоновая задача из TMDB.
+	DirectorRU    string   `json:"director_ru,omitempty"`
+	ActorsRU      []string `json:"actors_ru,omitempty"`
+	PeoplePending bool     `json:"people_pending,omitempty"`
+	Source        string   `json:"source"` // "imdb", "tmdb"
 }
 
-// catalogEntry — внутреннее представление записи с магнет-ссылкой.
+// catalogEntry — внутреннее представление записи каталога.
 type catalogEntry struct {
-	item   CatalogItem
-	magnet string
+	item CatalogItem
 }
 
 // catalogCacheTTL — время жизни кэша каталога и меты: без него /api/catalog/meta на каждый клик по вкладкам/жанрам сканировал бы таблицу films.
 const catalogCacheTTL = 30 * time.Second
 
-// catalogService объединяет записи локального каталога (магнеты), фильмы БД (IMDb + TMDB) и on-demand внешнего поиска.
+// catalogService объединяет фильмы БД (IMDb + TMDB) и on-demand внешнего поиска.
 type catalogService struct {
-	jsonCat *catalog.Catalog
-	db      *db.Repo
-	imdb    *imdb.Client // может быть nil — внешний поиск отключён
-	tm      *tmdb.Client // может быть nil
+	db   *db.Repo
+	imdb *imdb.Client // может быть nil — внешний поиск отключён
+	tm   *tmdb.Client // может быть nil
 
 	// Кэш с TTL: allCache — объединённый каталог, metaCache — результаты Meta по ключу "q|genre".
 	cacheMu     sync.Mutex
@@ -73,9 +74,8 @@ type metaCacheEntry struct {
 	at     time.Time
 }
 
-func newCatalogService(jsonCat *catalog.Catalog, repo *db.Repo, im *imdb.Client, tm *tmdb.Client) *catalogService {
+func newCatalogService(repo *db.Repo, im *imdb.Client, tm *tmdb.Client) *catalogService {
 	return &catalogService{
-		jsonCat:   jsonCat,
 		db:        repo,
 		imdb:      im,
 		tm:        tm,
@@ -93,7 +93,7 @@ func (s *catalogService) All(ctx context.Context) []catalogEntry {
 	}
 	s.cacheMu.Unlock()
 
-	var out []catalogEntry
+	out := make([]catalogEntry, 0)
 
 	if s.db != nil {
 		// Лёгкая выборка без описаний — они догружаются при открытии фильма (GET /api/films/{id}).
@@ -101,26 +101,14 @@ func (s *catalogService) All(ctx context.Context) []catalogEntry {
 		if err != nil {
 			log.Printf("catalog: list films: %v", err)
 		} else {
+			// Имена режиссёра/актёров — одним запросом на весь каталог (таблица person_names).
+			localizeFilmPeople(ctx, s.db, films)
 			for _, f := range films {
 				out = append(out, dbFilmToEntry(f))
 			}
 		}
 	}
 
-	for _, it := range s.jsonCat.Items {
-		out = append(out, catalogEntry{
-			item: CatalogItem{
-				ID:        it.ID,
-				Title:     it.Title,
-				Poster:    it.Poster,
-				Category:  it.Category,
-				Size:      it.Size,
-				Source:    "magnet",
-				HasMagnet: true,
-			},
-			magnet: it.Magnet,
-		})
-	}
 	log.Printf("catalog: all: %d записей", len(out))
 
 	s.cacheMu.Lock()
@@ -298,8 +286,9 @@ func sortTitle(it CatalogItem) string {
 
 // Meta отдаёт статистику каталога для фильтров: счётчики записей по секциям (с учётом активных q и genre)
 // и полный отсортированный список жанров.
-func (s *catalogService) Meta(ctx context.Context, q, genre string) (map[string]int, []string) {
-	key := strings.TrimSpace(q) + "\x00" + genre
+func (s *catalogService) Meta(ctx context.Context, q, genre string, released ...bool) (map[string]int, []string) {
+	onlyReleased := len(released) > 0 && released[0]
+	key := strings.TrimSpace(q) + "\x00" + genre + "\x00" + strconv.FormatBool(onlyReleased)
 	s.cacheMu.Lock()
 	if e, ok := s.metaCache[key]; ok && time.Since(e.at) < catalogCacheTTL {
 		kinds, genres := e.kinds, e.genres
@@ -329,6 +318,9 @@ func (s *catalogService) Meta(ctx context.Context, q, genre string) (map[string]
 		if genre != "" && !hasGenre(it, genre) {
 			continue
 		}
+		if onlyReleased && !isReleased(it) {
+			continue
+		}
 		kinds[sectionForItem(it)]++
 	}
 
@@ -342,6 +334,9 @@ func (s *catalogService) Meta(ctx context.Context, q, genre string) (map[string]
 					continue
 				}
 				if genre != "" && !hasGenre(it, genre) {
+					continue
+				}
+				if onlyReleased && !isReleased(it) {
 					continue
 				}
 				kinds["popular"]++
@@ -492,6 +487,9 @@ func isAnime(it CatalogItem) bool {
 // matchesSection проверяет, что запись относится к секции section; используется в SearchPage и при фильтрации
 // внешних (on-demand) результатов, чтобы вкладки работали и во время поиска.
 func matchesSection(it CatalogItem, section string) bool {
+	if section == "" || section == "all" {
+		return true
+	}
 	switch section {
 	case "anime":
 		return isAnime(it)
@@ -525,6 +523,7 @@ func (s *catalogService) Popular(ctx context.Context) []catalogEntry {
 		log.Printf("catalog: list popular: %v", err)
 		return out
 	}
+	localizeFilmPeople(ctx, s.db, films)
 	for _, f := range films {
 		out = append(out, dbFilmToEntry(f))
 	}
@@ -542,6 +541,7 @@ func (s *catalogService) Best(ctx context.Context, series bool) []catalogEntry {
 		log.Printf("catalog: list top rated (series=%v): %v", series, err)
 		return out
 	}
+	localizeFilmPeople(ctx, s.db, films)
 	for _, f := range films {
 		out = append(out, dbFilmToEntry(f))
 	}
@@ -559,6 +559,7 @@ func (s *catalogService) PopularKind(ctx context.Context, series bool) []catalog
 		log.Printf("catalog: list popular (series=%v): %v", series, err)
 		return out
 	}
+	localizeFilmPeople(ctx, s.db, films)
 	for _, f := range films {
 		out = append(out, dbFilmToEntry(f))
 	}
@@ -651,15 +652,6 @@ func kindsForSection(section string) map[string]bool {
 	}
 }
 
-// FindMagnet ищет магнет-ссылку по id только в локальном каталоге (data/catalog.json):
-// магнеты фильмов БД живут в таблице sources (колонка films.magnet удалена как legacy) — в самой БД магнета нет.
-func (s *catalogService) FindMagnet(ctx context.Context, id string) (string, bool) {
-	if it, ok := s.jsonCat.Get(id); ok && it.Magnet != "" {
-		return it.Magnet, true
-	}
-	return "", false
-}
-
 func dbFilmToEntry(f db.Film) catalogEntry {
 	source := "imdb"
 	if strings.HasPrefix(f.IMDBID, "kp") {
@@ -667,28 +659,31 @@ func dbFilmToEntry(f db.Film) catalogEntry {
 	}
 	return catalogEntry{
 		item: CatalogItem{
-			ID:          f.IMDBID,
-			Title:       f.Title,
-			TitleRU:     f.TitleRU,
-			Kind:        f.Kind,
-			Poster:      f.PosterURL,
-			Category:    source,
-			Size:        f.Size,
-			Year:        f.Year,
-			ReleaseDate: f.ReleaseDate,
-			Rating:      f.Rating,
-			Plot:        f.Plot,
-			PlotRU:      f.PlotRU,
-			Genres:      f.Genres,
-			IMDbID:      f.IMDBID,
-			TMDBID:      f.TMDBID,
-			Seasons:     f.Seasons,
-			MovieLength: f.MovieLength,
-			Countries:   f.Countries,
-			Director:    f.Director,
-			Actors:      f.Actors,
-			RatingTMDB:  f.RatingTMDB,
-			Source:      source,
+			ID:            f.IMDBID,
+			Title:         f.Title,
+			TitleRU:       f.TitleRU,
+			Kind:          f.Kind,
+			Poster:        f.PosterURL,
+			Category:      source,
+			Size:          f.Size,
+			Year:          f.Year,
+			ReleaseDate:   f.ReleaseDate,
+			Rating:        f.Rating,
+			Plot:          f.Plot,
+			PlotRU:        f.PlotRU,
+			Genres:        f.Genres,
+			IMDbID:        f.IMDBID,
+			TMDBID:        f.TMDBID,
+			Seasons:       f.Seasons,
+			MovieLength:   f.MovieLength,
+			Countries:     f.Countries,
+			Director:      f.Director,
+			Actors:        f.Actors,
+			DirectorRU:    f.DirectorRU,
+			ActorsRU:      f.ActorsRU,
+			PeoplePending: f.PeoplePending,
+			RatingTMDB:    f.RatingTMDB,
+			Source:        source,
 		},
 	}
 }

@@ -27,6 +27,23 @@ func TestIsTextSubtitleCodec(t *testing.T) {
 }
 
 // subtitleLabel: title > язык > «Субтитры N».
+func TestSelectSubtitleAfterBitmapStreams(t *testing.T) {
+	// Video=0, audio=1, PGS=2, SRT=3, PGS=4, ASS=5.
+	items := []subtitleTrack{
+		{Index: 3, Ordinal: 0, Codec: "subrip"},
+		{Index: 5, Ordinal: 1, Codec: "ass"},
+	}
+	for ordinal, index := range []int{3, 5} {
+		got, err := selectSubtitle(items, ordinal)
+		if err != nil || got.Index != index {
+			t.Fatalf("subtitle %d: got %+v, %v; want stream %d", ordinal, got, err, index)
+		}
+	}
+	if _, err := selectSubtitle(items, 2); err == nil {
+		t.Fatal("missing subtitle accepted")
+	}
+}
+
 func TestSubtitleLabel(t *testing.T) {
 	if got := subtitleLabel(subtitleTrack{Ordinal: 0, Title: "Русские", Language: "rus"}); got != "Русские" {
 		t.Errorf("label(title) = %q, want Русские", got)

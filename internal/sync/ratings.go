@@ -170,10 +170,20 @@ func RefreshFilmData(ctx context.Context, repo *db.Repo, tm *tmdb.Client, im *im
 	if f.Plot == "" {
 		d.Plot = tm.Overview(ctx, film.TMDBID, film.Kind, "en-US")
 	}
-	// Режиссёр/актёры из credits, если их ещё нет.
-	if f.Director == "" || len(f.Actors) == 0 {
-		dir, actors, _ := tm.Credits(ctx, film.TMDBID, film.Kind)
-		d.Director, d.Actors = dir, actors
+	// Титры TMDB: заполняем режиссёра/актёров, если их нет, и складываем пары имён
+	// «оригинал → перевод» в person_names — карточка показывает имена на языке сайта.
+	if needCredits(ctx, repo, f) {
+		cr, cerr := tm.CreditsLocalized(ctx, film.TMDBID, film.Kind)
+		if cerr != nil {
+			log.Printf("refresh %s: credits: %v", id, cerr)
+		} else {
+			if f.Director == "" || len(f.Actors) == 0 {
+				d.Director, d.Actors = cr.Director, cr.Actors
+			}
+			if err := repo.UpsertPersonNames(ctx, personPairs(cr.Names)); err != nil {
+				log.Printf("refresh %s: person names: %v", id, err)
+			}
+		}
 	}
 	// Добираем из IMDb то, чего не дал TMDB: рейтинг/голоса IMDb (JSON-LD, если IMDb доступен)
 	// и русские название/описание (Wikidata → Википедия).

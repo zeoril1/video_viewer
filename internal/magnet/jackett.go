@@ -49,6 +49,12 @@ func NewJackett(baseURL, apiKey, indexer string, rt http.RoundTripper) *Jackett 
 // Name возвращает имя провайдера.
 func (j *Jackett) Name() string { return "jackett" }
 
+func (j *Jackett) Indexers() []string { return j.indexerIDs() }
+
+func (j *Jackett) SearchIndexer(ctx context.Context, id, q string, limit int) ([]Result, error) {
+	return j.searchIndexer(ctx, id, q, limit)
+}
+
 // Парсинг Torznab RSS.
 var (
 	jtItemRe      = regexp.MustCompile(`(?is)<item\b.*?</item>`)
@@ -115,7 +121,7 @@ func (j *Jackett) Search(ctx context.Context, q string, limit int) ([]Result, er
 		return nil, ctx.Err()
 	}
 	if len(errs) > 0 {
-		log.Printf("jackett: '%s' — все индексера ошиблись: %s", q, strings.Join(errs, "; "))
+		log.Printf("jackett: '%s' — ошибки индексеров: %s", q, strings.Join(errs, "; "))
 		return dedupJackettResults(all), fmt.Errorf("jackett: %s", strings.Join(errs, "; "))
 	}
 	all = dedupJackettResults(all)

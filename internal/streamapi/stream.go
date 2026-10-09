@@ -57,6 +57,8 @@ func handleStream(mgr *torrents.Manager, item catalog.Item, readahead int64) htt
 		log.Printf("stream: open %s", item.ID)
 		// Ждём метаданные (info); при недоступных пирах не висим вечно, а отдаём 504.
 		select {
+		case <-r.Context().Done():
+			return
 		case <-t.GotInfo():
 			log.Printf("stream: %s метаданные получены, файлов: %d", item.ID, len(t.Files()))
 		case <-time.After(metadataTimeout):

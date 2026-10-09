@@ -11,8 +11,12 @@ package catalogapi
 
 import (
 	"log"
+	"regexp"
 	"strings"
 	"unicode"
+
+	"github.com/zeoril1/video_viewer/internal/db"
+	"github.com/zeoril1/video_viewer/internal/magnet"
 )
 
 // nameStopWords — служебные слова сегментов-описаний раздачи, а не названия фильма («Сезон 5. Часть 2»).
@@ -35,6 +39,88 @@ type titleMatcher struct {
 	norm    []string // названия целиком, в нижнем регистре
 	compact []string // названия без разделителей («realnyepatsany»)
 	stems   []string // основы слов названий (по 4 буквы)
+	movie   bool
+	year    int
+	names   []*regexp.Regexp
+}
+
+// Movies need the complete title: a shared franchise name is not enough.
+// Series keep the tolerant matcher for season subtitles and translated aliases.
+func newFilmTitleMatcher(film db.Film) *titleMatcher {
+	m := newTitleMatcher(trackerTitles(film))
+	m.movie = !isSeriesKind(film.Kind)
+	m.year = film.Year
+	for _, title := range m.norm {
+		words := strings.FieldsFunc(normalizeMovieName(title), func(r rune) bool {
+			return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+		})
+		if len(words) == 0 {
+			continue
+		}
+		for i := range words {
+			words[i] = regexp.QuoteMeta(words[i])
+		}
+		m.names = append(m.names, regexp.MustCompile(`^`+strings.Join(words, `[^\p{L}\p{N}]+`)+`(?:$|[^\p{L}\p{N}])`))
+	}
+	return m
+}
+
+func normalizeMovieName(s string) string {
+	return strings.ReplaceAll(strings.ToLower(s), "ё", "е")
+}
+
+var movieMetadata = regexp.MustCompile(`(?i)^(?:[\[(]|(?:19|20)\d{2}(?:\D|$)|(?:web[ ._-]?(?:dl|rip)|bd(?:rip|remux)|blu[ ._-]?ray|dvd(?:rip|scr)|hdtv|hdrip|hqrip|hdtc|hdcam|camrip|telesync|remux|uhd|2160p|1080p|720p|480p|4k)\b)`)
+var movieEpisode = regexp.MustCompile(`(?i)(?:\bS\d{1,2}(?:\b|E\d|[-x])|\bE\d{1,3}\b|\bseason\s*\d|сезон\s*\d|\d+\s*сезон)`)
+
+func (m *titleMatcher) matchesMovie(title string) bool {
+	if movieEpisode.MatchString(title) || magnet.IsFullCollection(title) {
+		return false
+	}
+	matched := false
+	for _, segment := range strings.Split(normalizeMovieName(title), "/") {
+		segment = strings.TrimSpace(segment)
+		prefix, exact := false, false
+		for _, name := range m.names {
+			loc := name.FindStringIndex(segment)
+			if loc == nil {
+				continue
+			}
+			prefix = true
+			// The regexp consumes one delimiter; retain brackets for metadata.
+			end := loc[1]
+			if end > 0 && (segment[end-1] == '(' || segment[end-1] == '[') {
+				end--
+			}
+			rest := strings.TrimLeft(segment[end:], " ._-:–—\t")
+			if rest != "" && !movieMetadata.MatchString(rest) {
+				continue
+			}
+			// Read the year after the title, so films named 1917 or 2012 work.
+			if year := magnet.TitleYear(rest); m.year > 0 && year > 0 && year != m.year {
+				return false
+			}
+			exact = true
+		}
+		if prefix && !exact {
+			return false // e.g. Resident Evil: Death Island, even with an abbreviated alias
+		}
+		matched = matched || exact
+	}
+	// The release year may follow an alternate title rather than the matching one.
+	segments := strings.Split(normalizeMovieName(title), "/")
+	for i, segment := range segments {
+		segments[i] = strings.TrimSpace(segment)
+		for _, name := range m.names {
+			if loc := name.FindStringIndex(segments[i]); loc != nil {
+				segments[i] = segments[i][loc[1]:]
+				break
+			}
+		}
+	}
+	if year := magnet.TitleYear(strings.Join(segments, "/")); m.year > 0 && year > 0 && year != m.year {
+		return false
+	}
+	return matched
 }
 
 // newTitleMatcher готовит сопоставитель по названиям фильма; пустой пропускает всё — фильтровать не по чему.
@@ -56,6 +142,10 @@ func newTitleMatcher(titles []string) *titleMatcher {
 
 // filter выбрасывает раздачи, которые относятся к ДРУГОМУ фильму.
 func (m *titleMatcher) filter(filmID string, items []sourceItem) []sourceItem {
+	return m.filterWithLog(filmID, items, true)
+}
+
+func (m *titleMatcher) filterWithLog(filmID string, items []sourceItem, verbose bool) []sourceItem {
 	if m == nil || len(m.norm) == 0 || len(items) == 0 {
 		return items
 	}
@@ -65,7 +155,9 @@ func (m *titleMatcher) filter(filmID string, items []sourceItem) []sourceItem {
 			out = append(out, it)
 			continue
 		}
-		log.Printf("sources: %s: отброшена чужая раздача %q", filmID, it.Title)
+		if verbose {
+			log.Printf("sources: %s: отброшена чужая раздача %q", filmID, it.Title)
+		}
 	}
 	return out
 }
@@ -74,6 +166,9 @@ func (m *titleMatcher) filter(filmID string, items []sourceItem) []sourceItem {
 func (m *titleMatcher) matches(title string) bool {
 	if m == nil || len(m.norm) == 0 {
 		return true // фильтровать не по чему
+	}
+	if m.movie {
+		return m.matchesMovie(title)
 	}
 	low := strings.ToLower(title)
 	if !m.mentionsTitle(low) {

@@ -7,6 +7,9 @@
 *.test
 *.out
 
+# Browser design previews
+/output/design-preview/
+
 # Локальные данные и логи
 data/*.local.json
 *.log

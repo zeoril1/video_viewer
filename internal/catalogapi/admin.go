@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/zeoril1/video_viewer/internal/db"
-	catalogsync "github.com/zeoril1/video_viewer/internal/sync"
 )
 
 // sessionCookieName — имя httpOnly-куки с токеном сессии (то же, что в auth-сервисе);
@@ -108,16 +107,12 @@ func writeJSON(w http.ResponseWriter, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// handleAdminFilmsMissing — GET /api/admin/films/missing?limit=N: записи с пустыми полями (полный набор колонок для правки).
+// handleAdminFilmsMissing returns all eligible records, without a page limit.
 func handleAdminFilmsMissing(cfg Config, w http.ResponseWriter, r *http.Request) {
 	if _, ok := requireAdmin(cfg, w, r); !ok {
 		return
 	}
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	if limit <= 0 || limit > 500 {
-		limit = 100
-	}
-	films, err := cfg.DB.FilmsMissingFull(r.Context(), limit)
+	films, err := cfg.DB.AdminFilmsMissing(r.Context())
 	if err != nil {
 		http.Error(w, "db error: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -125,17 +120,12 @@ func handleAdminFilmsMissing(cfg Config, w http.ResponseWriter, r *http.Request)
 	writeJSON(w, map[string]any{"items": films, "total": len(films)})
 }
 
-// handleAdminFilmsTMDBNotFound — GET /api/admin/films/notfound?limit=N:
-// записи, помеченные как «не найдено совпадение на TMDB» (отдельная таблица на админ-странице).
+// handleAdminFilmsTMDBNotFound returns failed refreshes during their weekly cooldown.
 func handleAdminFilmsTMDBNotFound(cfg Config, w http.ResponseWriter, r *http.Request) {
 	if _, ok := requireAdmin(cfg, w, r); !ok {
 		return
 	}
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	if limit <= 0 || limit > 500 {
-		limit = 100
-	}
-	films, err := cfg.DB.FilmsTMDBNotFound(r.Context(), limit)
+	films, err := cfg.DB.AdminFilmsFailed(r.Context())
 	if err != nil {
 		http.Error(w, "db error: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -163,6 +153,14 @@ func handleAdminFilmSetNotFound(cfg Config, w http.ResponseWriter, r *http.Reque
 	}
 	if err := cfg.DB.SetTMDBNotFound(r.Context(), id, d.NotFound); err != nil {
 		http.Error(w, "db error: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	reason := ""
+	if d.NotFound {
+		reason = "Не найдено на TMDB"
+	}
+	if err := cfg.DB.SetAdminRefreshResult(r.Context(), id, reason); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	if d.NotFound {
@@ -212,21 +210,15 @@ func handleAdminFilmRefresh(cfg Config, w http.ResponseWriter, r *http.Request) 
 		http.NotFound(w, r)
 		return
 	}
-	adminLog.add("info", "обновление "+id+": начало")
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
-		if err := catalogsync.RefreshFilmData(ctx, cfg.DB, cfg.TMDB, cfg.IMDB, id); err != nil {
-			adminLog.add("error", "обновление "+id+": "+err.Error())
-			return
-		}
-		adminLog.add("ok", "обновление "+id+": готово")
+		refreshAdminFilm(ctx, cfg, id)
 	}()
 	writeJSON(w, map[string]any{"ok": true, "id": id})
 }
 
-// handleAdminRefreshAll — POST /api/admin/refresh-all: обновляет в фоне ВСЕ записи с пустыми полями
-// (партиями), затем помеченные «не найдены»; прогресс — в админ-лог. Используется тот же инструмент, что и cmd/backfill.
+// handleAdminRefreshAll snapshots the full eligible queue and processes it with bounded workers.
 func handleAdminRefreshAll(cfg Config, w http.ResponseWriter, r *http.Request) {
 	if _, ok := requireAdmin(cfg, w, r); !ok {
 		return
@@ -235,79 +227,31 @@ func handleAdminRefreshAll(cfg Config, w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "tmdb not configured", http.StatusServiceUnavailable)
 		return
 	}
-	adminLog.add("info", "массовое обновление: начало")
+	if !adminBatchRunning.CompareAndSwap(false, true) {
+		http.Error(w, "Обновление уже выполняется", http.StatusConflict)
+		return
+	}
+	films, err := cfg.DB.AdminFilmsMissing(r.Context())
+	if err != nil {
+		adminBatchRunning.Store(false)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	adminLog.add("info", "массовое обновление: начало, записей "+strconv.Itoa(len(films))+", потоков 4")
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Minute)
+		defer adminBatchRunning.Store(false)
+		parent := cfg.Context
+		if parent == nil {
+			parent = context.Background()
+		}
+		ctx, cancel := context.WithTimeout(parent, 90*time.Minute)
 		defer cancel()
-		seen := map[string]bool{}
-		filled, tried := 0, 0
-		// process — обновляет партию записей из TMDB; false, если контекст отменён (надо завершать).
-		process := func(queue []db.Film) bool {
-			for _, f := range queue {
-				select {
-				case <-ctx.Done():
-					return false
-				default:
-				}
-				adminLog.add("info", "обновление "+f.IMDBID+": ...")
-				if err := catalogsync.RefreshFilmData(ctx, cfg.DB, cfg.TMDB, cfg.IMDB, f.IMDBID); err != nil {
-					adminLog.add("error", "обновление "+f.IMDBID+": "+err.Error())
-				} else {
-					filled++
-					adminLog.add("ok", "обновление "+f.IMDBID+": готово")
-				}
-				tried++
-				time.Sleep(300 * time.Millisecond)
-			}
-			return true
+		runAdminWorkers(ctx, films, func(ctx context.Context, id string) { refreshAdminFilm(ctx, cfg, id) })
+		if ctx.Err() != nil {
+			adminLog.add("error", "массовое обновление: прервано")
+		} else {
+			adminLog.add("info", "массовое обновление: завершено")
 		}
-		// Фаза 1: записи с пустыми полями (кроме помеченных «не найден»).
-		for {
-			films, err := cfg.DB.FilmsMissingData(ctx, 100)
-			if err != nil {
-				adminLog.add("error", "массовое обновление: "+err.Error())
-				return
-			}
-			var queue []db.Film
-			for _, f := range films {
-				if !seen[f.IMDBID] {
-					seen[f.IMDBID] = true
-					queue = append(queue, f)
-				}
-			}
-			if len(queue) == 0 {
-				break
-			}
-			if !process(queue) {
-				adminLog.add("info", "массовое обновление: прервано")
-				return
-			}
-			adminLog.add("info", "массовое обновление: пустых полей — попыток "+strconv.Itoa(tried)+", готово "+strconv.Itoa(filled))
-		}
-		// Фаза 2: помеченные «не найдены на TMDB» — повторная попытка (при успехе RefreshFilmData снимет отметку).
-		for {
-			films, err := cfg.DB.FilmsTMDBNotFound(ctx, 100)
-			if err != nil {
-				adminLog.add("error", "массовое обновление: "+err.Error())
-				return
-			}
-			var queue []db.Film
-			for _, f := range films {
-				if !seen[f.IMDBID] {
-					seen[f.IMDBID] = true
-					queue = append(queue, f)
-				}
-			}
-			if len(queue) == 0 {
-				break
-			}
-			if !process(queue) {
-				adminLog.add("info", "массовое обновление: прервано")
-				return
-			}
-			adminLog.add("info", "массовое обновление: не найденных — попыток "+strconv.Itoa(tried)+", готово "+strconv.Itoa(filled))
-		}
-		adminLog.add("info", "массовое обновление: завершено (попыток "+strconv.Itoa(tried)+", готово "+strconv.Itoa(filled)+")")
 	}()
 	writeJSON(w, map[string]any{"ok": true})
 }
@@ -323,7 +267,7 @@ func handleAdminLogs(cfg Config, w http.ResponseWriter, r *http.Request) {
 	if len(lines) > 0 {
 		last = lines[len(lines)-1].Seq
 	}
-	writeJSON(w, map[string]any{"lines": lines, "last_seq": last})
+	writeJSON(w, map[string]any{"lines": lines, "last_seq": last, "running": adminBatchRunning.Load()})
 }
 
 // registerAdminRoutes подключает админ-эндпоинты к mux каталога.

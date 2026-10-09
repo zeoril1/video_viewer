@@ -11,7 +11,34 @@ import (
 	"testing"
 
 	"github.com/anacrolix/torrent/metainfo"
+	"github.com/zeoril1/video_viewer/internal/disklimit"
 )
+
+func TestSpoolQuotaChecksSparseGrowthAndReclaimsSpace(t *testing.T) {
+	dir := t.TempDir()
+	b := disklimit.New(dir, 16, 0)
+	f := &spoolFile{path: filepath.Join(dir, "first.spool"), budget: b}
+	if _, err := f.writeAt(8, []byte("12345678")); err != nil {
+		t.Fatal(err)
+	}
+	g := &spoolFile{path: filepath.Join(dir, "second.spool"), budget: b}
+	if _, err := g.writeAt(0, []byte("x")); err == nil {
+		t.Fatal("global quota exceeded")
+	}
+	info, _ := os.Stat(g.path)
+	if info.Size() != 0 {
+		t.Fatal("rejected write grew file")
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.writeAt(0, []byte("x")); err != nil {
+		t.Fatal("deleted space not reclaimed", err)
+	}
+	if err := g.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
 
 // newSpoolTestInfo создаёт настоящий metainfo.Info из временного файла заданного
 // размера с предсказуемым содержимым (куски по pieceLength).
@@ -172,7 +199,7 @@ func TestSpoolClientClose(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Осиротевший спул-файл (как после сбоя процесса).
-	orphan := filepath.Join(dir, "deadbeef.3.spool")
+	orphan := filepath.Join(dir, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.3.spool")
 	if err := os.WriteFile(orphan, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +221,7 @@ func TestSpoolClientClose(t *testing.T) {
 func TestManagerSpoolCleanup(t *testing.T) {
 	silenceLogs(t)
 	dir := t.TempDir()
-	orphan := filepath.Join(dir, "orphan.spool")
+	orphan := filepath.Join(dir, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.3.spool")
 	other := filepath.Join(dir, "keep.txt")
 	if err := os.WriteFile(orphan, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)

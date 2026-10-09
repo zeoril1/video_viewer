@@ -1,11 +1,122 @@
 :root {
+  color-scheme: dark;
   --bg: #0f1117;
   --panel: #171a23;
   --panel-2: #1e2230;
   --text: #e6e8ee;
   --muted: #9aa0ae;
   --accent: #e11d48;
+  --accent-soft: rgba(225, 29, 72, 0.12);
+  --on-accent: #fff;
+  --border: #2a3040;
+  --border-subtle: #222736;
+  --border-strong: #43465e;
+  --hover: #2a3040;
+  --input-bg: #1e2230;
+  --topbar-bg: rgba(15, 17, 23, 0.9);
+  --shadow: 0 10px 26px rgba(0, 0, 0, 0.4);
+  --modal-overlay: rgba(0, 0, 0, 0.8);
+  --focus: #f16c8b;
+  --rating: #f5c518;
+  --rating-bg: #f5c518;
+  --on-rating: #0f1117;
+  --error: #f87171;
+  --error-bg: rgba(248, 113, 113, 0.08);
+  --error-border: rgba(248, 113, 113, 0.3);
+  --success: #4ade80;
+  --success-bg: rgba(34, 197, 94, 0.12);
+  --success-border: rgba(74, 222, 128, 0.35);
+  --warning: #f5cc74;
+  --warning-bg: rgba(245, 204, 116, 0.1);
+  --warning-border: #ad9863;
+  --info: #8ebcff;
+  --info-bg: rgba(101, 157, 255, 0.12);
+  --link: #b9ceff;
+  --log-bg: #141824;
+  --log-text: #aabbd0;
+  --disabled-bg: #252936;
+  --disabled-text: #9299a9;
+  --surface: var(--panel);
+  /* These remain dark for video overlays in either site theme. */
+  --player-bg: #000;
+  --player-panel: #171a23;
+  --player-panel-2: #1e2230;
+  --player-accent: #ff6b8c;
+  --player-text: #e6e8ee;
+  --player-muted: #aab2c2;
+  --player-border: #3a4254;
+  --player-control-border: #687083;
+  --player-border-subtle: #222736;
+  --player-control-bg: #252c38;
+  --player-focus: #8ebcff;
+  --player-overlay: rgba(10, 14, 22, 0.9);
+  --player-overlay-solid: rgba(13, 19, 30, 0.98);
+  --player-overlay-muted: #c7d3e6;
+  --player-primary: #f2f5fb;
+  --player-on-primary: #152038;
+  --player-error: #f87171;
   --radius: 12px;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f5f6fa;
+  --panel: #fff;
+  --panel-2: #eceef4;
+  --text: #18202f;
+  --muted: #596477;
+  --accent: #d71945;
+  --accent-soft: rgba(215, 25, 69, 0.09);
+  --border: #d8dee8;
+  --border-subtle: #e3e7ef;
+  --border-strong: #a6b0c0;
+  --hover: #e4e8f0;
+  --input-bg: #f5f6fa;
+  --topbar-bg: rgba(255, 255, 255, 0.92);
+  --shadow: 0 10px 26px rgba(24, 32, 47, 0.12);
+  --modal-overlay: rgba(24, 32, 47, 0.5);
+  --focus: #b8143a;
+  --rating: #946200;
+  --error: #b42339;
+  --error-bg: #fff0f2;
+  --error-border: #f0b6c0;
+  --success: #18763a;
+  --success-bg: #eaf8ee;
+  --success-border: #a8d7b5;
+  --warning: #875e12;
+  --warning-bg: #fff6dd;
+  --warning-border: #d9bc76;
+  --info: #245fc0;
+  --info-bg: #eaf0ff;
+  --link: #2455a5;
+  --log-bg: #f0f3f8;
+  --log-text: #40536f;
+  --disabled-bg: #eceef4;
+  --disabled-text: #6d7687;
+}
+
+/* The controls stay readable when they float over a dark video frame. */
+.player-wrap,
+.iptv-player {
+  color-scheme: dark;
+  --bg: var(--player-bg);
+  --panel: var(--player-panel);
+  --panel-2: var(--player-panel-2);
+  --text: var(--player-text);
+  --accent: var(--player-accent);
+  --muted: var(--player-muted);
+  --border: var(--player-border);
+  --border-subtle: var(--player-border-subtle);
+  --border-strong: var(--player-border);
+  --hover: var(--player-control-bg);
+  --input-bg: var(--player-control-bg);
+  --focus: var(--player-focus);
+  --error: var(--player-error);
+  --error-bg: rgba(248, 113, 113, 0.08);
+  --error-border: rgba(248, 113, 113, 0.3);
+  --accent-soft: rgba(225, 29, 72, 0.12);
+  --surface: var(--player-panel);
+  color: var(--player-text);
 }
 
 * {
@@ -32,9 +143,9 @@ body {
   align-items: center;
   gap: 24px;
   padding: 16px 24px;
-  background: rgba(15, 17, 23, 0.85);
+  background: var(--topbar-bg);
   backdrop-filter: blur(8px);
-  border-bottom: 1px solid #222736;
+  border-bottom: 1px solid var(--border-subtle);
 }
 
 .logo {
@@ -48,7 +159,7 @@ body {
   max-width: 480px;
   padding: 10px 14px;
   border-radius: 10px;
-  border: 1px solid #2a3040;
+  border: 1px solid var(--border);
   background: var(--panel);
   color: var(--text);
   outline: none;
@@ -62,7 +173,7 @@ body {
   display: flex;
   gap: 4px;
   background: var(--panel);
-  border: 1px solid #2a3040;
+  border: 1px solid var(--border);
   border-radius: 10px;
   padding: 4px;
 }
@@ -105,7 +216,7 @@ body {
 .section-btn {
   padding: 8px 14px;
   border-radius: 999px;
-  border: 1px solid #2a3040;
+  border: 1px solid var(--border);
   background: var(--panel);
   color: var(--muted);
   font-size: 13px;
@@ -148,10 +259,10 @@ body {
   left: 0;
   min-width: 190px;
   background: var(--panel);
-  border: 1px solid #2a3040;
+  border: 1px solid var(--border);
   border-radius: 10px;
   padding: 6px;
-  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.4);
+  box-shadow: var(--shadow);
   display: none;
   z-index: 60;
 }
@@ -189,7 +300,7 @@ body {
 }
 
 .sec-drop-item:hover {
-  background: #2a3040;
+  background: var(--hover);
   color: var(--text);
 }
 
@@ -201,7 +312,7 @@ body {
 .genre-select {
   padding: 8px 12px;
   border-radius: 10px;
-  border: 1px solid #2a3040;
+  border: 1px solid var(--border);
   background: var(--panel);
   color: var(--text);
   font-size: 13px;
@@ -224,7 +335,7 @@ body {
   align-items: center;
   gap: 6px;
   padding: 8px 12px;
-  border: 1px solid #2a3040;
+  border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--panel);
   color: var(--text);
@@ -254,7 +365,7 @@ main {
   background: var(--panel);
   border-radius: var(--radius);
   overflow: hidden;
-  border: 1px solid #222736;
+  border: 1px solid var(--border-subtle);
   transition: transform 0.15s ease, border-color 0.15s ease;
 }
 
@@ -266,7 +377,9 @@ main {
 .thumb {
   position: relative;
   aspect-ratio: 16 / 9;
-  background: #000;
+  /* До загрузки постера видна градиентная заглушка: чёрный прямоугольник выглядел
+     так, будто карточка прогрузилась только наполовину. */
+  background: linear-gradient(135deg, var(--panel-2), var(--panel));
 }
 
 .thumb img {
@@ -276,6 +389,18 @@ main {
   display: block;
 }
 
+/* Постер проявляется по факту загрузки (класс .loaded ставит JS/страница каталога). */
+.grid .thumb img,
+.continue-list .thumb img {
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.grid .thumb img.loaded,
+.continue-list .thumb img.loaded {
+  opacity: 1;
+}
+
 .thumb .placeholder {
   width: 100%;
   height: 100%;
@@ -283,7 +408,7 @@ main {
   align-items: center;
   justify-content: center;
   font-size: 42px;
-  background: linear-gradient(135deg, #1e2230, #171a23);
+  background: linear-gradient(135deg, var(--panel-2), var(--panel));
 }
 
 .play {
@@ -294,6 +419,7 @@ main {
   height: 52px;
   border-radius: 50%;
   background: rgba(225, 29, 72, 0.9);
+  color: var(--on-accent);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -336,7 +462,7 @@ main {
   flex-shrink: 0;
   font-size: 12px;
   font-weight: 600;
-  color: #f5c518;
+  color: var(--rating);
   white-space: nowrap;
 }
 
@@ -371,8 +497,8 @@ main {
 }
 
 .badge.rating {
-  background: #f5c518;
-  color: #0f1117;
+  background: var(--rating-bg);
+  color: var(--on-rating);
   font-weight: 600;
 }
 
@@ -405,7 +531,7 @@ main {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(0, 0, 0, 0.8);
+  background: var(--modal-overlay);
   padding: 24px;
 }
 
@@ -414,7 +540,7 @@ main {
   background: var(--panel);
   border-radius: var(--radius);
   overflow: hidden;
-  border: 1px solid #2a3040;
+  border: 1px solid var(--border);
   max-height: 92vh;
   overflow-y: auto;
 }
@@ -425,7 +551,7 @@ main {
   justify-content: space-between;
   gap: 16px;
   padding: 12px 16px;
-  border-bottom: 1px solid #222736;
+  border-bottom: 1px solid var(--border-subtle);
 }
 
 .modal-head h2 {
@@ -468,13 +594,13 @@ main {
   gap: 10px;
   padding: 8px 12px;
   background: var(--panel);
-  border-top: 1px solid #222736;
+  border-top: 1px solid var(--border-subtle);
 }
 
 /* --- Полноэкранный режим: всплывающая панель управления ---
    Видео занимает весь экран, панель плавает поверх него снизу и
    автоматически скрывается при бездействии мыши (класс controls-visible
-   ставится из app.js на mousemove). Тонкая полоса #ctrl-mini видна всегда. */
+   ставится из watch.js на mousemove). Тонкая полоса #ctrl-mini видна всегда. */
 #player-wrap.fullscreen {
   width: 100vw;
   height: 100vh;
@@ -595,7 +721,7 @@ main {
   right: 0;
   height: 4px;
   border-radius: 2px;
-  background: #2a3040;
+  background: var(--border);
 }
 
 .ctrl-buffered {
@@ -655,7 +781,7 @@ main {
 
 .q-btn {
   background: var(--panel-2);
-  border: 1px solid #2a3040;
+  border: 1px solid var(--border);
   border-radius: 6px;
   color: var(--muted);
   font-size: 11px;
@@ -671,17 +797,17 @@ main {
 
 .q-btn.active {
   border-color: var(--accent);
-  background: rgba(0, 199, 255, 0.12);
+  background: var(--accent-soft);
   color: var(--text);
 }
 
 .player-error {
   margin: 12px 20px;
   padding: 10px 12px;
-  color: #ff6b6b;
+  color: var(--error);
   font-size: 13px;
-  background: rgba(255, 107, 107, 0.08);
-  border: 1px solid rgba(255, 107, 107, 0.3);
+  background: var(--error-bg);
+  border: 1px solid var(--error-border);
   border-radius: 8px;
 }
 
@@ -691,9 +817,9 @@ main {
   font-size: 11px;
   line-height: 1.5;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  color: #9fb0c3;
-  background: #141824;
-  border: 1px solid #2a3040;
+  color: var(--log-text);
+  background: var(--log-bg);
+  border: 1px solid var(--border);
   border-radius: 8px;
   white-space: pre-wrap;
   word-break: break-word;
@@ -768,7 +894,7 @@ main {
 
 .sources {
   padding: 16px 20px;
-  border-top: 1px solid #222736;
+  border-top: 1px solid var(--border-subtle);
 }
 
 .sources-title {
@@ -800,7 +926,7 @@ main {
 
 .chip {
   background: var(--panel-2);
-  border: 1px solid #2a3040;
+  border: 1px solid var(--border);
   border-radius: 999px;
   color: var(--text);
   font-size: 12px;
@@ -814,7 +940,7 @@ main {
 
 .chip.active {
   border-color: var(--accent);
-  background: rgba(0, 199, 255, 0.12);
+  background: var(--accent-soft);
 }
 
 .episodes {
@@ -839,7 +965,7 @@ main {
 .ep-btn {
   min-width: 56px;
   background: var(--panel-2);
-  border: 1px solid #2a3040;
+  border: 1px solid var(--border);
   border-radius: 8px;
   color: var(--text);
   font-size: 12px;
@@ -854,7 +980,7 @@ main {
 
 .ep-btn.active {
   border-color: var(--accent);
-  background: rgba(0, 199, 255, 0.12);
+  background: var(--accent-soft);
 }
 
 /* Список раздач (торрентов) сезона сериала: по каждой видно озвучки
@@ -876,7 +1002,7 @@ main {
   text-align: left;
   padding: 7px 12px;
   background: var(--panel-2);
-  border: 1px solid #2a3040;
+  border: 1px solid var(--border);
   border-radius: 8px;
   color: var(--text);
   cursor: pointer;
@@ -888,7 +1014,7 @@ main {
 
 .release-btn.active {
   border-color: var(--accent);
-  background: rgba(0, 199, 255, 0.12);
+  background: var(--accent-soft);
 }
 
 .release-voices {
@@ -922,7 +1048,7 @@ main {
   text-align: left;
   padding: 8px 12px;
   background: var(--panel-2);
-  border: 1px solid #2a3040;
+  border: 1px solid var(--border);
   border-radius: 8px;
   color: var(--text);
   cursor: pointer;
@@ -935,7 +1061,7 @@ main {
 
 .source-btn.active {
   border-color: var(--accent);
-  background: rgba(0, 199, 255, 0.08);
+  background: var(--accent-soft);
 }
 
 .source-title {
@@ -978,7 +1104,7 @@ main {
 .track-btn {
   padding: 6px 12px;
   background: var(--panel-2);
-  border: 1px solid #2a3040;
+  border: 1px solid var(--border);
   border-radius: 8px;
   color: var(--text);
   cursor: pointer;
@@ -991,7 +1117,7 @@ main {
 
 .track-btn.active {
   border-color: var(--accent);
-  background: rgba(0, 199, 255, 0.08);
+  background: var(--accent-soft);
 }
 
 /* Кнопки выбора субтитров — как .track-btn, но отдельный класс, чтобы
@@ -1000,7 +1126,7 @@ main {
 .sub-btn {
   padding: 6px 12px;
   background: var(--panel-2);
-  border: 1px solid #2a3040;
+  border: 1px solid var(--border);
   border-radius: 8px;
   color: var(--text);
   cursor: pointer;
@@ -1013,17 +1139,17 @@ main {
 
 .sub-btn.active {
   border-color: var(--accent);
-  background: rgba(0, 199, 255, 0.08);
+  background: var(--accent-soft);
 }
 
 .tracks-note {
   width: 100%;
   margin: 0;
   padding: 10px 12px;
-  border: 1px solid rgba(248, 113, 113, 0.3);
+  border: 1px solid var(--error-border);
   border-radius: 8px;
-  background: rgba(248, 113, 113, 0.06);
-  color: #f87171;
+  background: var(--error-bg);
+  color: var(--error);
   font-size: 13px;
   line-height: 1.4;
 }
@@ -1095,7 +1221,7 @@ main {
 .auth-btn {
   padding: 8px 14px;
   border-radius: 10px;
-  border: 1px solid #2a3040;
+  border: 1px solid var(--border);
   background: var(--panel);
   color: var(--text);
   font-size: 13px;
@@ -1132,7 +1258,7 @@ main {
   gap: 6px;
   margin-bottom: 18px;
   background: var(--panel-2);
-  border: 1px solid #2a3040;
+  border: 1px solid var(--border);
   border-radius: 10px;
   padding: 4px;
 }
@@ -1175,7 +1301,7 @@ main {
 .auth-field input {
   padding: 10px 12px;
   border-radius: 10px;
-  border: 1px solid #2a3040;
+  border: 1px solid var(--border);
   background: var(--panel-2);
   color: var(--text);
   font-size: 14px;
@@ -1188,7 +1314,7 @@ main {
 
 .auth-error {
   margin: 0;
-  color: #f87171;
+  color: var(--error);
   font-size: 13px;
 }
 
@@ -1235,7 +1361,7 @@ main {
   flex: 0 0 190px;
   width: 190px;
   background: var(--panel);
-  border: 1px solid #222736;
+  border: 1px solid var(--border-subtle);
   border-radius: var(--radius);
   overflow: hidden;
   cursor: pointer;
@@ -1271,7 +1397,7 @@ main {
 
 .continue-progress {
   height: 4px;
-  background: #2a3040;
+  background: var(--border);
   border-radius: 2px;
   margin-top: 8px;
   overflow: hidden;
@@ -1318,8 +1444,8 @@ main {
   padding: 8px 14px;
   border-radius: 10px;
   border: 1px solid var(--accent);
-  background: rgba(225, 29, 72, 0.15);
-  color: #fff;
+  background: var(--accent-soft);
+  color: var(--accent);
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
@@ -1328,15 +1454,100 @@ main {
 
 .resume-btn:hover {
   background: var(--accent);
+  color: var(--on-accent);
 }
 
 
 /* Missing seasons and episodes remain visible. */
 .chip:disabled, .ep-btn:disabled {
-  color: #888;
-  background: #292929;
-  border-color: #444;
+  color: var(--disabled-text);
+  background: var(--disabled-bg);
+  border-color: var(--border);
   opacity: .55;
   cursor: not-allowed;
   box-shadow: none;
 }
+
+/* ---- Отдельные страницы (каталог / фильм / просмотр / вход / IPTV) ----
+   Карточка фильма и плеер жили в модалке внутри каталога — теперь это свои
+   страницы, поэтому контейнер повторяет .modal-card, но без фиксированной
+   высоты и затемнения фона. */
+
+a.logo {
+  text-decoration: none;
+  color: inherit;
+}
+
+/* Карточка каталога — ссылка на страницу фильма: без синего цвета и подчёркивания
+   (стили гиперссылки браузера здесь не нужны — карточка выглядит как плитка). */
+a.card,
+a.card:hover,
+a.card:visited,
+a.card:focus {
+  color: inherit;
+  text-decoration: none;
+}
+
+a.close {
+  text-decoration: none;
+}
+
+.page {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 20px 24px 48px;
+}
+
+/* Страница просмотра — плеер шире прочих страниц. */
+.page-wide {
+  max-width: 1500px;
+  padding-bottom: 32px;
+}
+
+.page-narrow {
+  max-width: 460px;
+}
+
+.page-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.page > .player-wrap {
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+/* Название фильма/серии в шапке страницы просмотра. */
+.watch-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+/* Узкие экраны (телефон, окно браузера): в шапке много ссылок — название убираем,
+   логотип разрешаем сжимать, иначе строка не помещается и уезжает за край. */
+@media (max-width: 720px) {
+  .topbar {
+    gap: 12px;
+    padding: 12px 14px;
+  }
+
+  .watch-title {
+    display: none;
+  }
+
+  .logo {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}
+
+

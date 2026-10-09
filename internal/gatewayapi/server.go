@@ -10,11 +10,13 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"path"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/zeoril1/video_viewer/internal/httpx"
+	"github.com/zeoril1/video_viewer/internal/remoteauth"
 )
 
 // Config — адреса внутренних сервисов и каталог статики.
@@ -33,15 +35,24 @@ func NewServer(cfg Config) http.Handler {
 	mux := http.NewServeMux()
 
 	// ---- Каталог (catalog-сервис) ----
+	mux.HandleFunc("GET /api/poster", proxyTo(cfg.CatalogURL))
 	mux.HandleFunc("GET /api/catalog", proxyTo(cfg.CatalogURL))
 	mux.HandleFunc("GET /api/catalog/meta", proxyTo(cfg.CatalogURL))
 	mux.HandleFunc("GET /api/films/{id}", proxyTo(cfg.CatalogURL))
 	mux.HandleFunc("GET /api/films/{id}/sources", proxyTo(cfg.CatalogURL))
+	mux.HandleFunc("GET /api/films/{id}/segments", proxyTo(cfg.CatalogURL))
+	mux.HandleFunc("GET /api/films/{id}/seasons", proxyTo(cfg.CatalogURL))
+	mux.HandleFunc("GET /api/films/{id}/seasons/{season}", proxyTo(cfg.CatalogURL))
 	// Админ-эндпоинты каталога: роль проверяет catalog-сервис.
 	mux.HandleFunc("/api/admin/", proxyTo(cfg.CatalogURL))
+	mux.HandleFunc("GET /api/admin/users", proxyTo(cfg.AuthURL))
+	mux.HandleFunc("PUT /api/admin/users/{id}/role", proxyTo(cfg.AuthURL))
+	mux.HandleFunc("GET /api/admin/storage", proxyTo(cfg.StreamURL))
+	mux.HandleFunc("DELETE /api/admin/storage/{hash}", proxyTo(cfg.StreamURL))
 
 	// ---- Стриминг (stream-сервис) ----
 	mux.HandleFunc("GET /api/films/{id}/files", proxyTo(cfg.StreamURL))
+	mux.HandleFunc("POST /api/films/{id}/files", proxyTo(cfg.StreamURL))
 	mux.HandleFunc("GET /api/films/{id}/tracks", proxyTo(cfg.StreamURL))
 	mux.HandleFunc("GET /api/films/{id}/hls.m3u8", proxyTo(cfg.StreamURL))
 	mux.HandleFunc("GET /api/films/{id}/hls/stop", proxyTo(cfg.StreamURL))
@@ -51,11 +62,22 @@ func NewServer(cfg Config) http.Handler {
 	mux.HandleFunc("GET /api/stream/", proxyTo(cfg.StreamURL))
 	// Тёплый кеш: фронтенд зовёт после просмотра >5% длительности.
 	mux.HandleFunc("POST /api/stream/keep", proxyTo(cfg.StreamURL))
+	mux.HandleFunc("GET /api/stream/download-status", proxyTo(cfg.StreamURL))
+	mux.HandleFunc("POST /api/stream/viewing", proxyTo(cfg.StreamURL))
+	mux.HandleFunc("DELETE /api/stream/viewing", proxyTo(cfg.StreamURL))
 	// /api/debug/* намеренно НЕ проксируется наружу (диагностика памяти и
 	// торрентов доступна только во внутренней сети).
 
 	// ---- Авторизация и история (auth-сервис) ----
 	mux.HandleFunc("/api/auth/", proxyTo(cfg.AuthURL))
+	mux.HandleFunc("/api/rooms", proxyTo(cfg.AuthURL))
+	mux.HandleFunc("/api/rooms/", proxyTo(cfg.AuthURL))
+	mux.HandleFunc("POST /api/stream/prepare", proxyTo(cfg.StreamURL))
+	mux.HandleFunc("/api/personal", proxyTo(cfg.AuthURL))
+	mux.HandleFunc("/api/personal/", proxyTo(cfg.AuthURL))
+	mux.HandleFunc("/api/discover/", proxyTo(cfg.CatalogURL))
+	mux.HandleFunc("GET /api/films/{id}/explore", proxyTo(cfg.CatalogURL))
+	mux.HandleFunc("GET /api/films/{id}/watch-order", proxyTo(cfg.CatalogURL))
 	mux.HandleFunc("/api/history", proxyTo(cfg.AuthURL))
 	mux.HandleFunc("/api/history/", proxyTo(cfg.AuthURL))
 
@@ -69,9 +91,29 @@ func NewServer(cfg Config) http.Handler {
 	// ---- Статические файлы фронтенда ----
 	// no-cache (а не no-store): файл перепроверяется (If-Modified-Since → 304),
 	// но после обновления фронтенда клиент сразу получает новую версию.
-	// Без этого заголовка браузер/WebView кэширует app.js эвристически (по
+	// Без этого заголовка браузер/WebView кэширует скрипты фронтенда (web/*.js) эвристически (по
 	// Last-Modified) и может долго работать на старой версии.
-	mux.Handle("/", noCacheStatic(http.Dir(cfg.WebDir)))
+	static := noCacheStatic(http.Dir(cfg.WebDir))
+	access := remoteauth.New(cfg.AuthURL)
+	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Clean and case-fold before the filesystem lookup (Windows is insensitive
+		// to case). Recheck permissions even on conditional/cache requests.
+		if strings.Contains(r.URL.Path, ":") {
+			http.NotFound(w, r)
+			return
+		}
+		p := strings.ToLower(path.Clean("/" + strings.ReplaceAll(r.URL.Path, "\\", "/")))
+		p = strings.TrimRight(p, ". ")
+		if p == "/admin.html" || p == "/storage.html" {
+			w.Header().Set("Cache-Control", "no-store")
+			if !access.RequireAdmin(w, r) {
+				return
+			}
+			static.ServeHTTP(w, r)
+			return
+		}
+		static.ServeHTTP(w, r)
+	}))
 
 	return httpx.LogMiddleware(clientAddress(mux, cfg.TrustedProxy))
 }
@@ -81,7 +123,9 @@ func NewServer(cfg Config) http.Handler {
 func noCacheStatic(fs http.FileSystem) http.Handler {
 	files := http.FileServer(fs)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "no-cache")
+		if w.Header().Get("Cache-Control") == "" {
+			w.Header().Set("Cache-Control", "no-cache")
+		}
 		files.ServeHTTP(w, r)
 	})
 }
@@ -181,14 +225,16 @@ func healthHandler(cfg Config) http.HandlerFunc {
 // clientAddress перезаписывает внутренний заголовок с IP клиента:
 // forwarded-адрес принимается только от явно заданного прокси.
 func clientAddress(next http.Handler, trustedProxy string) http.Handler {
+	tp := &trustedProxyIPs{host: strings.TrimSpace(trustedProxy)}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ip, _, err := net.SplitHostPort(r.RemoteAddr)
 		if err != nil {
 			ip = r.RemoteAddr
 		}
-		if trustedProxy != "" && strings.HasPrefix(r.URL.Path, "/api/auth/") {
-			addresses, _ := net.LookupIP(trustedProxy)
-			for _, address := range addresses {
+		// Разбираем X-Forwarded-For только там, где он нужен (лимиты входа),
+		// и только если он вообще пришёл: без заголовка разбирать нечего.
+		if tp.host != "" && (strings.HasPrefix(r.URL.Path, "/api/auth/") || r.URL.Path == "/api/rooms" || strings.HasPrefix(r.URL.Path, "/api/rooms/") || r.URL.Path == "/api/stream/viewing") && r.Header.Get("X-Forwarded-For") != "" {
+			for _, address := range tp.ips() {
 				if address.Equal(net.ParseIP(ip)) {
 					chain := strings.Split(r.Header.Get("X-Forwarded-For"), ",")
 					if forwarded := net.ParseIP(strings.TrimSpace(chain[len(chain)-1])); forwarded != nil {
@@ -201,4 +247,36 @@ func clientAddress(next http.Handler, trustedProxy string) http.Handler {
 		r.Header.Set("X-Video-Viewer-Client-IP", ip)
 		next.ServeHTTP(w, r)
 	})
+}
+
+// trustedProxyIPs — адреса доверенного прокси. Имя резолвится не чаще раза в минуту
+// и с коротким таймаутом: раньше DNS-запрос шёл в каждом запросе /api/auth/* и вход
+// ждал ~4 с, пока Docker DNS не ответит про незапущенный caddy (профиль public).
+// Пустой ответ кэшируется тот же срок — прокси, поднятый позже, будет подхвачен.
+const trustedProxyTTL = time.Minute
+
+type trustedProxyIPs struct {
+	host string
+	mu   sync.Mutex
+	list []net.IP
+	at   time.Time
+}
+
+func (t *trustedProxyIPs) ips() []net.IP {
+	if t.host == "" {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.at.IsZero() && time.Since(t.at) < trustedProxyTTL {
+		return t.list
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	addrs, err := net.DefaultResolver.LookupIP(ctx, "ip", t.host)
+	if err != nil {
+		addrs = nil // прокси не запущен — forwarded-заголовку просто не доверяем
+	}
+	t.list, t.at = addrs, time.Now()
+	return t.list
 }

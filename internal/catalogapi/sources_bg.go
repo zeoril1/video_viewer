@@ -38,11 +38,12 @@ type sourcesManager struct {
 	tmdb   *tmdb.Client    // для числа сезонов сериала (может быть nil)
 	ctx    context.Context // родительский контекст приложения (для фоновых заданий)
 
-	mu         sync.Mutex
-	running    map[string]bool
-	lastDone   map[string]time.Time
-	semaphore  chan struct{}
-	retryAfter map[string]time.Time
+	mu                sync.Mutex
+	running           map[string]bool
+	lastDone          map[string]time.Time
+	semaphore         chan struct{}
+	retryAfter        map[string]time.Time
+	trackerEmptyUntil map[string]time.Time
 }
 
 func newSourcesManager(cfg Config) *sourcesManager {
@@ -208,10 +209,16 @@ func (m *sourcesManager) run(ctx context.Context, filmID string) error {
 
 	// У сериалов один общий запрос по названию, недостающие сезоны добираются точечно; есть запасной проход по исходному названию.
 	isSeries := isSeriesKind(film.Kind)
-	matcher := newTitleMatcher(trackerTitles(film))
+	matcher := newFilmTitleMatcher(film)
+	trackers := m.newTrackerSearch(filmID, matcher)
+	defer func() {
+		if ctx.Err() == nil {
+			trackers.finish()
+		}
+	}()
 	var searchErr error
 	search := func(ctx context.Context, q string, limit int) ([]magnet.Result, error) {
-		results, err := m.magnet.Search(ctx, q, limit)
+		results, err := trackers.search(ctx, q, limit)
 		if err != nil {
 			searchErr = err
 		}
@@ -240,10 +247,11 @@ func (m *sourcesManager) run(ctx context.Context, filmID string) error {
 
 	items := searchBy(trackerTitle(film))
 	// У зарубежных сериалов раздачи названы оригиналом — пробуем исходное название.
-	if len(items) == 0 {
+	if len(items) == 0 || trackers.needsAlternative() {
 		if alt := trackerTitleAlt(film); alt != "" {
-			log.Printf("sources: %s: по названию %q пусто, пробую %q", filmID, trackerTitle(film), alt)
-			items = searchBy(alt)
+			log.Printf("sources: %s: пробую %q для трекеров без совпадений", filmID, alt)
+			trackers.alternative = true
+			items = mergeSourceItems(items, searchBy(alt))
 		}
 	}
 
@@ -251,7 +259,7 @@ func (m *sourcesManager) run(ctx context.Context, filmID string) error {
 		return ctx.Err()
 	}
 	if len(items) == 0 {
-		if searchErr != nil {
+		if searchErr != nil && !trackers.succeeded() {
 			return searchErr
 		}
 		// Пустая выдача — не ошибка HTTP.
@@ -287,6 +295,9 @@ func (m *sourcesManager) run(ctx context.Context, filmID string) error {
 		return fmt.Errorf("save sources %s: %w", filmID, err)
 	} else if added+updated+removed > 0 {
 		log.Printf("sources: save %s: +%d ~%d -%d", filmID, added, updated, removed)
+	}
+	if trackers.succeeded() {
+		return nil
 	}
 	return searchErr
 }
@@ -333,9 +344,13 @@ func runQueries(ctx context.Context, fn func(c context.Context, q string, limit 
 			if s.Seeds <= 0 && !(isSeries && (namedSeason || magnet.NamesVoiceStudio(s.Title) || magnet.IsFullCollection(s.Title))) {
 				continue
 			}
+			provider := s.Provider
+			if provider == "" {
+				provider = providerName
+			}
 			items = append(items, sourceItem{
 				Title: s.Title, Size: s.Size, Seeds: s.Seeds, Magnet: s.Magnet,
-				Quality: quality, Audio: audio, Season: season, Provider: providerName,
+				Quality: quality, Audio: audio, Season: season, Provider: provider,
 			})
 		}
 		// Все запросы проходим целиком (лишнее отсекает дедуп); обрыв только на maxSourceItems:
@@ -358,7 +373,7 @@ const maxSourceItems = 400
 
 // seasonStructure возвращает структуру сезонов из TMDB (nil — нет клиента или tmdb_id); нужна для приведения трекерных сезонов к нумерации TMDB.
 func (m *sourcesManager) seasonStructure(ctx context.Context, film db.Film) []tmdb.SeasonInfo {
-	if m.tmdb == nil {
+	if m.tmdb == nil || !isSeriesKind(film.Kind) {
 		return nil
 	}
 	id, err := strconv.ParseInt(strings.TrimSpace(film.TMDBID), 10, 64)
@@ -466,6 +481,7 @@ func sourceItemsFromDB(srcs []db.Source, film db.Film) []sourceItem {
 			Quality: s.Quality, Audio: s.Audio, Season: s.Season, Provider: s.Provider,
 		})
 	}
+	items = newFilmTitleMatcher(film).filterWithLog(film.IMDBID, items, false)
 	sortSourceItems(items, isSeriesKind(film.Kind))
 	return items
 }

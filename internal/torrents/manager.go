@@ -5,7 +5,9 @@ package torrents
 
 import (
 	"errors"
+	"github.com/zeoril1/video_viewer/internal/disklimit"
 	"log"
+	"os"
 	"runtime"
 	"runtime/debug"
 	"sort"
@@ -19,7 +21,9 @@ import (
 
 // Config — параметры торрент-клиента.
 type Config struct {
-	ListenPort int
+	MaxCacheBytes int64
+	MinFreeBytes  int64
+	ListenPort    int
 	// SpoolDir — каталог дискового спула скачанных кусков (по файлу на серию);
 	// пусто — прежнее поведение: данные в памяти.
 	SpoolDir string
@@ -40,6 +44,7 @@ const defaultMaxCached = 16
 
 // Manager владеет торрент-клиентом и кэшем открытых торрентов.
 type Manager struct {
+	closed     bool // guarded by mu; prevents late browser leases after shutdown
 	client     *torrent.Client
 	spool      *spoolClient // дисковый спул (nil — in-memory)
 	mu         sync.Mutex
@@ -50,6 +55,7 @@ type Manager struct {
 	fileWants  map[string]map[int]int      // востребованные файлы (серии) по hash
 	cacheTTL   time.Duration               // TTL тёплого кеша
 	maxCached  int                         // лимит тёплых торрентов
+	rates      map[string]downloadSample   // samples used by the storage dashboard
 }
 
 // NewManager создаёт торрент-клиент (хранилище — спул либо RAM). Берём
@@ -63,7 +69,12 @@ func NewManager(cfg Config) (*Manager, error) {
 
 	var spool *spoolClient
 	if cfg.SpoolDir != "" {
+		if err := os.MkdirAll(cfg.SpoolDir, 0755); err != nil {
+			return nil, err
+		}
+		removeAbandonedSpool(cfg.SpoolDir)
 		spool = newSpoolClient(cfg.SpoolDir)
+		spool.budget = disklimit.New(cfg.SpoolDir, cfg.MaxCacheBytes, cfg.MinFreeBytes)
 		cc.DefaultStorage = spool
 		log.Printf("torrents: дисковый спул включён (%s)", cfg.SpoolDir)
 	} else {
@@ -92,6 +103,7 @@ func NewManager(cfg Config) (*Manager, error) {
 		fileWants:  make(map[string]map[int]int),
 		cacheTTL:   cacheTTL,
 		maxCached:  maxCached,
+		rates:      make(map[string]downloadSample),
 	}, nil
 }
 
@@ -99,6 +111,11 @@ func NewManager(cfg Config) (*Manager, error) {
 func (m *Manager) Close() {
 	// Гасим отложенные выгрузки: их таймеры не должны срабатывать после закрытия клиента.
 	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return
+	}
+	m.closed = true
 	for _, tm := range m.dropTimers {
 		tm.Stop()
 	}
@@ -149,10 +166,14 @@ func (m *Manager) Acquire(item catalog.Item) (*torrent.Torrent, func(), error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	m.trimDiskLocked()
 	t, err := m.getOrOpenLocked(item, hash)
 	if err != nil {
 		return nil, nil, err
 	}
+	// A file eviction leaves its replacement torrent suspended so it cannot
+	// silently recreate the file. An explicit playback/prepare request resumes it.
+	t.AllowDataDownload()
 
 	m.readers[hash]++
 	if tm, ok := m.dropTimers[hash]; ok {
@@ -191,6 +212,9 @@ func (m *Manager) drop(hash string) {
 
 // dropLocked выгружает торрент немедленно (только под m.mu); true — был открыт и выгружен.
 func (m *Manager) dropLocked(hash string) bool {
+	if tm := m.dropTimers[hash]; tm != nil {
+		tm.Stop()
+	}
 	delete(m.dropTimers, hash)
 	// За время ожидания торрент могли снова начать читать.
 	if m.readers[hash] > 0 {
@@ -203,6 +227,7 @@ func (m *Manager) dropLocked(hash string) bool {
 	}
 	delete(m.keepUntil, hash)
 	delete(m.fileWants, hash)
+	delete(m.rates, hash)
 	return ok
 }
 
@@ -237,6 +262,9 @@ func (m *Manager) Keep(magnet string, dur time.Duration) {
 	until := time.Now().Add(dur)
 
 	m.mu.Lock()
+	if existing := m.keepUntil[hash]; existing.After(until) {
+		until = existing
+	}
 	m.keepUntil[hash] = until
 	// Простаивающий открытый торрент — продлеваем отложенную выгрузку до TTL.
 	if _, open := m.open[hash]; open && m.readers[hash] <= 0 {
@@ -342,7 +370,10 @@ func (m *Manager) ApplyDownloadPriorities(item catalog.Item) {
 func (m *Manager) applyFilePriorities(hash string) {
 	m.mu.Lock()
 	t := m.open[hash]
-	wants := m.fileWants[hash]
+	wants := make(map[int]int)
+	for i, n := range m.fileWants[hash] {
+		wants[i] = n
+	}
 	m.mu.Unlock()
 	if t == nil || t.Info() == nil {
 		return
@@ -390,3 +421,31 @@ func (m *Manager) Status() []TorrentStatus {
 	}
 	return res
 }
+
+// Trim idle cached torrents before admitting more data; active readers survive.
+func (m *Manager) trimDiskLocked() {
+	if m.spool == nil || !m.spool.budget.Pressure() {
+		return
+	}
+	type candidate struct {
+		hash  string
+		until time.Time
+	}
+	var idle []candidate
+	for h := range m.open {
+		if m.readers[h] == 0 {
+			idle = append(idle, candidate{h, m.keepUntil[h]})
+		}
+	}
+	sort.Slice(idle, func(i, j int) bool { return idle[i].until.Before(idle[j].until) })
+	for _, c := range idle {
+		if !m.spool.budget.Pressure() {
+			break
+		}
+		if timer := m.dropTimers[c.hash]; timer != nil {
+			timer.Stop()
+		}
+		m.dropLocked(c.hash)
+	}
+}
+func (m *Manager) DiskPressure() bool { return m.spool != nil && m.spool.budget.Pressure() }

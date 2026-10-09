@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Файлы и загрузки — Кинотека</title>
+  <script src="theme.js?v=1"></script>
+  <link rel="stylesheet" href="style.css?v=22" />
+  <link rel="stylesheet" href="storage.css?v=2" />
+  <link rel="stylesheet" href="redesign.css?v=2" />
+</head>
+<body>
+  <header class="topbar">
+    <a class="logo" href="/">Кинотека</a>
+    <div class="user-area">
+      <span id="storage-user" class="user-name"></span>
+      <a class="auth-btn" href="/admin.html">Администрирование</a>
+      <button id="storage-logout" class="auth-btn" type="button">Выйти</button>
+    </div>
+  </header>
+  <main class="storage-main">
+    <h1 class="page-heading">Файлы и загрузки</h1>
+    <p id="storage-deny" class="empty" hidden>Нет доступа. Страница доступна только администратору.</p>
+    <div id="storage-content" hidden>
+      <div class="storage-toolbar">
+        <p>Состояние обновляется каждые 3 секунды.</p>
+        <button id="storage-reload" class="auth-btn" type="button">Обновить</button>
+      </div>
+      <p id="storage-status" class="storage-status" role="status" aria-live="polite"></p>
+      <section id="storage-summary" class="storage-summary" aria-label="Место на сервере"></section>
+      <section class="storage-section">
+        <h2>Кто сейчас смотрит <span id="storage-viewer-count" class="storage-note"></span></h2>
+        <p class="storage-note">Время просмотра учитывает воспроизведение без пауз и ожидания загрузки. Позиция показывает место в фильме или серии.</p>
+        <div id="storage-viewers" class="storage-table-wrap"></div>
+      </section>
+      <section class="storage-section">
+        <h2>Фильмы, серии и загрузки <span id="storage-count" class="storage-note"></span></h2>
+        <p id="storage-cache-note" class="storage-note"></p>
+        <div id="storage-files"></div>
+      </section>
+    </div>
+  </main>
+  <script src="storage.js?v=1"></script>
+</body>
+</html>
