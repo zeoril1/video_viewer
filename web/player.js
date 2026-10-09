@@ -259,8 +259,13 @@ const PP = (() => {
       lowLatencyMode: false,
       liveDurationInfinity: true,
       maxBufferLength: 60,
-      maxMaxBufferLength: 120,
-      maxBufferSize: 96 * 1024 * 1024,
+      // A byte target needs a long time ceiling for low-bitrate files. Keep it
+      // finite so hls.js can reduce it when the browser's MSE quota is smaller.
+      maxMaxBufferLength: 6 * 60 * 60,
+      maxBufferSize: 1024 * 1024 * 1024,
+      // Plain media playlists have no BANDWIDTH attribute. Learn the encoded
+      // bitrate from loaded fragments so the byte target also works for them.
+      abrMaxWithRealBitrate: true,
       backBufferLength: 30,
       // The growing playlist represents a file, rather than a live broadcast.
       // Keep its live start at the first fragment regardless of generated length.

@@ -68,7 +68,7 @@ func (m *hlsManager) enforceResources(now time.Time) {
 	var abandoned []*hlsSession
 	m.mu.Lock()
 	for key, s := range m.sessions {
-		if s.lastUsed.Before(now.Add(-90 * time.Second)) {
+		if s.lastUsed.Before(now.Add(-hlsIdleTimeout)) {
 			abandoned = append(abandoned, s)
 			delete(m.sessions, key)
 		}
@@ -107,6 +107,9 @@ func (m *hlsManager) enforceResources(now time.Time) {
 		}
 		s := candidate.s
 		s.resourceLimited = true
+		if s.output != nil {
+			s.output.close()
+		}
 		// Wait's observer closes done before taking m.mu, so it can be awaited
 		// here while requests are blocked from registering additional segments.
 		if s.cmd != nil && s.cmd.Process != nil {
@@ -114,6 +117,9 @@ func (m *hlsManager) enforceResources(now time.Time) {
 		}
 		if s.done != nil {
 			<-s.done
+		}
+		if s.output != nil {
+			s.output.uploads.Wait()
 		}
 		data, err := os.ReadFile(s.playlist)
 		if err != nil {

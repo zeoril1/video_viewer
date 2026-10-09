@@ -99,9 +99,35 @@ func TestClosedViewerCannotBeResurrectedByPendingHeartbeat(t *testing.T) {
 	if len(s.snapshot()) != 1 {
 		t.Fatal("another owner removed this viewer")
 	}
-	now = now.Add(time.Minute + time.Second)
+	now = now.Add(viewerTTL + time.Second)
 	if len(s.snapshot()) != 0 || len(s.closed) != 0 {
 		t.Fatal("expired session state retained")
+	}
+}
+
+func TestBackgroundHeartbeatRetainsSourceWithoutSegmentRequests(t *testing.T) {
+	s := newViewingStore()
+	now := time.Unix(1700000000, 0)
+	s.now = func() time.Time { return now }
+	released := 0
+	v := viewer{owner: "owner", Session: "background", Hash: "hash", Playing: true,
+		release: func() { released++ }}
+	s.update(v)
+	v.release = nil
+	for i := 0; i < 5; i++ {
+		now = now.Add(time.Minute)
+		if len(s.snapshot()) != 1 || released != 0 {
+			t.Fatal("background timer throttling expired an active source")
+		}
+		v.Position += 60
+		s.update(v)
+	}
+	if got := s.snapshot()[0].WatchedSeconds; got != 75 {
+		t.Fatal("sparse heartbeats must still bound watched time", got)
+	}
+	now = now.Add(viewerTTL + time.Second)
+	if len(s.snapshot()) != 0 || released != 1 {
+		t.Fatal("an abandoned browser did not release its source exactly once")
 	}
 }
 

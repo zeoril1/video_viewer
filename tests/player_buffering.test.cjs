@@ -32,7 +32,9 @@ test('a fast remux of a downloaded movie starts from zero with real hls.js live 
     assert.equal(hls.streamController.getNextFragment(0, details).sn, 0);
     assert.equal(hls.config.lowLatencyMode, false);
     assert.equal(hls.config.maxBufferLength, 60);
-    assert.equal(hls.config.maxMaxBufferLength, 120);
+    assert.equal(hls.config.maxMaxBufferLength, 6 * 60 * 60);
+    assert.equal(hls.config.maxBufferSize, 1024 * 1024 * 1024);
+    assert.equal(hls.config.abrMaxWithRealBitrate, true);
     assert.equal(hls.config.backBufferLength, 30);
   } finally {
     hls.destroy();

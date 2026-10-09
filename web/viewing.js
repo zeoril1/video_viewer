@@ -6,22 +6,56 @@
   if (typeof PP === 'undefined' || !PP.available) return;
   const video = document.getElementById('player');
   let session = '', identity = '', blocked = false, closed = false;
-  let queue = Promise.resolve();
+  const queue = [];
+  let sending = false;
   const number = value => Number.isFinite(+value) ? Math.max(0, +value) : 0;
   const newSession = () => Array.from(crypto.getRandomValues(new Uint8Array(16)),
     value => value.toString(16).padStart(2, '0')).join('');
 
-  function request(method, body, keepalive = false) {
+  async function send(method, body, keepalive = false) {
     const options = { method, headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body), keepalive };
-    if (keepalive) {
-      fetch('/api/stream/viewing', options).catch(() => {});
-      return;
+    const controller = new AbortController();
+    options.signal = controller.signal;
+    let timeout;
+    try {
+      await Promise.race([
+        fetch('/api/stream/viewing', options),
+        new Promise((_, reject) => {
+          timeout = setTimeout(() => { controller.abort(); reject(new Error('Viewing heartbeat timed out')); }, 8000);
+        }),
+      ]);
+    } catch (_) {
+      // The next heartbeat retries with the current playback position.
+    } finally {
+      clearTimeout(timeout);
     }
-    queue = queue.then(() => {
-      if (method === 'POST' && (closed || body.session !== session)) return;
-      return fetch('/api/stream/viewing', options);
-    }).catch(() => {});
+  }
+
+  function drain() {
+    if (sending) return;
+    sending = true;
+    Promise.resolve().then(async () => {
+      try {
+        while (queue.length) {
+          const item = queue.shift();
+          if (item.method === 'POST' && (closed || item.body.session !== session)) continue;
+          await send(item.method, item.body);
+        }
+      } finally {
+        sending = false;
+        if (queue.length) drain();
+      }
+    });
+  }
+
+  function request(method, body, keepalive = false) {
+    if (keepalive) { send(method, body, true); return; }
+    // A slow request must not queue minutes of stale playback snapshots.
+    const pending = method === 'POST' && queue.find(item => item.method === 'POST' && item.body.session === body.session);
+    if (pending) pending.body = body;
+    else queue.push({ method, body });
+    drain();
   }
 
   function end(keepalive = false) {
@@ -66,6 +100,8 @@
   window.addEventListener('playbackstop', () => end());
   if (typeof VV !== 'undefined' && VV.onAuth) VV.onAuth(report);
   setInterval(report, 10000);
+  document.addEventListener('visibilitychange', report);
+  window.addEventListener('focus', report);
   window.addEventListener('pagehide', () => { closed = true; end(true); });
   window.addEventListener('pageshow', () => { closed = false; report(); });
 })();

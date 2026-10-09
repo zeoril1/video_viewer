@@ -73,6 +73,8 @@ type hlsSession struct {
 	resourcePlaylist    []byte
 	resourceSubPlaylist []byte
 	requestedSegments   map[string]bool
+	output              *hlsOutputWindow // bounded, cancellable output; independent of the manager lock.
+	outputToken         string
 
 	// subsLabel — имя субтитр-дорожки для master-плейлиста (#EXT-X-MEDIA NAME).
 	subsLabel string
@@ -93,6 +95,8 @@ type hlsManager struct {
 	maxDiskBytes, minFreeBytes int64
 	mu                         sync.Mutex
 	sessions                   map[string]*hlsSession
+	outputs                    map[string]*hlsSession
+	forwardBytes               int64
 	launches                   map[string]uint64
 	nextLaunch                 uint64
 	selfBase                   string
@@ -139,14 +143,16 @@ func newHLSManager(selfBase string) *hlsManager {
 		dir = os.TempDir()
 	}
 	return &hlsManager{
-		slots:      make(chan struct{}, 4),
-		done:       make(chan struct{}),
-		sessions:   make(map[string]*hlsSession),
-		launches:   make(map[string]uint64),
-		selfBase:   selfBase,
-		probes:     make(chan struct{}, 4),
-		dataDir:    dir,
-		probeCache: make(map[string]probeResult),
+		slots:        make(chan struct{}, 4),
+		done:         make(chan struct{}),
+		sessions:     make(map[string]*hlsSession),
+		outputs:      make(map[string]*hlsSession),
+		forwardBytes: defaultHLSForwardBytes,
+		launches:     make(map[string]uint64),
+		selfBase:     selfBase,
+		probes:       make(chan struct{}, 4),
+		dataDir:      dir,
+		probeCache:   make(map[string]probeResult),
 	}
 }
 
@@ -458,7 +464,26 @@ func (m *hlsManager) ensure(ctx context.Context, id, magnet string, file, track,
 		return nil, err
 	}
 	playlist := filepath.Join(dir, "playlist.m3u8")
-	segPattern := filepath.Join(dir, "seg_%05d.m4s")
+	token, err := newHLSOutputToken()
+	if err != nil {
+		_ = os.RemoveAll(dir)
+		return nil, err
+	}
+	s := &hlsSession{done: make(chan struct{}), id: id, magnet: magnet, file: file, track: track, subs: subs, subsLabel: subsLabel, start: start, quality: quality, dir: dir, playlist: playlist, lastUsed: time.Now(), generation: generation,
+		output: newHLSOutputWindow(m.forwardBytes), outputToken: token}
+	outputBase := m.selfBase + hlsOutputPath + token + "/"
+	segPattern := outputBase + "seg_%05d.m4s"
+	m.mu.Lock()
+	m.outputs[token] = s
+	m.mu.Unlock()
+	defer func() {
+		if !handedOff {
+			s.output.close()
+			m.mu.Lock()
+			delete(m.outputs, token)
+			m.mu.Unlock()
+		}
+	}()
 	// Позиция старта: при перемотке — start; для свежего потока — начало видео,
 	// если оно в исходнике стартует позже звука (adelay не годится: сдвинул бы
 	// звук навсегда; -ss + noaccurate_seek ставит A/V в одну точку).
@@ -497,7 +522,7 @@ func (m *hlsManager) ensure(ctx context.Context, id, magnet string, file, track,
 	args = append(args,
 		"-c:a", "aac", "-b:a", "192k", "-ac", "2",
 	)
-	args = append(args, hlsMuxArgs(segPattern)...)
+	args = append(args, hlsHTTPMuxArgs(segPattern)...)
 	if hasSubs {
 		// WebVTT + master-плейлист: sgroup связывает видеовариант с субтитром.
 		args = append(args, "-c:s", "webvtt")
@@ -507,19 +532,21 @@ func (m *hlsManager) ensure(ctx context.Context, id, magnet string, file, track,
 		}
 		args = append(args, "-var_stream_map", vsm, "-master_pl_name", "master.m3u8")
 	}
-	args = append(args, playlist)
+	args = append(args, outputBase+"playlist.m3u8")
 	cmd := exec.Command("ffmpeg", args...)
-	cmd.Stderr = &ffmpegLogWriter{}
-	log.Printf("ffmpeg %s track=%d subs=%d start=%.0fs quality=%s: ffmpeg %s", id, track, subs, start, quality, strings.Join(args, " "))
+	s.cmd = cmd
+	cmd.Stderr = &ffmpegLogWriter{secret: token}
+	log.Printf("ffmpeg %s track=%d subs=%d start=%.0fs quality=%s: ffmpeg %s", id, track, subs, start, quality, strings.ReplaceAll(strings.Join(args, " "), token, "[private]"))
 	if err := cmd.Start(); err != nil {
 		_ = os.RemoveAll(dir)
 		log.Printf("ffmpeg %s track=%d: start failed: %v", id, track, err)
 		return nil, err
 	}
-	s := &hlsSession{done: make(chan struct{}), id: id, magnet: magnet, file: file, track: track, subs: subs, subsLabel: subsLabel, start: start, quality: quality, dir: dir, playlist: playlist, cmd: cmd, lastUsed: time.Now(), generation: generation}
 	if !m.publishSession(ctx, key, generation, s) {
+		s.output.close()
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
+		s.output.uploads.Wait()
 		_ = os.RemoveAll(dir)
 		return nil, context.Canceled
 	}
@@ -532,6 +559,7 @@ func (m *hlsManager) ensure(ctx context.Context, id, magnet string, file, track,
 		}
 		close(s.done)
 		m.mu.Lock()
+		delete(m.outputs, token)
 		s.exited = true
 		s.exitErr = werr
 		m.mu.Unlock()
@@ -541,10 +569,9 @@ func (m *hlsManager) ensure(ctx context.Context, id, magnet string, file, track,
 	return s, nil
 }
 
-// A cached source can be remuxed much faster than playback. Without pacing a
-// large film immediately creates a second full copy and trips the HLS quota.
-// A 90-second initial burst keeps startup/seek quick and gives playback a buffer;
-// subsequent ingestion follows media time, including source-quality streamcopy.
+// The output window applies backpressure at the actual HLS byte limit. Reading
+// cached input can therefore fill a useful forward buffer as fast as available
+// without materializing the whole source or pacing it by an arbitrary duration.
 func hlsInputArgs(input string, seekStart float64, quality string) []string {
 	args := []string{"-hide_banner", "-loglevel", "error", "-y"}
 	if seekStart > 0 {
@@ -554,7 +581,19 @@ func hlsInputArgs(input string, seekStart float64, quality string) []string {
 			args = append(args, "-noaccurate_seek")
 		}
 	}
-	return append(args, "-readrate", "1", "-readrate_initial_burst", "90", "-i", input)
+	return append(args, "-i", input)
+}
+
+// HTTP uploads are received into private .tmp files and atomically published by
+// serveOutput. FFmpeg's own temp-file rename works only for filesystem outputs.
+func hlsHTTPMuxArgs(segmentPattern string) []string {
+	args := hlsMuxArgs(segmentPattern)
+	for i := range args {
+		if args[i] == "independent_segments+temp_file" {
+			args[i] = "independent_segments"
+		}
+	}
+	return append(args, "-method", "PUT")
 }
 
 func hlsMuxArgs(segmentPattern string) []string {
@@ -570,11 +609,19 @@ func hlsMuxArgs(segmentPattern string) []string {
 
 // stop убивает ffmpeg и удаляет временные файлы (Wait делает горутина-наблюдатель).
 func (s *hlsSession) stop() {
+	if s.output != nil {
+		s.output.close()
+	}
 	if s.cmd != nil && s.cmd.Process != nil {
 		_ = s.cmd.Process.Kill()
 	}
 	if s.done != nil {
 		<-s.done
+	}
+	if s.output != nil {
+		// Windows cannot delete a .tmp file while its upload still has it open.
+		// Closing the window and killing its producer unblock every upload first.
+		s.output.uploads.Wait()
 	}
 	_ = os.RemoveAll(s.dir)
 }
@@ -634,21 +681,25 @@ func (m *hlsManager) cleanup() {
 			return
 		case <-time.After(30 * time.Second):
 		}
-		cutoff := time.Now().Add(-90 * time.Second)
-		// Останавливаем без лока: RemoveAll может быть медленным и заблокировал бы HLS.
-		var stale []*hlsSession
-		m.mu.Lock()
-		for k, s := range m.sessions {
-			if s.lastUsed.Before(cutoff) {
-				stale = append(stale, s)
-				delete(m.sessions, k)
-			}
+		m.cleanupIdle(time.Now())
+	}
+}
+
+func (m *hlsManager) cleanupIdle(now time.Time) {
+	cutoff := now.Add(-hlsIdleTimeout)
+	// Remove private directories outside the manager lock.
+	var stale []*hlsSession
+	m.mu.Lock()
+	for k, s := range m.sessions {
+		if s.lastUsed.Before(cutoff) {
+			stale = append(stale, s)
+			delete(m.sessions, k)
 		}
-		m.mu.Unlock()
-		for _, s := range stale {
-			log.Printf("hls: cleanup: остановка простоявшей сессии %s track=%d", s.id, s.track)
-			s.stop()
-		}
+	}
+	m.mu.Unlock()
+	for _, s := range stale {
+		log.Printf("hls: cleanup: остановка простоявшей сессии %s track=%d", s.id, s.track)
+		s.stop()
 	}
 }
 
@@ -940,14 +991,16 @@ func (m *hlsManager) serveSegment(w http.ResponseWriter, r *http.Request) {
 			ok = false
 		} else {
 			s.lastUsed = time.Now()
-			s.segments++
-			if s.requestedSegments == nil {
-				s.requestedSegments = make(map[string]bool)
+			if r.Method == http.MethodGet {
+				s.segments++
+				if s.requestedSegments == nil {
+					s.requestedSegments = make(map[string]bool)
+				}
+				s.requestedSegments[name] = true
 			}
-			s.requestedSegments[name] = true
 		}
 	}
-	firstSegment := ok && s.segments == 1
+	firstSegment := ok && r.Method == http.MethodGet && s.segments == 1
 	m.mu.Unlock()
 	if !ok {
 		log.Printf("hls: сегмент %s/%s: сессия не найдена (track=%d file=%d)", id, name, track, file)
@@ -1010,8 +1063,9 @@ func hlsGenerationValueMatches(generation string, s *hlsSession) bool {
 
 // ffmpegLogWriter пишет stderr ffmpeg в лог целыми строками (ffmpeg шлёт куски).
 type ffmpegLogWriter struct {
-	mu  sync.Mutex
-	buf []byte
+	mu     sync.Mutex
+	buf    []byte
+	secret string
 }
 
 func (w *ffmpegLogWriter) Write(p []byte) (int, error) {
@@ -1026,6 +1080,9 @@ func (w *ffmpegLogWriter) Write(p []byte) (int, error) {
 		line := strings.TrimSpace(string(w.buf[:i]))
 		w.buf = w.buf[i+1:]
 		if line != "" {
+			if w.secret != "" {
+				line = strings.ReplaceAll(line, w.secret, "[private]")
+			}
 			log.Printf("ffmpeg: %s", line)
 		}
 	}

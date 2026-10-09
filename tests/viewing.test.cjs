@@ -5,7 +5,8 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 function fixture() {
-  const handlers = {}, events = {}, requests = [], intervals = [];
+  const handlers = {}, events = {}, requests = [], intervals = [], timeouts = [];
+  let fetchImpl = async () => ({ ok: true });
   const state = { active: true, id: 'tt1234567', magnet: 'magnet:?xt=urn:btih:' + 'a'.repeat(40),
     file: 2, season: 1, episode: 3, position: 345, duration: 1200,
     stream_start: 300, track: 1, subs: -1, quality: 'source' };
@@ -16,15 +17,19 @@ function fixture() {
     PP: { available: true, state: () => state, ready: () => ready, playing: () => visible,
       session: () => 'b'.repeat(32) },
     VV: { onAuth() {} },
-    document: { getElementById: () => video },
+    document: { getElementById: () => video, addEventListener(name, fn) { (events[name] ||= []).push(fn); } },
     window: { addEventListener(name, fn) { (events[name] ||= []).push(fn); } },
     crypto: { getRandomValues(array) { array.fill(++sequence); return array; } },
-    fetch: async (url, options) => { requests.push({ url, ...options, body: JSON.parse(options.body) }); return { ok: true }; },
+    fetch: async (url, options) => { requests.push({ url, ...options, body: JSON.parse(options.body) }); return fetchImpl(url, options); },
+    AbortController,
+    setTimeout(fn, delay) { const timer = { fn, delay, cleared: false }; timeouts.push(timer); return timer; },
+    clearTimeout(timer) { if (timer) timer.cleared = true; },
     setInterval(fn) { intervals.push(fn); },
   });
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../web/viewing.js'), 'utf8'), context);
   const emit = (name, target = events) => { for (const fn of target[name] || []) fn(); };
-  return { state, video, requests, intervals, emit, media: name => emit(name, handlers),
+  return { state, video, requests, intervals, timeouts, emit, media: name => emit(name, handlers),
+    setFetch: fn => { fetchImpl = fn; },
     setReady: value => { ready = value; }, setVisible: value => { visible = value; } };
 }
 const flush = () => new Promise(resolve => setImmediate(resolve));
@@ -94,4 +99,35 @@ test('a queued playback report cannot recreate a stopped session after pagehide'
   f.emit('pagehide');
   await flush();
   assert.deepEqual(f.requests.map(item => item.method), ['DELETE']);
+});
+
+test('slow heartbeats coalesce pending reports to the latest playback position', async () => {
+  const f = fixture();
+  let finish;
+  f.setFetch(() => new Promise(resolve => { finish = resolve; }));
+  f.emit('playbackchange'); await flush();
+  for (let position = 350; position <= 500; position += 10) {
+    f.state.position = position;
+    f.intervals[0]();
+  }
+  assert.equal(f.requests.length, 1);
+  f.setFetch(async () => ({ ok: true }));
+  finish({ ok: true }); await flush();
+  assert.equal(f.requests.length, 2);
+  assert.equal(f.requests[1].body.position, 500);
+});
+
+test('a hung heartbeat cannot prevent renewal from the current playback state', async () => {
+  const f = fixture();
+  f.setFetch(() => new Promise(() => {}));
+  f.emit('playbackchange'); await flush();
+  f.state.position = 400;
+  f.intervals[0]();
+  f.setFetch(async () => ({ ok: true }));
+  const timeout = f.timeouts.find(timer => !timer.cleared);
+  assert.equal(timeout.delay, 8000);
+  timeout.fn(); await flush();
+  assert.equal(f.requests[0].signal.aborted, true);
+  assert.equal(f.requests.at(-1).body.position, 400);
+  assert.equal(f.requests.length, 2);
 });

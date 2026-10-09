@@ -25,6 +25,7 @@ func main() {
 		maxSessions = flag.Int("max-sessions", 4, "maximum concurrent HLS processes")
 		maxCache    = flag.Int64("cache-bytes", 40<<30, "maximum logical spool size in bytes")
 		maxHLS      = flag.Int64("hls-bytes", 8<<30, "maximum HLS output bytes (one-second watchdog)")
+		forwardHLS  = flag.Int64("hls-forward-bytes", 1<<30, "maximum prepared HLS media ahead per viewer in bytes")
 		minFree     = flag.Int64("min-free-bytes", 2<<30, "minimum free disk space")
 		addr        = flag.String("addr", ":8082", "HTTP listen address")
 		port        = flag.Int("port", 0, "torrent client listen port (0 = random)")
@@ -43,7 +44,7 @@ func main() {
 		tmdbURL = flag.String("tmdb-url", tmdb.DefaultBaseURL, "TMDB API v3 base URL")
 	)
 	flag.Parse()
-	if *maxSessions < 1 || *maxCache < 1 || *maxHLS < 1 || *minFree < 0 {
+	if *maxSessions < 1 || *maxCache < 1 || *maxHLS < 1 || *forwardHLS < 1 || *minFree < 0 {
 		log.Fatal("invalid resource limits")
 	}
 
@@ -84,6 +85,7 @@ func main() {
 		DisableSegmentAnalysis: os.Getenv("SEGMENTS_ANALYSIS_ENABLED") == "false",
 		MaxSessions:            *maxSessions,
 		MaxHLSBytes:            *maxHLS,
+		HLSForwardBytes:        *forwardHLS,
 		MinFreeBytes:           *minFree,
 		Torrents:               mgr,
 		Addr:                   *addr,

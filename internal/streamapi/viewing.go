@@ -19,7 +19,8 @@ import (
 	"github.com/zeoril1/video_viewer/internal/torrents"
 )
 
-const viewerTTL = 35 * time.Second
+// Background playback can throttle browser timers to one heartbeat per minute.
+const viewerTTL = 2 * time.Minute
 
 var viewerSessionPattern = regexp.MustCompile(`^[a-zA-Z0-9_-]{16,80}$`)
 

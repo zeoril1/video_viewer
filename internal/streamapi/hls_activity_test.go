@@ -64,7 +64,7 @@ func TestConsumedHLSSegmentsRetainBackBufferAndUnpublishedData(t *testing.T) {
 		}
 	}
 	s.playhead = 1000
-	s.lastPlayback = time.Now().Add(-time.Minute)
+	s.lastPlayback = time.Now().Add(-viewerTTL - time.Second)
 	m.pruneConsumedOnce(time.Now())
 	if _, err := os.Stat(filepath.Join(dir, "seg_00003.m4s")); err != nil {
 		t.Fatal("abandoned heartbeat removed uncertain data")

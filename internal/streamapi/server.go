@@ -25,6 +25,7 @@ type Config struct {
 	DisableSegmentAnalysis    bool
 	MaxSessions               int
 	MaxHLSBytes, MinFreeBytes int64
+	HLSForwardBytes           int64 // per-viewer prepared media ahead; 0 = 1 GiB.
 	Torrents                  *torrents.Manager
 	Addr                      string // адрес прослушивания (для внутреннего URL ffmpeg)
 	// TMDB — опциональный клиент TMDB (nil — файлы раскладываются только по именам):
@@ -47,6 +48,9 @@ func NewServer(cfg Config) (http.Handler, func()) {
 	}
 	hls.maxDiskBytes = cfg.MaxHLSBytes
 	hls.minFreeBytes = cfg.MinFreeBytes
+	if cfg.HLSForwardBytes > 0 {
+		hls.forwardBytes = cfg.HLSForwardBytes
+	}
 	go hls.cleanup()
 	go hls.watchResources()
 	analyzer := newEpisodeAnalyzer(hls, cfg)
@@ -54,6 +58,10 @@ func NewServer(cfg Config) (http.Handler, func()) {
 	viewers := newViewingStore()
 	go viewers.cleanup(hls.done)
 	go hls.pruneConsumed()
+	// Private loopback sink for FFmpeg; a blocked buffer upload has no timeout.
+	mux.HandleFunc("PUT "+hlsOutputPath+"{token}/{name}", hls.serveOutput)
+	// FFmpeg 6.1 uses POST for the nested WebVTT playlist even with -method PUT.
+	mux.HandleFunc("POST "+hlsOutputPath+"{token}/{name}", hls.serveOutput)
 	mux.HandleFunc("POST /api/stream/viewing", viewers.handle(cfg.Torrents, access, hls))
 	mux.HandleFunc("DELETE /api/stream/viewing", viewers.handle(cfg.Torrents, access, hls))
 	storage := &storageHandler{mgr: cfg.Torrents, hls: hls, access: access, viewers: viewers}

@@ -62,7 +62,7 @@ func LogMiddleware(next http.Handler) http.Handler {
 		start := time.Now()
 		next.ServeHTTP(rec, r)
 		// Каждый HLS-сегмент не логируем: их тысячи на активный стрим.
-		if strings.Contains(r.URL.Path, "/hls/segments/") {
+		if strings.Contains(r.URL.Path, "/hls/segments/") || strings.HasPrefix(r.URL.Path, "/api/stream/hls-output/") {
 			return
 		}
 		// Успешные проверки живости (healthcheck и шлюз) не логируем;

@@ -10,7 +10,10 @@ import (
 	"time"
 )
 
-const hlsBackCache = 180.0
+const (
+	hlsBackCache   = 180.0
+	hlsIdleTimeout = 3 * time.Minute // Allow throttled background-tab heartbeats.
+)
 
 // A browser may play its forward buffer without requesting a segment for over
 // 90 seconds. Heartbeats keep the exact current HLS session alive independently
@@ -31,6 +34,9 @@ func (m *hlsManager) touchPlayback(id, session, magnet string, file int, start f
 	now := time.Now()
 	s.lastUsed, s.lastPlayback = now, now
 	s.playhead = math.Max(0, position-s.start)
+	if s.output != nil {
+		s.output.advance(s.playhead)
+	}
 	return true
 }
 
@@ -86,7 +92,11 @@ func (m *hlsManager) pruneConsumedOnce(now time.Time) {
 				continue
 			}
 			for _, segment := range consumedSegmentNames(data, s.playhead-hlsBackCache) {
-				_ = os.Remove(filepath.Join(s.dir, segment))
+				if err := os.Remove(filepath.Join(s.dir, segment)); err == nil || os.IsNotExist(err) {
+					if s.output != nil {
+						s.output.forget(segment)
+					}
+				}
 			}
 		}
 	}
