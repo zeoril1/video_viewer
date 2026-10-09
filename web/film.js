@@ -291,6 +291,76 @@ function applyWanted() {
   if (wantVoice && selectedSeason && !voicePref[selectedSeason]) voicePref[selectedSeason] = wantVoice;
 }
 
+// Scroll only the chip row, keeping page and player position unchanged.
+function setupFilmChipRail(rail, name) {
+  const strip = document.createElement('div');
+  strip.className = 'film-chip-strip';
+  const arrows = [-1, 1].map(direction => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'film-chip-arrow';
+    button.hidden = true;
+    button.disabled = true;
+    button.innerHTML = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="' + (direction < 0 ? 'M14 6l-6 6 6 6' : 'M10 6l6 6-6 6') + '" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    button.addEventListener('click', () => rail.scrollBy({
+      left: direction * Math.max(80, rail.clientWidth * .8),
+      behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+    }));
+    return button;
+  });
+  rail.before(strip);
+  strip.append(arrows[0], rail, arrows[1]);
+  let frame = 0, previousActive = '', previousWidth = 0;
+  const reveal = button => {
+    if (!button) return;
+    const bounds = rail.getBoundingClientRect(), chip = button.getBoundingClientRect();
+    if (chip.left < bounds.left + 3) rail.scrollLeft += chip.left - bounds.left - 3;
+    else if (chip.right > bounds.right - 3) rail.scrollLeft += chip.right - bounds.right + 3;
+  };
+  const update = () => {
+    frame = 0;
+    const overflow = rail.scrollWidth > strip.clientWidth + 1;
+    arrows.forEach(button => { button.hidden = !overflow; });
+    const active = rail.querySelector('.chip.active');
+    const key = active?.textContent || '';
+    if (key !== previousActive || rail.clientWidth !== previousWidth) reveal(active);
+    previousActive = key;
+    previousWidth = rail.clientWidth;
+    const limit = Math.max(0, rail.scrollWidth - rail.clientWidth);
+    arrows[0].disabled = !overflow || rail.scrollLeft <= 1;
+    arrows[1].disabled = !overflow || rail.scrollLeft >= limit - 1;
+    arrows.forEach((button, index) => button.setAttribute('aria-label', name === 'seasons'
+      ? filmText(index ? 'Следующие сезоны' : 'Предыдущие сезоны', index ? 'Next seasons' : 'Previous seasons')
+      : filmText(index ? 'Следующие озвучки' : 'Предыдущие озвучки', index ? 'Next audio options' : 'Previous audio options')));
+  };
+  const schedule = () => {
+    if (!frame) frame = requestAnimationFrame(update);
+  };
+  rail.addEventListener('scroll', schedule, { passive: true });
+  strip.addEventListener('keydown', event => {
+    if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+    const chips = [...rail.querySelectorAll('.chip:not(:disabled)')];
+    const index = chips.indexOf(document.activeElement);
+    event.preventDefault();
+    event.stopPropagation();
+    if (index < 0) {
+      const direction = event.key === 'ArrowLeft' ? -1 : 1;
+      arrows[direction < 0 ? 0 : 1].click();
+      return;
+    }
+    const next = chips[Math.max(0, Math.min(chips.length - 1, index + (event.key === 'ArrowLeft' ? -1 : 1)))];
+    next?.focus({ preventScroll: true });
+    reveal(next);
+  });
+  new MutationObserver(schedule).observe(rail, { childList: true });
+  if (typeof ResizeObserver !== 'undefined') new ResizeObserver(schedule).observe(strip);
+  else window.addEventListener('resize', schedule);
+  onLang(schedule);
+  schedule();
+}
+setupFilmChipRail(sourcesSeason, 'seasons');
+setupFilmChipRail(sourcesRel, 'voices');
+
 function renderSeasonChips(items, id) {
   applyWanted();
   const seasons = allKnownSeasons(id, items);
@@ -300,12 +370,14 @@ function renderSeasonChips(items, id) {
   }
   // Сезоны показываем всегда (в том числе когда сезон один) — блок не прячем.
   sourcesSeasonWrap.hidden = false;
+  const focusedLabel = sourcesSeason.contains(document.activeElement) ? document.activeElement.textContent : '';
   sourcesSeason.innerHTML = '';
   showNote(seasonNote, seasons.length ? '' : t('seasonsLoading'));
   seasons.forEach((k) => {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'chip' + (k === selectedSeason ? ' active' : '');
+    btn.setAttribute('aria-pressed', String(k === selectedSeason));
     btn.textContent = seasonLabel(k);
     // Browsing canonical seasons must not depend on available torrent sources.
     btn.disabled = !available(k) && !(filmSeasonEps[id] && filmSeasonEps[id][k] > 0);
@@ -328,6 +400,7 @@ function renderSeasonChips(items, id) {
     });
     sourcesSeason.appendChild(btn);
   });
+  if (focusedLabel) [...sourcesSeason.children].find(button => button.textContent === focusedLabel)?.focus({ preventScroll: true });
   if (typeof FilmFeatures !== 'undefined') FilmFeatures.render(currentItem);
 }
 
@@ -340,6 +413,7 @@ function renderSeasonVoices(items, id) {
     return;
   }
   sourcesRelWrap.hidden = false;
+  const focusedLabel = sourcesRel.contains(document.activeElement) ? document.activeElement.textContent : '';
   sourcesRel.innerHTML = '';
   if (!id || !items || !items.length) return;
   const voices = seasonVoices(items, selectedSeason);
@@ -353,6 +427,7 @@ function renderSeasonVoices(items, id) {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'chip' + (voice === cur ? ' active' : '');
+    btn.setAttribute('aria-pressed', String(voice === cur));
     btn.textContent = voice;
     btn.title = voice;
     btn.addEventListener('click', () => {
@@ -361,6 +436,7 @@ function renderSeasonVoices(items, id) {
     });
     sourcesRel.appendChild(btn);
   });
+  if (focusedLabel) [...sourcesRel.children].find(button => button.textContent === focusedLabel)?.focus({ preventScroll: true });
 }
 
 // Пользователь выбрал озвучку: запоминаем и, если серия уже выбрана, сразу открываем просмотр.

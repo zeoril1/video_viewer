@@ -149,7 +149,15 @@ body:not(.film-series) .film-watch-layout { grid-template-columns: minmax(0, 1fr
 .film-page .src-group { margin-bottom: 18px; }
 .film-page .src-group:last-of-type { margin-bottom: 0; }
 .film-page .src-group-label { font-size: 12px; text-transform: none; letter-spacing: 0; font-weight: 500; margin-bottom: 9px; }
-.film-page .src-chips { gap: 8px; margin-bottom: 0; }
+.film-chip-strip { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.film-page .src-chips { flex: 1; min-width: 0; flex-wrap: nowrap; gap: 8px; margin-bottom: 0; padding: 3px; overflow-x: auto; scrollbar-width: none; overscroll-behavior-x: contain; }
+.film-page .src-chips::-webkit-scrollbar { display: none; }
+.film-page .src-chips .chip { flex-shrink: 0; white-space: nowrap; }
+.film-page .src-chips .chip:focus-visible { outline-offset: -3px; }
+.film-chip-arrow { flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 36px; padding: 0; border: 0; border-radius: 7px; background: transparent; color: var(--muted); cursor: pointer; }
+.film-chip-arrow svg { width: 18px; height: 18px; }
+.film-chip-arrow:hover:not(:disabled) { background: var(--hover); color: var(--text); }
+.film-chip-arrow:disabled { opacity: .25; cursor: default; }
 .film-page .chip { min-height: 36px; padding: 7px 14px; font-size: 13px; border-radius: 8px; }
 .film-page .chip.active { color: var(--accent); font-weight: 600; }
 .film-page .ep-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; max-height: 460px; padding: 2px 3px 4px 2px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
