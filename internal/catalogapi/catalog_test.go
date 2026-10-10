@@ -158,20 +158,30 @@ func TestSortCatalogEntries(t *testing.T) {
 }
 
 func TestIsReleased(t *testing.T) {
-	if isReleased(CatalogItem{ReleaseDate: "2999-01-01"}) {
-		t.Error("фильм с будущей датой не должен считаться вышедшим")
+	moscow := time.FixedZone("MSK", 3*60*60)
+	west := time.FixedZone("UTC-7", -7*60*60)
+	cases := []struct {
+		name, release string
+		now           time.Time
+		want          bool
+	}{
+		{"future", "2999-01-01", time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC), false},
+		{"past", "2001-06-15", time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC), true},
+		{"unknown", "", time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC), true},
+		{"invalid", "не дата", time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC), true},
+		{"invalid calendar date", "2026-02-30", time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC), true},
+		{"UTC today at midnight", "2026-10-10", time.Date(2026, 10, 10, 0, 0, 0, 0, time.UTC), true},
+		{"Moscow today at midnight", "2026-10-10", time.Date(2026, 10, 10, 0, 0, 0, 0, moscow), true},
+		{"Moscow today before 03:00", "2026-10-10", time.Date(2026, 10, 10, 1, 30, 0, 0, moscow), true},
+		{"Moscow tomorrow before midnight", "2026-10-10", time.Date(2026, 10, 9, 23, 59, 59, 0, moscow), false},
+		{"west tomorrow while UTC already today", "2026-10-10", time.Date(2026, 10, 9, 23, 59, 59, 0, west), false},
+		{"west today at midnight", "2026-10-10", time.Date(2026, 10, 10, 0, 0, 0, 0, west), true},
 	}
-	if !isReleased(CatalogItem{ReleaseDate: "2001-06-15"}) {
-		t.Error("фильм с прошлой датой должен считаться вышедшим")
-	}
-	if !isReleased(CatalogItem{ReleaseDate: time.Now().Format("2006-01-02")}) {
-		t.Error("фильм, вышедший сегодня, должен считаться вышедшим")
-	}
-	// Неизвестная или некорректная дата — не скрываем.
-	if !isReleased(CatalogItem{}) {
-		t.Error("фильм без даты не должен скрываться")
-	}
-	if !isReleased(CatalogItem{ReleaseDate: "не дата"}) {
-		t.Error("фильм с некорректной датой не должен скрываться")
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := isReleasedAt(CatalogItem{ReleaseDate: c.release}, c.now); got != c.want {
+				t.Errorf("release %q at %s = %v, want %v", c.release, c.now.Format(time.RFC3339), got, c.want)
+			}
+		})
 	}
 }

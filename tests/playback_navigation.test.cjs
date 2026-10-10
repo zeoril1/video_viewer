@@ -194,7 +194,7 @@ test('an unavailable selected episode never starts a different episode', async (
     releaseSeasonFit: () => ({ fits: true, count: 1 }), tmdbMappingOn: () => true,
     rememberSeasonFit() {}, dbg() {}, t: s => s, flashFilmNote: s => { note = s; },
   });
-  vm.runInContext(film.slice(film.indexOf('async function playEpisode('), film.indexOf('// Фильм: играем лучшую раздачу')), c);
+  vm.runInContext(film.slice(film.indexOf('async function playEpisode('), film.indexOf('\nfunction openWatch(')), c);
   assert.equal(await c.playEpisode('tt1', 1, 3), false);
   assert.equal(note, 'episodesUnavailable');
 });

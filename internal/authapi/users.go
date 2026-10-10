@@ -5,17 +5,12 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/zeoril1/video_viewer/internal/authn"
 	"github.com/zeoril1/video_viewer/internal/db"
 )
 
 func (h *authHandler) adminUsers(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	if h.repo == nil {
-		http.Error(w, "database unavailable", http.StatusServiceUnavailable)
-		return
-	}
-	if _, ok := authn.RequireAdmin(h.repo, w, r); !ok {
+	if _, ok := h.requireAdmin(w, r); !ok {
 		return
 	}
 	items, err := h.repo.ListUsers(r.Context())
@@ -28,11 +23,7 @@ func (h *authHandler) adminUsers(w http.ResponseWriter, r *http.Request) {
 
 func (h *authHandler) adminUserRole(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	if h.repo == nil {
-		http.Error(w, "database unavailable", http.StatusServiceUnavailable)
-		return
-	}
-	u, ok := authn.RequireAdmin(h.repo, w, r)
+	u, ok := h.requireAdmin(w, r)
 	if !ok || !checkOrigin(w, r) {
 		return
 	}
@@ -64,4 +55,16 @@ func (h *authHandler) adminUserRole(w http.ResponseWriter, r *http.Request) {
 	default:
 		writePersonalJSON(w, map[string]any{"user": user})
 	}
+}
+
+func (h *authHandler) requireAdmin(w http.ResponseWriter, r *http.Request) (db.User, bool) {
+	u, ok := h.requireUser(w, r)
+	if !ok {
+		return db.User{}, false
+	}
+	if u.Role != db.RoleAdmin {
+		http.Error(w, "forbidden: admin only", http.StatusForbidden)
+		return db.User{}, false
+	}
+	return u, true
 }

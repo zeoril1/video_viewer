@@ -22,9 +22,9 @@ func (m *hlsManager) touchPlayback(id, session, magnet string, file int, start f
 	if session == "" || position < 0 || start < 0 || math.IsNaN(position) || math.IsInf(position, 0) || math.IsNaN(start) || math.IsInf(start, 0) {
 		return false
 	}
-	if quality == "" {
-		quality = "source"
-	}
+	// Старые клиенты могут прислать сохранённое quality=720. Это тот же
+	// исходный поток; выбор качества больше не является параметром сессии.
+	quality = "source"
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	s := m.sessions[hlsSessionKey(id, session)]

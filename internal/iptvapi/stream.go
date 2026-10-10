@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -89,7 +90,7 @@ func newLiveManager(cfg Config) *liveManager {
 func (m *liveManager) fetch(ctx context.Context, raw, ua, referer, rangeHdr string) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, raw, nil)
 	if err != nil {
-		return nil, err
+		return nil, upstreamRequestError{cause: err}
 	}
 	if ua != "" {
 		req.Header.Set("User-Agent", ua)
@@ -102,14 +103,31 @@ func (m *liveManager) fetch(ctx context.Context, raw, ua, referer, rangeHdr stri
 	}
 	resp, err := m.hc.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, upstreamRequestError{cause: err}
 	}
 	if resp.StatusCode >= 400 {
 		defer resp.Body.Close()
-		return nil, fmt.Errorf("upstream: %s", resp.Status)
+		return nil, fmt.Errorf("upstream returned HTTP %d", resp.StatusCode)
 	}
 	return resp, nil
 }
+
+// Ошибки net/http содержат URL запроса, включая логин в пути и query-токены.
+// Причину сохраняем для errors.Is/As, но не выдаём адрес в ответе или логах.
+type upstreamRequestError struct{ cause error }
+
+func (e upstreamRequestError) Error() string {
+	if errors.Is(e.cause, context.Canceled) {
+		return "upstream request canceled"
+	}
+	var timeout interface{ Timeout() bool }
+	if errors.Is(e.cause, context.DeadlineExceeded) || errors.As(e.cause, &timeout) && timeout.Timeout() {
+		return "upstream request timed out"
+	}
+	return "upstream request failed"
+}
+
+func (e upstreamRequestError) Unwrap() error { return e.cause }
 
 // addToken регистрирует upstream-ссылку и возвращает токен для неё.
 func (m *liveManager) addToken(raw, ua, referer string) string {
@@ -159,12 +177,15 @@ func (m *liveManager) playlist(ctx context.Context, ch db.IPTVChannel, ua, refer
 			body, rerr := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 			resp.Body.Close()
 			if rerr == nil && isHLSPlaylist(body) {
-				if base, perr := url.Parse(ch.StreamURL); perr == nil {
-					return m.rewriteProxy(body, base, ua, referer), nil
+				// После перенаправления относительные URI принадлежат конечному
+				// плейлисту, а не адресу канала, с которого начался запрос.
+				if resp.Request.URL.String() != ch.StreamURL {
+					log.Printf("iptv: канал %d: HLS-плейлист получен после перенаправления", ch.ID)
 				}
+				return m.rewriteProxy(body, resp.Request.URL, ua, referer), nil
 			}
 		} else {
-			log.Printf("iptv: канал %d: прямой HLS не удался (%v) — пробуем ffmpeg", ch.ID, err)
+			log.Printf("iptv: канал %d: получение HLS-плейлиста не удалось (%v) — пробуем ffmpeg", ch.ID, err)
 		}
 	}
 	return m.playlistFFmpeg(ctx, ch, ua, referer)
@@ -467,7 +488,11 @@ func (s *Server) handleSegment(w http.ResponseWriter, r *http.Request) {
 	}
 	resp, err := s.live.fetch(r.Context(), ref.url, ref.ua, ref.referer, r.Header.Get("Range"))
 	if err != nil {
-		log.Printf("iptv: сегмент: %v", err)
+		resource := "сегмента"
+		if u, perr := url.Parse(ref.url); perr == nil && (strings.HasSuffix(u.Path, ".m3u8") || strings.HasSuffix(u.Path, ".m3u")) {
+			resource = "вложенного HLS-плейлиста"
+		}
+		log.Printf("iptv: получение %s: %v", resource, err)
 		http.Error(w, "upstream: "+err.Error(), http.StatusBadGateway)
 		return
 	}
@@ -483,8 +508,10 @@ func (s *Server) handleSegment(w http.ResponseWriter, r *http.Request) {
 		if rest, rerr := io.ReadAll(io.LimitReader(resp.Body, 4<<20)); rerr == nil {
 			body = append(body, rest...)
 		}
-		base, _ := url.Parse(ref.url)
-		out := s.live.rewriteProxy(body, base, ref.ua, ref.referer)
+		if resp.Request.URL.String() != ref.url {
+			log.Printf("iptv: вложенный HLS-плейлист получен после перенаправления")
+		}
+		out := s.live.rewriteProxy(body, resp.Request.URL, ref.ua, ref.referer)
 		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
 		w.Header().Set("Cache-Control", "no-store")
 		_, _ = w.Write(out)

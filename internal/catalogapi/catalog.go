@@ -55,6 +55,11 @@ type catalogEntry struct {
 // catalogCacheTTL — время жизни кэша каталога и меты: без него /api/catalog/meta на каждый клик по вкладкам/жанрам сканировал бы таблицу films.
 const catalogCacheTTL = 30 * time.Second
 
+const (
+	defaultCatalogPageSize = 30
+	maxCatalogPageSize     = 100
+)
+
 // catalogService объединяет фильмы БД (IMDb + TMDB) и on-demand внешнего поиска.
 type catalogService struct {
 	db   *db.Repo
@@ -169,20 +174,25 @@ func (s *catalogService) SearchPage(ctx context.Context, q, section, genre, sort
 
 	total := len(all)
 	if perPage <= 0 {
-		perPage = 30
+		perPage = defaultCatalogPageSize
+	} else if perPage > maxCatalogPageSize {
+		perPage = maxCatalogPageSize
 	}
 	if page <= 0 {
 		page = 1
 	}
-	start := (page - 1) * perPage
-	if start >= total {
+	// Проверяем наличие страницы до умножения: даже максимальный int
+	// должен вернуть пустую страницу, а не переполнить границы среза.
+	if total == 0 || page-1 > (total-1)/perPage {
 		log.Printf("catalog: search q=%q section=%s genre=%s page=%d -> 0/%d", q, section, genre, page, total)
 		return []catalogEntry{}, total
 	}
-	end := start + perPage
-	if end > total {
-		end = total
+	start := (page - 1) * perPage
+	count := perPage
+	if remaining := total - start; count > remaining {
+		count = remaining
 	}
+	end := start + count
 	log.Printf("catalog: search q=%q section=%s genre=%s page=%d -> %d/%d", q, section, genre, page, end-start, total)
 	return all[start:end], total
 }
@@ -257,6 +267,12 @@ func cmpReleaseKey(a, b string) int {
 
 // isReleased — вышел ли фильм (дата не в будущем); записи без даты считаем вышедшими (не знаем — не скрываем).
 func isReleased(it CatalogItem) bool {
+	return isReleasedAt(it, time.Now())
+}
+
+// isReleasedAt сравнивает календарные даты в часовом поясе сервера.
+// Дата релиза не содержит времени и не должна означать полночь UTC.
+func isReleasedAt(it CatalogItem, now time.Time) bool {
 	if it.ReleaseDate == "" {
 		return true
 	}
@@ -264,7 +280,7 @@ func isReleased(it CatalogItem) bool {
 	if err != nil {
 		return true
 	}
-	return !t.After(time.Now())
+	return t.Format("2006-01-02") <= now.Format("2006-01-02")
 }
 
 // bestRating — лучший из доступных рейтингов записи (IMDb или TMDB).

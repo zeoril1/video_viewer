@@ -21,10 +21,6 @@ const historyLimit = 50
 // requireUser — текущий пользователь из куки; пишет ошибку и возвращает
 // ok=false, если БД нет или пользователь не авторизован.
 func (h *historyHandler) requireUser(w http.ResponseWriter, r *http.Request) (db.User, bool) {
-	if h.repo == nil {
-		http.Error(w, "auth disabled (no database)", http.StatusServiceUnavailable)
-		return db.User{}, false
-	}
 	// CSRF: мутирующие запросы (save/remove/clear) — с того же origin;
 	// GET-список пропускается.
 	if r.Method != http.MethodGet && !sameOrigin(r) {
@@ -32,12 +28,7 @@ func (h *historyHandler) requireUser(w http.ResponseWriter, r *http.Request) (db
 		return db.User{}, false
 	}
 	auth := &authHandler{repo: h.repo}
-	u, ok := auth.currentUser(r)
-	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return db.User{}, false
-	}
-	return u, true
+	return auth.requireUser(w, r)
 }
 
 // list — GET /api/history: история просмотра пользователя.
@@ -55,7 +46,7 @@ func (h *historyHandler) list(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		log.Printf("history: list: %v", err)
-		http.Error(w, "db error", http.StatusInternalServerError)
+		writeAuthServiceError(w, err)
 		return
 	}
 	if items == nil {
@@ -109,7 +100,7 @@ func (h *historyHandler) save(w http.ResponseWriter, r *http.Request) {
 		Duration: body.Duration,
 	}); err != nil {
 		log.Printf("history: save: %v", err)
-		http.Error(w, "db error", http.StatusInternalServerError)
+		writeAuthServiceError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -136,7 +127,7 @@ func (h *historyHandler) remove(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := h.repo.DeleteWatchHistory(r.Context(), u.ID, filmID, magnet, file); err != nil {
 		log.Printf("history: remove: %v", err)
-		http.Error(w, "db error", http.StatusInternalServerError)
+		writeAuthServiceError(w, err)
 		return
 	}
 	log.Printf("history: remove %s magnet=%q file=%d", filmID, magnet, file)
@@ -151,7 +142,7 @@ func (h *historyHandler) clear(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := h.repo.ClearWatchHistory(r.Context(), u.ID); err != nil {
 		log.Printf("history: clear: %v", err)
-		http.Error(w, "db error", http.StatusInternalServerError)
+		writeAuthServiceError(w, err)
 		return
 	}
 	log.Printf("history: clear %s", u.Username)

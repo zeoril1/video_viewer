@@ -59,6 +59,9 @@ test('seeks restart a stream for evicted back buffer and gaps instead of waiting
   assert.equal(context.bufferedContains(491), false);
   assert.equal(context.bufferedContains(Infinity), false);
   assert.equal(context.bufferedAhead(), 20, 'later disconnected ranges do not hide a near stall');
+  assert.equal(context.bufferedContains(425, 5), true);
+  assert.equal(context.bufferedContains(429, 5), false, 'headroom cannot cross a gap into a later range');
+  assert.equal(context.bufferedContains(440, -1), false);
 });
 
 function playbackHarness() {
@@ -180,4 +183,14 @@ test('a server that ends without making progress has a bounded continuation budg
   assert.equal(f.launches.length, 3);
   assert.deepEqual(f.dispatched, ['playbackfailure']);
   assert.equal(f.context.playerError.hidden, false);
+});
+
+test('legacy playback quality cannot request a transcoded stream', () => {
+  const f = playbackHarness();
+  f.context.playHls('tt1', 'magnet:test', 2, 1, 157, '720', -1);
+  const query = new URL(f.instances.at(-1).url, 'http://test').searchParams;
+  assert.equal(query.has('quality'), false);
+  assert.equal(query.get('start'), '157');
+  assert.equal(query.get('track'), '1');
+  assert.equal(f.context.currentQuality, 'source');
 });

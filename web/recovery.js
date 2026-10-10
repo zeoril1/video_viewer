@@ -19,10 +19,14 @@
     tried = new Set(),
     attempt = null;
   function offer() {
+    if (PP.isFollower()) {
+      box.hidden = true;
+      return;
+    }
     if (PP.playing() && !busy) {
       box.hidden = false;
       text.textContent =
-        "Воспроизведение задерживается: видео не поступает в плеер вовремя. Даже скачанному файлу нужно соединение с сервером. При повторных остановках попробуйте снизить качество; также можно выбрать другой источник с сохранением позиции.";
+        "Воспроизведение задерживается: видео не поступает в плеер вовремя. Даже скачанному файлу нужно соединение с сервером. Можно выбрать другой источник с сохранением позиции.";
     }
   }
   window.addEventListener("playbackstart", () => {
@@ -40,7 +44,18 @@
     box.hidden = true;
   });
   window.addEventListener("playbackfailure", offer);
- window.addEventListener("requestsourcechange",()=>{offer();button.click();});
+  window.addEventListener("requestsourcechange", () => {
+    if (PP.isFollower()) return;
+    offer();
+    button.click();
+  });
+  window.addEventListener("playbackrole", () => {
+    button.disabled = busy || PP.isFollower();
+    if (!PP.isFollower()) return;
+    generation++;
+    box.hidden = true;
+    if (attempt) attempt.abort();
+  });
   video.addEventListener("error", offer);
   video.addEventListener("waiting", () => {
     if (!stalled) stalled = Date.now();
@@ -66,7 +81,7 @@
       offer();
   }, 2000);
   button.onclick = async () => {
-    if (busy) return;
+    if (busy || PP.isFollower()) return;
     busy = true;
     button.disabled = true;
     const token = generation,
@@ -94,10 +109,10 @@
         );
         if (sources.length || data.status !== "searching") break;
         await new Promise((resolve) => setTimeout(resolve, 2000));
-        if (token !== generation) return;
+        if (token !== generation || PP.isFollower()) return;
       }
       for (const source of sources.slice(0, 6)) {
-        if (token !== generation) return;
+        if (token !== generation || PP.isFollower()) return;
         tried.add(source.magnet);
         const files = await fetchFiles(
           original.id,
@@ -105,7 +120,7 @@
           source.title,
           { signal },
         );
-        if (token !== generation) return;
+        if (token !== generation || PP.isFollower()) return;
         const file =
           original.season && original.episode
             ? (files || []).find(
@@ -131,7 +146,7 @@
           ep: original.episode,
           voice: original.voice,
           pos: Math.max(0, latest.position || original.position || 0),
-          quality: original.quality,
+          quality: "source",
         });
         const p = playbackPageParams();
         p.set('id', original.id);
@@ -156,7 +171,7 @@
       if (e.name !== "AbortError") text.textContent = e.message;
     } finally {
       busy = false;
-      button.disabled = false;
+      button.disabled = PP.isFollower();
     }
   };
   window.addEventListener("pagehide", () => {

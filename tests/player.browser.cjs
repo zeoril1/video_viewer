@@ -58,6 +58,10 @@ const server = http.createServer((req, res) => {
     await page.goto(base + '/film.html');
     await page.evaluate(async () => {
       document.getElementById('details').hidden = false;
+      // This component fixture omits film.js, which normally reveals the parent layout.
+      document.getElementById('film-watch-layout').hidden = false;
+      document.getElementById('film-watch-layout').classList.remove('no-player');
+      document.getElementById('film-playback-column').hidden = false;
       FilmFeatures.render(currentItem);
       FilmFeatures.sources([{title:'Раздача',magnet:'test'}], 'tt123');
       await FilmFeatures.explore(currentItem);
@@ -67,14 +71,16 @@ const server = http.createServer((req, res) => {
     for (const width of [1280,390]) {
       await page.setViewportSize({width,height:900});
       const layout = await page.evaluate(() => {
-        const box = document.querySelector('.page-card').getBoundingClientRect();
-        const personal = document.querySelector('#film-personal').getBoundingClientRect();
+        const hero = document.querySelector('.film-hero');
+        const box = hero.getBoundingClientRect();
+        // The action wrappers use display: contents in the current design.
+        const personal = document.querySelector('#film-personal button').getBoundingClientRect();
         const rail = document.querySelector('.feature-carousel');
-        return { inset:personal.left-box.left,overflow:rail.scrollWidth>rail.clientWidth,
+        return { inset:personal.left-box.left,minimumInset:parseFloat(getComputedStyle(hero).paddingLeft),overflow:rail.scrollWidth>rail.clientWidth,
           rows:new Set([...rail.children].map(x=>x.offsetTop)).size,
           pageOverflow:document.documentElement.scrollWidth>innerWidth };
       });
-      assert.ok(layout.inset>=20); assert.ok(layout.overflow); assert.equal(layout.rows,1); assert.equal(layout.pageOverflow,false);
+      assert.ok(layout.inset>=layout.minimumInset-1); assert.ok(layout.overflow); assert.equal(layout.rows,1); assert.equal(layout.pageOverflow,false);
       if (process.env.SCREENSHOT_DIR) await page.screenshot({path:path.join(process.env.SCREENSHOT_DIR, 'film-' + width + '.png'),fullPage:true});
     }
     await page.click('#trailer-toggle');
@@ -84,8 +90,11 @@ const server = http.createServer((req, res) => {
     assert.equal(await page.locator('#player-wrap').isVisible(),false);
     assert.equal(await page.locator('#trailer-player').getAttribute('src'),null);
     if (fixture) {
-      await page.evaluate(() => PP.start({id:'tt123',magnet:'test'}));
+      await page.evaluate(() => PP.start({id:'tt123',magnet:'test',quality:'720'}));
       await page.waitForFunction(() => document.querySelector('#player').currentTime > 1);
+      assert.equal(await page.evaluate(() => PP.state().quality), 'source');
+      assert.equal(Object.hasOwn(requests.at(-1), 'quality'), false);
+      assert.equal(await page.locator('#ctrl-quality').count(), 0);
       const before = await page.evaluate(() => { const p=document.querySelector('#player');p.pause();return p.currentTime; });
       await page.click('#subs-list .sub-btn:nth-child(2)');
       await page.waitForFunction(() => [...document.querySelector('#player').textTracks].some(t => t.mode==='showing' && t.activeCues?.length));

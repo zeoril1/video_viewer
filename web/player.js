@@ -1,6 +1,6 @@
 'use strict';
 
-/* Плеер (HLS-поток раздачи): звуковые дорожки, субтитры, качество, перемотка,
+/* Плеер (HLS-поток раздачи): звуковые дорожки, субтитры, перемотка,
  * серии текущей раздачи, сохранение прогресса. Используется и страницей фильма
  * (/film.html — сериалы играются прямо там, «все серии + просмотр»), и отдельной
  * страницей просмотра (/watch.html — фильмы).
@@ -56,9 +56,8 @@ const PP = (() => {
   let currentTrack = 0;        // ordinal активной звуковой дорожки
   let currentSubs = -1;        // ordinal активной субтитр-дорожки (-1 — без субтитров)
   let currentSubtitles = [];   // субтитры активного файла (из /tracks)
-  let currentQuality = 'source';
+  const currentQuality = 'source';
   let currentVideoCodec = '';
-  let currentVideoHeight = 0;
   const maxStreamRestarts = 3; // восстановление потерянной серверной сессии
   let streamRestarts = 0;
   let lastContinuationPosition = -1;
@@ -181,11 +180,13 @@ const PP = (() => {
   // Отправка позиции в историю (не чаще раза в 5 с; final=true — принудительно).
   function maybeSaveProgress(final, beacon) {
     if (!VV.user || !currentPlay || !playbackReady) return null;
+    const userID = VV.user.id, authVersion = VV.authGeneration;
+    const sameUser = () => VV.user && VV.user.id === userID && VV.authGeneration === authVersion;
     const now = Date.now();
     if (!final && now - lastProgressSend < 5000) return null;
     const pos = Math.round(absTime());
     if (!Number.isFinite(pos) || pos < 0) return null;
-    const sample = currentPlay.id + '|' + currentPlay.magnet + '|' + currentFile + '|' + pos + '|' + curSeason + '|' + curEpisode;
+    const sample = userID + '|' + authVersion + '|' + currentPlay.id + '|' + currentPlay.magnet + '|' + currentFile + '|' + pos + '|' + curSeason + '|' + curEpisode;
     if (sample === lastSavedSample) return null;
     lastSavedSample = sample;
     // Просмотрено >5% — просим stream держать раздачу 24 ч (другие зрители той же озвучки скачают без повторов).
@@ -218,11 +219,12 @@ const PP = (() => {
       body: JSON.stringify(body),
       keepalive: !!beacon,
     }).then((res) => {
+      if (!sameUser()) return;
       if (!res.ok) throw new Error('HTTP ' + res.status);
       rememberWatchProgress(body);
     }).catch((err) => {
-      if (lastSavedSample === sample) lastSavedSample = '';
-      lastProgressSend = 0;
+      if (!sameUser()) return;
+      if (lastSavedSample === sample) { lastSavedSample = ''; lastProgressSend = 0; }
       dbg('history: ' + err.message);
     });
   }
@@ -290,13 +292,13 @@ const PP = (() => {
     };
   }
 
-  // Запуск HLS-потока файла: дорожка track, смещение start, качество
-  // (source|2160|1080|720|480), субтитр subs (-1 — без субтитров). Смена дорожки/качества/
+  // Запуск HLS-потока файла: дорожка track, смещение start, исходное качество,
+  // субтитр subs (-1 — без субтитров). Смена дорожки/
   // субтитра перезапускает ffmpeg; вкл/выкл текущей дорожки делает hls.js (subtitleTrack).
   // Resolve tracks before opening HLS. Starting a provisional stream and then
   // restarting it at currentTime can turn an episode transition into a seek.
   function beginPlayback(id, magnet, file, track, position, quality) {
-    const pending = { id, magnet, file, position, quality };
+    const pending = { id, magnet, file, position, quality: currentQuality };
     pendingPlayback = pending;
     playbackReady = false;
     autoNextFired = true;
@@ -306,7 +308,6 @@ const PP = (() => {
     player.load();
     streamStart = position;
     currentTrack = track;
-    currentQuality = quality;
     currentSubs = -1;
     stage('preparing', 'Определяем аудиодорожку и субтитры следующего потока.');
     loadTracks(id, magnet, file).then(ready => {
@@ -324,9 +325,8 @@ const PP = (() => {
   function playHls(id, magnetSrc, file, track, start, quality, subs) {
     if (pendingPlayback) {
       pendingPlayback.position = start || 0;
-      pendingPlayback.quality = quality || 'source';
+      pendingPlayback.quality = currentQuality;
       streamStart = pendingPlayback.position;
-      currentQuality = pendingPlayback.quality;
       return;
     }
  stage('preparing');
@@ -345,11 +345,9 @@ const PP = (() => {
 
     currentTrack = track || 0;
     currentSubs = (typeof subs === 'number' && subs >= 0) ? subs : -1;
-    currentQuality = quality || 'source';
     streamStart = start || 0;
     currentFile = (typeof file === 'number' && file >= 0) ? file : -1;
     autoNextFired = false; // новый поток — автопереход можно снова
-    updateQualityButtons();
     // Длительность запрашиваем при старте с любой позиции — иначе шкала/время её не покажут.
     fetchDuration(id, magnetSrc, currentFile);
 
@@ -359,7 +357,6 @@ const PP = (() => {
     if (currentFile >= 0) p.set('file', String(currentFile));
     if (currentSubs >= 0) p.set('subs', String(currentSubs));
     if (streamStart > 0) p.set('start', String(streamStart));
-    if (currentQuality !== 'source') p.set('quality', currentQuality);
     const src = `/api/films/${encodeURIComponent(id)}/hls.m3u8?` + p.toString();
     dbg('playHls: id=' + id + ' file=' + currentFile + ' track=' + currentTrack + ' subs=' + currentSubs + ' start=' + streamStart + ' q=' + currentQuality);
 
@@ -417,8 +414,8 @@ const PP = (() => {
         dbg('hls: ERROR type=' + (data && data.type) + ' details=' + (data && data.details)
           + ' fatal=' + !!(data && data.fatal) + resp);
         // Фатальная ошибка: на сырой поток не фолбэчим — там AC3/DTS, звука не будет.
-        // Ошибку показываем, НО плеер не скрываем: селекторы дорожек/качества остаются
-        // доступными — можно выбрать другую дорожку или вариант с H.264.
+        // Плеер не скрываем: можно выбрать другую дорожку или исходную раздачу
+        // с поддерживаемым браузером кодеком (например, H.264).
         if (data && data.fatal) {
           // Retry the existing server stream after hls.js exhausts its request
           // retries. Do not discard downloaded media or change the source.
@@ -578,12 +575,10 @@ const PP = (() => {
       durationFetch.inflight = false;
       currentVideoCodec = (data.codec || '').toLowerCase();
       // По реальному разрешению показываем только доступные кнопки качества (1080p не «повысить» до 4K).
-      currentVideoHeight = data.height || 0;
-      updateQualityButtons();
       const items = data.items || [];
       lastTracksItems = items;
       const subtitles = data.subtitles || [];
-      dbg('tracks: id=' + id + ' duration=' + (data.duration || '?') + 's дорожек=' + items.length + ' субтитров=' + subtitles.length + ' video=' + currentVideoCodec + '/' + currentVideoHeight + 'p');
+      dbg('tracks: id=' + id + ' duration=' + (data.duration || '?') + 's дорожек=' + items.length + ' субтитров=' + subtitles.length + ' video=' + currentVideoCodec + '/' + (data.height || 0) + 'p');
       // Субтитры рендерим ДО раннего возврата по аудио-дорожкам — иначе при одной
       // (или нулевой) звуковой дорожке блок субтитров не появился бы.
       currentSubtitles = subtitles;
@@ -779,7 +774,6 @@ const PP = (() => {
     lastProgressSend = 0;
     autoVoice = selectedVoice;
     currentFile = index;
-    currentQuality = 'source'; // Новая серия всегда начинается в исходном разрешении.
     streamStart = 0;
     // Keep the current ordinal until metadata maps the chosen audio to the new file.
     // Субтитры новой серии могут отличаться — сброс (селектор перерисует loadTracks).
@@ -856,13 +850,13 @@ const PP = (() => {
     }
   }
 
-  function bufferedContains(target) {
+  function bufferedContains(target, minimumAhead = 0) {
     const relative = target - streamStart;
-    if (!Number.isFinite(relative) || relative < 0) return false;
+    if (!Number.isFinite(relative) || relative < 0 || !Number.isFinite(minimumAhead) || minimumAhead < 0) return false;
     try {
       const ranges = player.buffered;
       for (let i = 0; i < ranges.length; i++) {
-        if (relative >= ranges.start(i) && relative <= ranges.end(i)) return true;
+        if (relative >= ranges.start(i) && relative + minimumAhead <= ranges.end(i)) return true;
       }
     } catch (_) { /* No usable media ranges yet. */ }
     return false;
@@ -984,21 +978,6 @@ const PP = (() => {
     }
   }
 
-  function qualityHeightNum(q) {
-    return { '2160': 2160, '1080': 1080, '720': 720, '480': 480 }[q] || 0;
-  }
-
-  // Отображает качество и скрывает недоступные кнопки: выше исходного разрешения не поднять
-  // (высота неизвестна (0) — показываем все).
-  function updateQualityButtons() {
-    document.querySelectorAll('#ctrl-quality .q-btn').forEach((b) => {
-      const q = b.dataset.quality;
-      const availableQ = q === 'source' || currentVideoHeight <= 0 || qualityHeightNum(q) <= currentVideoHeight;
-      b.hidden = !availableQ;
-      b.classList.toggle('active', availableQ && q === currentQuality);
-    });
-  }
-
   // Всплывающая панель управления в полном экране: показывается на движение мыши.
   let controlsTimer = null;
 
@@ -1058,19 +1037,6 @@ const PP = (() => {
       player.volume = parseFloat(ctrlVolume.value);
       player.muted = player.volume === 0;
       updatePlayerUI();
-    });
-
-    // Серверное понижение: перезапуск HLS с quality (ffmpeg перекодирует), позиция/дорожка сохраняются.
-    document.querySelectorAll('#ctrl-quality .q-btn').forEach((b) => {
-      b.addEventListener('click', () => {
-        if (!currentPlay) return;
-        const q = b.dataset.quality;
-        if (q === currentQuality) return;
-        dbg('качество: ' + currentQuality + ' -> ' + q);
-        currentQuality = q;
-        updateQualityButtons();
-        playHls(currentPlay.id, currentPlay.magnet, currentFile, currentTrack, absTime(), q, currentSubs);
-      });
     });
 
     ctrlFullscreen.addEventListener('click', (e) => {
@@ -1167,7 +1133,12 @@ const PP = (() => {
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'hidden') maybeSaveProgress(true, true);
     });
-    window.addEventListener('pagehide', leave);
+    window.addEventListener('pagehide', event => {
+      // A cached document retains its useful MSE buffer. Keep its server stream
+      // until the normal idle timeout; pageshow renews the viewing heartbeat.
+      if (event.persisted) maybeSaveProgress(true, true);
+      else leave();
+    });
     window.addEventListener('beforeunload', () => {
       // Reload must retain the selected source in history.state. stop() is a
       // user action: its notification clears that selection on the film page.
@@ -1230,12 +1201,11 @@ const PP = (() => {
     durationFetch = { key: '', inflight: false };
     totalDuration = 0;
     playerWrap.hidden = false;
-    updateQualityButtons();
     // Серии текущей раздачи — для prev/next (фоном: плеер стартует сразу).
     loadFiles();
     const saved = episodeHistoryEntry(o.id, curSeason, curEpisode, o.magnet, currentFile);
     const position = o.pos != null ? o.pos : (saved ? saved.position : 0);
-    beginPlayback(o.id, o.magnet, currentFile, initialTrack, position, o.quality || 'source');
+    beginPlayback(o.id, o.magnet, currentFile, initialTrack, position, currentQuality);
     window.dispatchEvent(new Event('playbackstart'));
     notify();
     return true;
@@ -1310,15 +1280,22 @@ const PP = (() => {
     },
     isFollower: () => follower,
     duration: () => totalDuration,
-    setRemotePaused: value => {
+    setRemotePaused: (value, message) => {
       remotePaused = value;
       if (value) {
         player.pause();
-        stage('paused', 'Ведущий поставил просмотр на паузу.');
+        stage(message ? 'buffering' : 'paused', message || 'Ведущий поставил просмотр на паузу.');
       } else if (follower && player.readyState >= 2 && player.paused) autoPlay();
     },
     selectSubtitle: ordinal => {
       if (currentPlay) subsSelect(currentPlay.id, currentPlay.magnet, ordinal, false);
+    },
+    canSeekBuffered: (target, minimumAhead = 0) => !pendingPlayback && bufferedContains(target, minimumAhead),
+    seekBuffered: target => {
+      if (!currentPlay || pendingPlayback || !bufferedContains(target)) return false;
+      completedPlayback = false;
+      player.currentTime = target - streamStart;
+      return true;
     },
     seek: target => {
       completedPlayback = false;

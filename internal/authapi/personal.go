@@ -33,9 +33,8 @@ func readSmallJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 }
 func (h *authHandler) personal(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	u, ok := h.currentUser(r)
+	u, ok := h.requireUser(w, r)
 	if !ok {
-		http.Error(w, "unauthorized", 401)
 		return
 	}
 	if r.Method == "GET" {
@@ -99,7 +98,7 @@ func randomHex(n int) string {
 func deviceHash(s string) string { h := sha256.Sum256([]byte(s)); return hex.EncodeToString(h[:]) }
 func (h *authHandler) deviceStart(w http.ResponseWriter, r *http.Request) {
 	if h.repo == nil {
-		http.Error(w, "database unavailable", 503)
+		writeAuthServiceError(w, errAuthDisabled)
 		return
 	}
 	if !checkOrigin(w, r) {
@@ -121,9 +120,8 @@ func (h *authHandler) deviceApprove(w http.ResponseWriter, r *http.Request) {
 	if !checkOrigin(w, r) {
 		return
 	}
-	u, ok := h.currentUser(r)
+	u, ok := h.requireUser(w, r)
 	if !ok {
-		http.Error(w, "unauthorized", 401)
 		return
 	}
 	if !h.limiter.takeRegistration(clientKey(r, "device-approve")) {
@@ -150,7 +148,7 @@ func (h *authHandler) deviceApprove(w http.ResponseWriter, r *http.Request) {
 }
 func (h *authHandler) devicePoll(w http.ResponseWriter, r *http.Request) {
 	if h.repo == nil {
-		http.Error(w, "database unavailable", 503)
+		writeAuthServiceError(w, errAuthDisabled)
 		return
 	}
 	if !checkOrigin(w, r) {

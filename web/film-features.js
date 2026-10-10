@@ -246,6 +246,11 @@ const FilmFeatures = (() => {
     sourceItems = items;
     sourceID = id;
     let box = document.getElementById("manual-sources");
+    // Films have a visible source/audio picker beside the main playback flow.
+    if (!isSeriesKind(currentItem?.kind)) {
+      if (box) box.hidden = true;
+      return;
+    }
     if (!box) {
       box = el("details", undefined, "feature-section");
       box.id = "manual-sources";

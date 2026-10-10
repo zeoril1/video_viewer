@@ -773,34 +773,6 @@ main {
   accent-color: var(--accent);
 }
 
-.ctrl-quality {
-  display: flex;
-  gap: 4px;
-  flex-shrink: 0;
-}
-
-.q-btn {
-  background: var(--panel-2);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1;
-  padding: 4px 6px;
-  cursor: pointer;
-}
-
-.q-btn:hover {
-  border-color: var(--accent);
-  color: var(--text);
-}
-
-.q-btn.active {
-  border-color: var(--accent);
-  background: var(--accent-soft);
-  color: var(--text);
-}
-
 .player-error {
   margin: 12px 20px;
   padding: 10px 12px;

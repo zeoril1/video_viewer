@@ -35,7 +35,7 @@
   var SEL = [
     'a[href]', 'button', 'select', 'textarea', 'input:not([type=hidden])',
     '.card', '.continue-link', '.chip', '.ep-btn', '.sec-drop-item',
-    '.resume-btn', '.watch-btn', '.q-btn',
+    '.resume-btn', '.watch-btn',
     '[role="button"]', '[tabindex]:not([tabindex="-1"])'
   ].join(',');
 

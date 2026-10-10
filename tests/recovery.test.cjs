@@ -20,7 +20,7 @@ function harness(files) {
   }
   const video = new Element(),
     wrap = new Element();
-  let current = {
+  let follower = false, current = {
       id: "tt1",
       magnet: "old",
       file: 4,
@@ -40,6 +40,7 @@ function harness(files) {
     window: { addEventListener: (k, f) => (listeners[k] = f) },
     PP: {
       available: true,
+      isFollower: () => follower,
       playing: () => true,
       state: () => current,
       start: (o) => {
@@ -79,19 +80,24 @@ function harness(files) {
   );
   return {
     button: elements.at(-1),
+    box: elements[2],
     listeners,
     get started() {
       return started;
     },
     get params() { return ctx.playbackPageParams(); },
     get search() { return ctx.location.search; },
+    follow: () => {
+      follower = true;
+      listeners.playbackrole();
+    },
     change: () => {
       current = { ...current, magnet: "manually-changed" };
       listeners.playbackstart();
     },
   };
 }
-test("recovery matches exact episode and retains position, voice and quality", async () => {
+test("recovery matches exact episode, retains position and voice, and uses source quality", async () => {
   const h = harness(async (id, magnet) =>
     magnet === "wrong"
       ? [{ index: 0, season: 2, episode: 4 }]
@@ -103,7 +109,7 @@ test("recovery matches exact episode and retains position, voice and quality", a
   assert.equal(h.started.file, 8);
   assert.equal(h.started.pos, 157);
   assert.equal(h.started.voice, "LostFilm");
-  assert.equal(h.started.quality, "720");
+  assert.equal(h.started.quality, "source");
   assert.equal(h.search, '?id=tt1');
   assert.equal(h.params.get('magnet'), 'good');
   assert.equal(h.params.get('file'), '8');
@@ -127,4 +133,33 @@ test("manual source selection cancels in-flight recovery", async () => {
   resolve([{ index: 8, season: 2, episode: 3 }]);
   await request;
   assert.equal(h.started, undefined);
+});
+
+test("room guests cannot see or start source recovery", async () => {
+  let requested = false;
+  const h = harness(async () => { requested = true; return [{ index: 8, season: 2, episode: 3 }]; });
+  h.listeners.playbackfailure();
+  assert.equal(h.box.hidden, false);
+  h.follow();
+  h.listeners.playbackfailure();
+  h.listeners.requestsourcechange();
+  await h.button.onclick();
+  assert.equal(h.box.hidden, true);
+  assert.equal(h.button.disabled, true);
+  assert.equal(requested, false);
+  assert.equal(h.started, undefined);
+});
+
+test("joining as a guest cancels recovery already waiting for file selection", async () => {
+  let resolve;
+  const pending = new Promise(r => { resolve = r; });
+  const h = harness(() => pending);
+  const request = h.button.onclick();
+  await new Promise(r => setImmediate(r));
+  h.follow();
+  resolve([{ index: 8, season: 2, episode: 3 }]);
+  await request;
+  assert.equal(h.started, undefined);
+  assert.equal(h.box.hidden, true);
+  assert.equal(h.button.disabled, true);
 });

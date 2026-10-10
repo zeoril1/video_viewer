@@ -41,7 +41,7 @@ const PlaybackExtras = (() => {
     el('loading-title').textContent = titles[next] || next;
     el('loading-detail').textContent = message || (next === 'preparing' ? 'Получаем данные и подготавливаем поток.' : 'Ждём первые кадры.');
     el('loading-retry').hidden = next !== 'error' && next !== 'paused';
-    el('loading-source').hidden = next !== 'error';
+    el('loading-source').hidden = PP.isFollower() || next !== 'error';
   }
   window.addEventListener('playbackstage', e => loading(e.detail.stage, e.detail.message));
   video.addEventListener('playing', () => loading(''));
@@ -51,10 +51,15 @@ const PlaybackExtras = (() => {
   setInterval(() => {
     if (!['searching','preparing','buffering'].includes(stage)) return;
     const seconds = Math.floor((Date.now()-since)/1000);
-    el('loading-detail').textContent = seconds < 20 ? `Ожидание: ${seconds} сек.` : `Ожидание: ${seconds} сек. Источник отвечает медленно. Можно повторить запуск или сменить источник.`;
-    el('loading-retry').hidden = el('loading-source').hidden = seconds < 20;
+    const follower = PP.isFollower();
+    el('loading-detail').textContent = seconds < 20 ? `Ожидание: ${seconds} сек.` : follower
+      ? `Ожидание: ${seconds} сек. Видео загружается медленно. Повторите подключение или попросите ведущего поставить просмотр на паузу.`
+      : `Ожидание: ${seconds} сек. Источник отвечает медленно. Можно повторить запуск или сменить источник.`;
+    el('loading-retry').hidden = seconds < 20;
+    el('loading-source').hidden = follower || seconds < 20;
   }, 1000);
   el('loading-retry').onclick = () => {
+    if (PP.isFollower()) { window.dispatchEvent(new Event('roomretry')); return; }
     if (stage === 'paused') { video.play().catch(() => loading('paused','Нажмите кнопку воспроизведения в плеере.')); return; }
     const s = PP.state(); if(!s.id){window.dispatchEvent(new Event('retryplayback'));return;} if (s.id) PP.start({...s, pos:s.position, ep:s.episode, release:PP.release()});
   };
@@ -265,6 +270,7 @@ const PlaybackExtras = (() => {
   window.addEventListener('playbackstart',()=>{cancelPreparation();stopped=false;updatePreparation();});
   window.addEventListener('playbackstop',()=>{stopped=true;cancelPreparation();});
   window.addEventListener('pagehide',()=>{stopped=true;cancelPreparation();});
+  window.addEventListener('pageshow',event=>{if(event.persisted){stopped=false;updatePreparation();}});
   for(const event of ['playbackchange','playbackrole','personalchange'])window.addEventListener(event,updatePreparation);
   video.addEventListener('timeupdate',updatePreparation);
   video.addEventListener('playing',updatePreparation);

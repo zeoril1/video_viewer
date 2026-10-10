@@ -238,7 +238,6 @@ button, a, input, select, summary { -webkit-tap-highlight-color: transparent; }
   .player-controls { flex-wrap: wrap; gap: 8px; }
   .ctrl-bar { order: -1; flex: 1 1 100%; min-width: 0; }
   .ctrl-btn { min-width: 30px; min-height: 34px; }
-  .ctrl-quality { flex-wrap: wrap; }
   .ctrl-volume { width: 65px; }
 }
 body.tv .site-header { gap: 24px; }

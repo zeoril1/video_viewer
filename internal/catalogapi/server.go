@@ -5,8 +5,10 @@ package catalogapi
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"strconv"
 
 	"github.com/zeoril1/video_viewer/internal/db"
@@ -39,7 +41,7 @@ func NewServer(cfg Config) http.Handler {
 	// Параметры: q (поиск), section (movie/series/...), genre, sort
 	// (year|rating|title; по умолчанию year; не применяется для popular),
 	// released (1 — только вышедшие, по умолчанию 0 — все),
-	// page (с 1), per_page (по умолчанию 30).
+	// page (с 1), per_page (1–100, по умолчанию 30).
 	mux.HandleFunc("GET /api/catalog", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query().Get("q")
 		section := r.URL.Query().Get("section")
@@ -47,13 +49,15 @@ func NewServer(cfg Config) http.Handler {
 		sortBy := r.URL.Query().Get("sort")
 		collection := r.URL.Query().Get("collection")
 		released := r.URL.Query().Get("released")
-		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
-		perPage, _ := strconv.Atoi(r.URL.Query().Get("per_page"))
-		if perPage <= 0 {
-			perPage = 30
-		}
-		if page <= 0 {
-			page = 1
+		page, perPage, err := parseCatalogPagination(r.URL.Query())
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"error":   "invalid_pagination",
+				"message": err.Error(),
+			})
+			return
 		}
 		// «Только вышедшие»: флаг включается любым непустым значением, кроме "0" (фронтенд шлёт released=1/0).
 		onlyReleased := released != "" && released != "0"
@@ -92,7 +96,7 @@ func NewServer(cfg Config) http.Handler {
 
 		totalPages := 0
 		if total > 0 {
-			totalPages = (total + perPage - 1) / perPage
+			totalPages = 1 + (total-1)/perPage
 		}
 		items := make([]CatalogItem, 0, len(entries))
 		for _, e := range entries {
@@ -148,4 +152,32 @@ func NewServer(cfg Config) http.Handler {
 	registerSeriesMetadata(mux, cfg)
 
 	return httpx.LogMiddleware(mux)
+}
+
+// Только отсутствующий параметр означает значение по умолчанию. Пустые,
+// повторяющиеся и выходящие за диапазон значения — ошибка запроса.
+func parseCatalogPagination(query url.Values) (int, int, error) {
+	parse := func(name string, fallback, maximum int) (int, error) {
+		values, present := query[name]
+		if !present {
+			return fallback, nil
+		}
+		if len(values) != 1 {
+			return 0, fmt.Errorf("%s must be specified once", name)
+		}
+		value, err := strconv.Atoi(values[0])
+		if err != nil || value < 1 {
+			return 0, fmt.Errorf("%s must be a positive integer", name)
+		}
+		if maximum > 0 && value > maximum {
+			return 0, fmt.Errorf("%s must not exceed %d", name, maximum)
+		}
+		return value, nil
+	}
+	page, err := parse("page", 1, 0)
+	if err != nil {
+		return 0, 0, err
+	}
+	perPage, err := parse("per_page", defaultCatalogPageSize, maxCatalogPageSize)
+	return page, perPage, err
 }

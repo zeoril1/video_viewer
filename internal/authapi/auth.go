@@ -2,6 +2,7 @@ package authapi
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net"
 	"net/http"
@@ -101,14 +102,15 @@ const (
 	loginMaxAttempts = 5                // неудачных попыток до блокировки
 	loginWindow      = 10 * time.Minute // окно учёта попыток
 	loginLockout     = 5 * time.Minute  // блокировка после превышения
-	loginStateMax    = 4096             // предел записей в карте (прунинг)
+	loginStateMax    = 4096             // строгий предел записей в карте
 )
 
 // loginState — счётчик неудачных попыток по ключу (IP|username).
 type loginState struct {
-	fails  int
-	window time.Time
-	locked time.Time
+	fails   int
+	pending int // попытки, для которых ещё проверяются учётные данные
+	window  time.Time
+	locked  time.Time
 }
 
 // loginLimiter — простой in-memory throttle попыток входа/регистрации.
@@ -121,22 +123,28 @@ func newLoginLimiter() *loginLimiter {
 	return &loginLimiter{state: make(map[string]*loginState)}
 }
 
-// allow разрешает попытку входа для ключа (false — ключ заблокирован).
+// allow атомарно резервирует попытку до обращения к БД и проверки пароля.
+// Каждая разрешённая попытка завершается через fail, success или cancel.
 func (l *loginLimiter) allow(key string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	s := l.state[key]
-	if s == nil {
-		return true
-	}
 	now := time.Now()
+	s := l.stateLocked(key, now)
+	if s == nil {
+		return false
+	}
 	if now.Before(s.locked) {
 		return false
 	}
-	// Окно истекло — сбрасываем счётчик.
-	if now.Sub(s.window) > loginWindow {
-		delete(l.state, key)
+	if now.Sub(s.window) >= loginWindow || !s.locked.IsZero() {
+		s.fails = 0
+		s.locked = time.Time{}
+		s.window = now
 	}
+	if s.fails+s.pending >= loginMaxAttempts {
+		return false
+	}
+	s.pending++
 	return true
 }
 
@@ -145,12 +153,14 @@ func (l *loginLimiter) fail(key string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := time.Now()
-	s := l.state[key]
+	s := l.stateLocked(key, now)
 	if s == nil {
-		s = &loginState{window: now}
-		l.state[key] = s
+		return
 	}
-	if now.Sub(s.window) > loginWindow {
+	if s.pending > 0 {
+		s.pending--
+	}
+	if now.Sub(s.window) >= loginWindow {
 		s.fails = 0
 		s.window = now
 	}
@@ -158,23 +168,59 @@ func (l *loginLimiter) fail(key string) {
 	if s.fails >= loginMaxAttempts {
 		s.locked = now.Add(loginLockout)
 	}
-	l.pruneLocked(now)
 }
 
 // success сбрасывает счётчик после успешного входа.
 func (l *loginLimiter) success(key string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	delete(l.state, key)
+	if s := l.state[key]; s != nil {
+		if s.pending > 0 {
+			s.pending--
+		}
+		s.fails = 0
+		s.locked = time.Time{}
+		s.window = time.Now()
+		if s.pending == 0 {
+			delete(l.state, key)
+		}
+	}
 }
 
-// pruneLocked удаляет устаревшие записи, чтобы карта не росла бесконечно.
-func (l *loginLimiter) pruneLocked(now time.Time) {
-	if len(l.state) <= loginStateMax {
-		return
+// cancel освобождает попытку при ошибке БД, не считая её неверным паролем.
+func (l *loginLimiter) cancel(key string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if s := l.state[key]; s != nil {
+		if s.pending > 0 {
+			s.pending--
+		}
+		if s.pending == 0 && s.fails == 0 && s.locked.IsZero() {
+			delete(l.state, key)
+		}
 	}
+}
+
+// stateLocked не вытесняет свежие блокировки ради новых ключей.
+func (l *loginLimiter) stateLocked(key string, now time.Time) *loginState {
+	if s := l.state[key]; s != nil {
+		return s
+	}
+	if len(l.state) >= loginStateMax {
+		l.pruneLocked(now)
+		if len(l.state) >= loginStateMax {
+			return nil
+		}
+	}
+	s := &loginState{window: now}
+	l.state[key] = s
+	return s
+}
+
+// pruneLocked удаляет только истёкшие записи без выполняющихся запросов.
+func (l *loginLimiter) pruneLocked(now time.Time) {
 	for k, s := range l.state {
-		if now.After(s.locked) && now.Sub(s.window) > loginWindow*2 {
+		if s.pending == 0 && !now.Before(s.locked) && now.Sub(s.window) >= loginWindow {
 			delete(l.state, k)
 		}
 	}
@@ -193,27 +239,56 @@ func clientKey(r *http.Request, username string) string {
 	return ip + "|" + strings.ToLower(strings.TrimSpace(username))
 }
 
-// currentUser возвращает пользователя по куке сессии (если валидна).
-func (h *authHandler) currentUser(r *http.Request) (db.User, bool) {
+var errAuthDisabled = errors.New("auth disabled (no database)")
+
+// currentUser отличает недействительную сессию от сбоя проверки прав.
+func (h *authHandler) currentUser(r *http.Request) (db.User, bool, error) {
 	if h.repo == nil {
-		return db.User{}, false
+		return db.User{}, false, errAuthDisabled
 	}
 	c, err := r.Cookie(sessionCookie)
 	if err != nil || c.Value == "" {
-		return db.User{}, false
+		return db.User{}, false, nil
 	}
 	u, ok, err := h.repo.GetUserBySession(r.Context(), c.Value)
 	if err != nil {
 		log.Printf("auth: get user by session: %v", err)
+		return db.User{}, false, err
+	}
+	return u, ok, nil
+}
+
+// Коды стабильны: frontend не принимает временный сбой за отключённый сервис.
+func writeAuthServiceError(w http.ResponseWriter, err error) {
+	code, message := "auth_unavailable", "Authentication is temporarily unavailable. Try again shortly."
+	if errors.Is(err, errAuthDisabled) {
+		code, message = "auth_disabled", "Authentication is disabled (no database)."
+	} else {
+		w.Header().Set("Retry-After", "2")
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusServiceUnavailable)
+	_ = json.NewEncoder(w).Encode(map[string]string{"code": code, "error": message})
+}
+
+func (h *authHandler) requireUser(w http.ResponseWriter, r *http.Request) (db.User, bool) {
+	u, ok, err := h.currentUser(r)
+	if err != nil {
+		writeAuthServiceError(w, err)
 		return db.User{}, false
 	}
-	return u, ok
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return db.User{}, false
+	}
+	return u, true
 }
 
 // register — POST /api/auth/register: создание аккаунта.
 func (h *authHandler) register(w http.ResponseWriter, r *http.Request) {
 	if h.repo == nil {
-		http.Error(w, "auth disabled (no database)", http.StatusServiceUnavailable)
+		writeAuthServiceError(w, errAuthDisabled)
 		return
 	}
 	if !checkOrigin(w, r) {
@@ -243,7 +318,7 @@ func (h *authHandler) register(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, _, exists, err := h.repo.GetUserByUsername(r.Context(), body.Username); err != nil {
 		log.Printf("auth: register lookup: %v", err)
-		http.Error(w, "db error", http.StatusInternalServerError)
+		writeAuthServiceError(w, err)
 		return
 	} else if exists {
 		http.Error(w, "username already taken", http.StatusConflict)
@@ -258,13 +333,13 @@ func (h *authHandler) register(w http.ResponseWriter, r *http.Request) {
 	userID, err := h.repo.CreateUser(r.Context(), body.Username, hash)
 	if err != nil {
 		log.Printf("auth: create user: %v", err)
-		http.Error(w, "db error", http.StatusInternalServerError)
+		writeAuthServiceError(w, err)
 		return
 	}
 	token, err := h.repo.CreateSession(r.Context(), userID, sessionTTL)
 	if err != nil {
 		log.Printf("auth: create session: %v", err)
-		http.Error(w, "db error", http.StatusInternalServerError)
+		writeAuthServiceError(w, err)
 		return
 	}
 	setSessionCookie(w, token, h.cookieSecure(r))
@@ -276,7 +351,7 @@ func (h *authHandler) register(w http.ResponseWriter, r *http.Request) {
 // login — POST /api/auth/login: вход по логину/паролю.
 func (h *authHandler) login(w http.ResponseWriter, r *http.Request) {
 	if h.repo == nil {
-		http.Error(w, "auth disabled (no database)", http.StatusServiceUnavailable)
+		writeAuthServiceError(w, errAuthDisabled)
 		return
 	}
 	if !checkOrigin(w, r) {
@@ -296,22 +371,33 @@ func (h *authHandler) login(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "too many failed attempts, try again later", http.StatusTooManyRequests)
 		return
 	}
+	credentialsChecked, credentialsValid := false, false
+	defer func() {
+		switch {
+		case credentialsValid:
+			h.limiter.success(key)
+		case credentialsChecked:
+			h.limiter.fail(key)
+		default:
+			h.limiter.cancel(key)
+		}
+	}()
 	u, hash, ok, err := h.repo.GetUserByUsername(r.Context(), username)
 	if err != nil {
 		log.Printf("auth: login lookup: %v", err)
-		http.Error(w, "db error", http.StatusInternalServerError)
+		writeAuthServiceError(w, err)
 		return
 	}
+	credentialsChecked = true
 	if !ok || !db.VerifyPassword(body.Password, hash) {
-		h.limiter.fail(key)
 		http.Error(w, "invalid username or password", http.StatusUnauthorized)
 		return
 	}
-	h.limiter.success(key)
+	credentialsValid = true
 	token, err := h.repo.CreateSession(r.Context(), u.ID, sessionTTL)
 	if err != nil {
 		log.Printf("auth: create session: %v", err)
-		http.Error(w, "db error", http.StatusInternalServerError)
+		writeAuthServiceError(w, err)
 		return
 	}
 	setSessionCookie(w, token, h.cookieSecure(r))
@@ -336,13 +422,8 @@ func (h *authHandler) logout(w http.ResponseWriter, r *http.Request) {
 // me — GET /api/auth/me: текущий пользователь (по куке сессии).
 func (h *authHandler) me(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	if h.repo == nil {
-		http.Error(w, "auth disabled", http.StatusServiceUnavailable)
-		return
-	}
-	u, ok := h.currentUser(r)
+	u, ok := h.requireUser(w, r)
 	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -355,15 +436,17 @@ func (l *loginLimiter) takeRegistration(key string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := time.Now()
-	s := l.state[key]
-	if s == nil || now.Sub(s.window) >= loginWindow {
-		s = &loginState{window: now}
-		l.state[key] = s
+	s := l.stateLocked(key, now)
+	if s == nil {
+		return false
+	}
+	if now.Sub(s.window) >= loginWindow {
+		s.fails = 0
+		s.window = now
 	}
 	if s.fails >= loginMaxAttempts {
 		return false
 	}
 	s.fails++
-	l.pruneLocked(now)
 	return true
 }

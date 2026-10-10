@@ -106,44 +106,51 @@ const StorageUI = (() => {
     const torrents = Array.isArray(storage.torrents) ? storage.torrents : [];
     let fileCount = 0, downloading = 0;
     for (const torrent of torrents) {
-      const files = (torrent.files || []).filter(file => file.available || finite(file.downloaded) || finite(file.stored_bytes) || file.downloading);
+      const pending = !!torrent.pending_removal;
+      const files = (torrent.files || []).filter(file => file.available || finite(file.downloaded) || finite(file.stored_bytes) || finite(file.logical_bytes) || file.downloading);
       fileCount += files.length;
-      downloading += files.filter(file => file.downloading).length;
+      if (!pending) downloading += files.filter(file => file.downloading).length;
       const release = node('article', undefined, 'storage-release');
       const header = node('div', undefined, 'storage-release-head'), description = node('div');
       description.append(node('h3', torrent.name || 'Раздача ' + torrent.hash));
-      const meta = bytes(torrent.downloaded) + ' / ' + bytes(torrent.total) + ' · В кеше: ' + bytes(torrent.stored_bytes);
+      const meta = pending ? 'Ожидает удаления · Осталось данных: ' + bytes(torrent.logical_bytes)
+        : bytes(torrent.downloaded) + ' / ' + bytes(torrent.total) + ' · В кеше: ' + bytes(torrent.stored_bytes);
       description.append(node('p', meta, 'storage-release-meta'));
       const busy = !!(torrent.busy || finite(torrent.active_readers) || viewers.some(viewer => viewer.hash === torrent.hash));
-      header.append(description, removeButton('Удалить всю раздачу', torrent, null, busy));
+      header.append(description, removeButton(pending ? 'Повторить удаление раздачи' : 'Удалить всю раздачу', torrent, null, busy));
       release.append(header);
+      if (pending) release.append(node('p', 'Не удалось удалить файлы. Они могут быть заняты другой программой. Закройте её и повторите удаление.', 'storage-note'));
       if (!torrent.metadata_ready) {
         release.append(node('p', 'Получаем список файлов…', 'storage-note'));
       } else if (!files.length) {
         release.append(node('p', 'В этой раздаче пока нет загруженных файлов.', 'storage-note'));
       } else {
-        const grid = table(['Файл', 'Загрузка', 'Загружено / размер', 'Скорость', 'Кто смотрит', 'Действия']);
+        const grid = table(['Файл', pending ? 'Состояние' : 'Загрузка', pending ? 'Размер оставшегося файла' : 'Загружено / размер', 'Скорость', 'Кто смотрит', 'Действия']);
         for (const file of files) {
           const row = node('tr'), name = node('td', file.path || 'Файл ' + file.index, 'storage-file-name');
           const coords = episode(file.path);
           if (coords) name.append(node('small', coords));
           const progress = node('td'), percent = Math.min(100, finite(file.percent));
           const isComplete = finite(file.size) > 0 && finite(file.downloaded) >= finite(file.size);
-          progress.append(node('span', isComplete ? 'Загружено' : file.downloading ? 'Загружается' : 'Частично загружено'));
-          const bar = node('progress', undefined, 'storage-progress');
-          bar.max = 100; bar.value = percent;
-          bar.setAttribute('aria-label', 'Загружено ' + percent.toFixed(1) + '%');
-          progress.append(bar, node('small', percent.toLocaleString('ru-RU', { maximumFractionDigits: 1 }) + '%'));
-          const size = node('td', bytes(file.downloaded) + ' / ' + bytes(file.size), 'storage-numeric');
-          size.append(node('small', 'В кеше: ' + bytes(file.stored_bytes), 'storage-note'));
-          const watching = viewers.filter(viewer => viewer.hash === torrent.hash && viewer.file === file.index);
+          if (pending) {
+            progress.append(node('span', 'Не удалось удалить'), node('small', 'Ожидает повторной попытки'));
+          } else {
+            progress.append(node('span', isComplete ? 'Загружено' : file.downloading ? 'Загружается' : 'Частично загружено'));
+            const bar = node('progress', undefined, 'storage-progress');
+            bar.max = 100; bar.value = percent;
+            bar.setAttribute('aria-label', 'Загружено ' + percent.toFixed(1) + '%');
+            progress.append(bar, node('small', percent.toLocaleString('ru-RU', { maximumFractionDigits: 1 }) + '%'));
+          }
+          const size = node('td', pending ? bytes(file.logical_bytes) : bytes(file.downloaded) + ' / ' + bytes(file.size), 'storage-numeric');
+          size.append(node('small', (pending ? 'На диске: ' : 'В кеше: ') + bytes(file.stored_bytes), 'storage-note'));
+          const watching = pending ? [] : viewers.filter(viewer => viewer.hash === torrent.hash && viewer.file === file.index);
           const who = node('td');
           if (!watching.length) who.textContent = '—';
           else for (const viewer of watching) who.append(node('div', (viewer.username || 'Гость') + ' · ' + duration(viewer.watched_seconds)));
           const actions = node('td');
-          if (storage.mode === 'disk') actions.append(removeButton('Удалить файл', torrent, file, busy));
+          if (storage.mode === 'disk') actions.append(removeButton(pending ? 'Повторить удаление' : 'Удалить файл', torrent, file, busy));
           else actions.textContent = 'В составе раздачи';
-          row.append(name, progress, size, node('td', bytes(file.download_rate) + '/с', 'storage-numeric'), who, actions);
+          row.append(name, progress, size, node('td', pending ? '—' : bytes(file.download_rate) + '/с', 'storage-numeric'), who, actions);
           grid.body.append(row);
         }
         const scroll = node('div', undefined, 'storage-table-wrap');
@@ -193,11 +200,13 @@ const StorageUI = (() => {
   async function remove(torrent, file) {
     if (deleting) return;
     const name = file ? file.path || 'Файл ' + file.index : torrent.name || torrent.hash;
-    const prompt = file ? 'Удалить загруженный файл «' + name + '» с сервера?' : 'Удалить все загруженные файлы раздачи «' + name + '» с сервера?';
-    if (!confirm(prompt + '\nДля следующего просмотра потребуется загрузка заново.')) return;
+    const prompt = torrent.pending_removal
+      ? (file ? 'Повторить удаление файла «' : 'Повторить удаление оставшихся файлов раздачи «') + name + '» с сервера?'
+      : file ? 'Удалить загруженный файл «' + name + '» с сервера?' : 'Удалить все загруженные файлы раздачи «' + name + '» с сервера?';
+    if (!confirm(prompt + (torrent.pending_removal ? '' : '\nДля следующего просмотра потребуется загрузка заново.'))) return;
     deleting = true; clearTimeout(timer);
     if (lastData) render(lastData);
-    status('Удаляем «' + name + '»…');
+    status((torrent.pending_removal ? 'Повторяем удаление «' : 'Удаляем «') + name + '»…');
     try {
       const url = '/api/admin/storage/' + encodeURIComponent(torrent.hash) + (file ? '?file=' + encodeURIComponent(file.index) : '');
       const response = await fetch(url, { method: 'DELETE' });

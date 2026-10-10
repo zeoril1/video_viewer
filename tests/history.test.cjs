@@ -77,6 +77,50 @@ test('failed progress save is retried and does not update local history', async 
   await ctx.maybeSaveProgress(true);
   assert.equal(ctx.lastProgressSend, 0);
 });
+
+test('late progress saves cannot restore history after logout or another login, including the same account', async () => {
+  for (const nextUser of [null, { id: 8 }, { id: 7 }]) {
+    let resolve, remembered = 0;
+    const ctx = vm.createContext({ VV: { user: { id: 7 }, authGeneration: 0 },
+      currentPlay: { id: 'private-first-user', magnet: 'm' }, playbackReady: true,
+      lastSavedSample: '', lastProgressSend: 0, absTime: () => 125, totalDuration: 0,
+      currentFile: 1, lastFiles: [], curSeason: 0, curEpisode: 0,
+      selectedVoice: '', seasonEpisodeCount: () => 0,
+      fetch: () => new Promise(r => { resolve = r; }),
+      rememberWatchProgress: () => { remembered++; }, dbg() {} });
+    vm.runInContext(save, ctx);
+    const pending = ctx.maybeSaveProgress(true);
+    ctx.VV.user = nextUser;
+    ctx.VV.authGeneration++;
+    resolve({ ok: true });
+    await pending;
+    assert.equal(remembered, 0, JSON.stringify(nextUser));
+  }
+});
+
+test('another auth generation can save the same position and stale failures cannot cancel its retry state', async () => {
+  const replies = [], remembered = [];
+  const ctx = vm.createContext({ VV: { user: { id: 7 }, authGeneration: 0 },
+    currentPlay: { id: 'tt1', magnet: 'm' }, playbackReady: true,
+    lastSavedSample: '', lastProgressSend: 0, absTime: () => 125, totalDuration: 0,
+    currentFile: 1, lastFiles: [], curSeason: 0, curEpisode: 0,
+    selectedVoice: '', seasonEpisodeCount: () => 0,
+    fetch: () => new Promise(resolve => replies.push(resolve)),
+    rememberWatchProgress: body => remembered.push(body), dbg() {} });
+  vm.runInContext(save, ctx);
+  const old = ctx.maybeSaveProgress(true);
+  ctx.VV.authGeneration++;
+  const latest = ctx.maybeSaveProgress(true);
+  assert.equal(replies.length, 2, 'same position was suppressed after signing in again');
+  const sample = ctx.lastSavedSample, sent = ctx.lastProgressSend;
+  replies[0]({ ok: false, status: 503 });
+  await old;
+  assert.equal(ctx.lastSavedSample, sample);
+  assert.equal(ctx.lastProgressSend, sent);
+  replies[1]({ ok: true });
+  await latest;
+  assert.equal(remembered.length, 1);
+});
 test('switching episode saves the previous file before resetting playback and retains voice', () => {
   const source = player.slice(player.indexOf('  function selectEpisode('), player.indexOf('  function episodeNeighbor('));
   let savedFile, savedTime, playedTrack;
@@ -115,7 +159,7 @@ test('unchanged position and a stream that has not started cannot refresh old hi
 test('each episode keeps its own position, including across releases', async () => {
   const shared = read('shared.js');
   const source = shared.slice(shared.indexOf('const episodeHistory ='), shared.indexOf('// В истории хранится'));
-  const ctx = vm.createContext({ currentUser: {}, watchHistory: [], authHooks: [],
+  const ctx = vm.createContext({ currentUser: {}, authGeneration: 0, watchHistory: [], authHooks: [],
     apiGet: async () => ({ ok: true, data: { items: [
       { film_id: 'tt1', season: 4, episode: 21, magnet: 'old', file: 142, position: 136 },
       { film_id: 'tt1', season: 3, episode: 32, magnet: 'old', file: 121, position: 1479 },
@@ -133,7 +177,7 @@ test('each episode keeps its own position, including across releases', async () 
 test('opening an episode restores its position and respects explicit restart from zero', () => {
   const source = player.slice(player.indexOf('  function start(opts)'), player.indexOf('  function stop(opts)'));
   let position;
-  const ctx = vm.createContext({ available: true, currentPlay: null, selectedVoice: '', currentTrack: 0,
+  const ctx = vm.createContext({ available: true, currentPlay: null, selectedVoice: '', currentTrack: 0, currentQuality: 'source',
     playerWrap: {}, closeTrailer() {}, updateQualityButtons() {}, loadFiles() {}, loadTracks() {}, notify() {},
     episodeHistoryEntry: () => ({ position: 136 }), maybeSaveProgress() {},
     beginPlayback: (id, magnet, file, track, pos) => { position = pos; },

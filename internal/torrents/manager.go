@@ -166,6 +166,9 @@ func (m *Manager) Acquire(item catalog.Item) (*torrent.Torrent, func(), error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	if m.closed {
+		return nil, nil, ErrCacheNotFound
+	}
 	m.trimDiskLocked()
 	t, err := m.getOrOpenLocked(item, hash)
 	if err != nil {
@@ -176,50 +179,87 @@ func (m *Manager) Acquire(item catalog.Item) (*torrent.Torrent, func(), error) {
 	t.AllowDataDownload()
 
 	m.readers[hash]++
-	if tm, ok := m.dropTimers[hash]; ok {
-		tm.Stop()
-		delete(m.dropTimers, hash)
-	}
+	m.cancelDropLocked(hash)
 
 	var once sync.Once
 	release := func() {
 		once.Do(func() {
 			m.mu.Lock()
+			defer m.mu.Unlock()
+			if m.closed || m.open[hash] != t {
+				return
+			}
 			m.readers[hash]--
 			if m.readers[hash] <= 0 {
 				delete(m.readers, hash)
 				m.scheduleDropLocked(hash)
 			}
-			m.mu.Unlock()
 		})
 	}
 	return t, release, nil
 }
 
-// drop выгружает торрент по таймеру DropGrace/кеш-TTL, освобождая данные (при спуле — удаляя файл).
+// drop немедленно выгружает простаивающий торрент, освобождая данные (при спуле — удаляя файл).
 func (m *Manager) drop(hash string) {
 	m.mu.Lock()
 	removed := m.dropLocked(hash)
 	m.mu.Unlock()
-	if removed {
-		log.Printf("torrents: dropped %s (memory freed)", hash)
-		// Возвращаем память ОС: Go отдаёт её лениво — принудительный GC + FreeOSMemory.
-		runtime.GC()
-		debug.FreeOSMemory()
-		log.Printf("torrents: memory returned to OS")
+	returnDroppedMemory(hash, removed)
+}
+
+// A stopped AfterFunc callback may already be waiting for mu. Its timer's
+// identity is the schedule generation: only the current timer can remove data.
+func (m *Manager) dropScheduledLocked(hash string, timer *time.Timer, source *torrent.Torrent) bool {
+	if m.closed || timer == nil || m.dropTimers[hash] != timer {
+		return false
 	}
+	if m.open[hash] != source {
+		// Individual-file eviction can replace an idle torrent. The old
+		// callback must not remove that replacement; give it a new schedule.
+		m.cancelDropLocked(hash)
+		m.scheduleDropLocked(hash)
+		return false
+	}
+	if !m.idleLocked(hash) {
+		m.cancelDropLocked(hash)
+		return false // the last reader/file preparation release schedules again
+	}
+	if m.keepUntil[hash].After(time.Now()) {
+		m.scheduleDropLocked(hash)
+		return false
+	}
+	return m.dropLocked(hash)
+}
+
+func returnDroppedMemory(hash string, removed bool) {
+	if !removed {
+		return
+	}
+	log.Printf("torrents: dropped %s (memory freed)", hash)
+	// Возвращаем память ОС: Go отдаёт её лениво — принудительный GC + FreeOSMemory.
+	runtime.GC()
+	debug.FreeOSMemory()
+	log.Printf("torrents: memory returned to OS")
+}
+
+func (m *Manager) cancelDropLocked(hash string) {
+	if timer := m.dropTimers[hash]; timer != nil {
+		timer.Stop()
+	}
+	delete(m.dropTimers, hash)
+}
+
+func (m *Manager) idleLocked(hash string) bool {
+	return m.readers[hash] <= 0 && len(m.fileWants[hash]) == 0
 }
 
 // dropLocked выгружает торрент немедленно (только под m.mu); true — был открыт и выгружен.
 func (m *Manager) dropLocked(hash string) bool {
-	if tm := m.dropTimers[hash]; tm != nil {
-		tm.Stop()
-	}
-	delete(m.dropTimers, hash)
-	// За время ожидания торрент могли снова начать читать.
-	if m.readers[hash] > 0 {
+	// Active playback pins and file preparation both protect the source.
+	if !m.idleLocked(hash) {
 		return false
 	}
+	m.cancelDropLocked(hash)
 	t, ok := m.open[hash]
 	if ok {
 		t.Drop()
@@ -234,17 +274,26 @@ func (m *Manager) dropLocked(hash string) bool {
 // scheduleDropLocked планирует выгрузку после закрытия последнего читателя: через
 // DropGrace либо, если запрошен тёплый кеш (Keep), — по истечении его TTL.
 func (m *Manager) scheduleDropLocked(hash string) {
-	if m.readers[hash] > 0 {
+	m.cancelDropLocked(hash)
+	if m.closed || m.open[hash] == nil || !m.idleLocked(hash) {
 		return
 	}
+	now := time.Now()
 	delay := DropGrace
-	if until, ok := m.keepUntil[hash]; ok && until.After(time.Now()) {
-		delay = until.Sub(time.Now())
+	if until, ok := m.keepUntil[hash]; ok && until.After(now) {
+		delay = until.Sub(now)
 	}
-	if tm, ok := m.dropTimers[hash]; ok {
-		tm.Stop()
-	}
-	m.dropTimers[hash] = time.AfterFunc(delay, func() { m.drop(hash) })
+	source := m.open[hash]
+	var timer *time.Timer
+	timer = time.AfterFunc(delay, func() {
+		// Read the captured timer only after locking: a very short Keep TTL
+		// may start this callback before AfterFunc returns its timer pointer.
+		m.mu.Lock()
+		removed := m.dropScheduledLocked(hash, timer, source)
+		m.mu.Unlock()
+		returnDroppedMemory(hash, removed)
+	})
+	m.dropTimers[hash] = timer
 }
 
 // Keep помечает торрент «тёплым кешем»: после закрытия читателей он выгружается не
@@ -262,6 +311,10 @@ func (m *Manager) Keep(magnet string, dur time.Duration) {
 	until := time.Now().Add(dur)
 
 	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return
+	}
 	if existing := m.keepUntil[hash]; existing.After(until) {
 		until = existing
 	}
@@ -307,11 +360,12 @@ func (m *Manager) enforceCacheCap() {
 		if over <= 0 {
 			return
 		}
-		if m.readers[c.hash] > 0 {
+		if !m.idleLocked(c.hash) {
 			continue // активный просмотр — не выгружаем
 		}
-		m.dropLocked(c.hash)
-		over--
+		if m.dropLocked(c.hash) {
+			over--
+		}
 	}
 }
 
@@ -324,7 +378,8 @@ func (m *Manager) WantFile(item catalog.Item, fileIndex int) func() {
 		return func() {}
 	}
 	m.mu.Lock()
-	if _, ok := m.open[hash]; !ok {
+	t := m.open[hash]
+	if m.closed || t == nil {
 		m.mu.Unlock()
 		return func() {}
 	}
@@ -332,6 +387,7 @@ func (m *Manager) WantFile(item catalog.Item, fileIndex int) func() {
 		m.fileWants[hash] = make(map[int]int)
 	}
 	m.fileWants[hash][fileIndex]++
+	m.cancelDropLocked(hash)
 	m.mu.Unlock()
 	m.applyFilePriorities(hash)
 
@@ -339,6 +395,10 @@ func (m *Manager) WantFile(item catalog.Item, fileIndex int) func() {
 	return func() {
 		once.Do(func() {
 			m.mu.Lock()
+			if m.closed || m.open[hash] != t {
+				m.mu.Unlock()
+				return
+			}
 			if cnt := m.fileWants[hash]; cnt != nil {
 				cnt[fileIndex]--
 				if cnt[fileIndex] <= 0 {
@@ -346,6 +406,7 @@ func (m *Manager) WantFile(item catalog.Item, fileIndex int) func() {
 				}
 				if len(cnt) == 0 {
 					delete(m.fileWants, hash)
+					m.scheduleDropLocked(hash)
 				}
 			}
 			m.mu.Unlock()
@@ -433,7 +494,7 @@ func (m *Manager) trimDiskLocked() {
 	}
 	var idle []candidate
 	for h := range m.open {
-		if m.readers[h] == 0 {
+		if m.idleLocked(h) {
 			idle = append(idle, candidate{h, m.keepUntil[h]})
 		}
 	}
@@ -441,9 +502,6 @@ func (m *Manager) trimDiskLocked() {
 	for _, c := range idle {
 		if !m.spool.budget.Pressure() {
 			break
-		}
-		if timer := m.dropTimers[c.hash]; timer != nil {
-			timer.Stop()
 		}
 		m.dropLocked(c.hash)
 	}

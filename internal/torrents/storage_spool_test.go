@@ -3,6 +3,7 @@ package torrents
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -13,6 +14,62 @@ import (
 	"github.com/anacrolix/torrent/metainfo"
 	"github.com/zeoril1/video_viewer/internal/disklimit"
 )
+
+func TestSpoolCloseDeletesRetainedFileWithoutHandle(t *testing.T) {
+	dir := t.TempDir()
+	budget := disklimit.New(dir, 4, 0)
+	f := &spoolFile{path: filepath.Join(dir, "retained.spool"), budget: budget}
+	if _, err := f.writeAt(0, []byte("data")); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	f.f = nil // An earlier failed removal already released our descriptor.
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(f.path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("retained file was not removed", err)
+	}
+	if f.exists() || f.high != 0 || len(f.ranges) != 0 || f.allocated != 0 {
+		t.Fatal("successful removal retained accounting")
+	}
+	if err := budget.Resize(filepath.Join(dir, "next"), 4); err != nil {
+		t.Fatal("successful removal did not release quota", err)
+	}
+}
+
+func TestSpoolStaleCloseCannotDeleteReplacementFiles(t *testing.T) {
+	sp := newSpoolClient(t.TempDir())
+	info, data := newSpoolTestInfo(t, 32, 32)
+	hash := metainfo.Hash{}
+	first, err := sp.OpenTorrent(context.Background(), info, hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.Piece(info.Piece(0)).WriteAt(data, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	second, err := sp.OpenTorrent(context.Background(), info, hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = second.Close() })
+	if _, err := second.Piece(info.Piece(0)).WriteAt(data, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	got := make([]byte, len(data))
+	if _, err := second.Piece(info.Piece(0)).ReadAt(got, 0); err != nil || !bytes.Equal(got, data) {
+		t.Fatal("stale Close removed or changed replacement data", err)
+	}
+}
 
 func TestSpoolQuotaChecksSparseGrowthAndReclaimsSpace(t *testing.T) {
 	dir := t.TempDir()

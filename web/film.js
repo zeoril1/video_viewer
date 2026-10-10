@@ -25,6 +25,9 @@ const sourcesEpisodesWrap = document.getElementById('sources-episodes-wrap');
 const sourcesEpisodes = document.getElementById('sources-episodes');
 const sourcesRelWrap = document.getElementById('sources-rel-wrap');
 const sourcesRel = document.getElementById('sources-rel');
+const sourcesMovieWrap = document.getElementById('sources-movie-wrap');
+const movieSourceSelect = document.getElementById('film-source-select');
+const movieSourcePlay = document.getElementById('film-source-play');
 // Подсказки «загружаю…» в блоках сезона/серий/озвучек (блоки видны всегда).
 const seasonNote = document.getElementById('sources-season-note');
 const episodesNote = document.getElementById('sources-episodes-note');
@@ -52,6 +55,10 @@ let lastSourceItems = [];
 let lastSourceId = null;
 let selectedSeason = null;
 let selectedEpisode = null;
+let selectedMovieMagnet = '';
+let selectedMovieVoice = '';
+let movieSelectionReady = false;
+let movieSelectionExplicit = false;
 // Токен смены выбранной раздачи: пока грузятся файлы, пользователь мог выбрать другое.
 let playToken = 0;
 
@@ -245,6 +252,8 @@ function renderSources(items, id) {
   const isSeries = isSeriesKind(currentItem && currentItem.kind);
 
   if (isSeries) {
+    sourcesMovieWrap.hidden = true;
+    if (sourcesSeasonWrap.nextElementSibling !== sourcesRelWrap) sourcesSeasonWrap.after(sourcesRelWrap);
     // Блоки видны всегда: чипы сезонов/озвучек и сетка серий — по мере поступления данных.
     sourcesSeasonWrap.hidden = false;
     sourcesEpisodesWrap.hidden = false;
@@ -264,14 +273,13 @@ function renderSources(items, id) {
       renderSeasonVoices(items, id);
     });
   } else {
-    // Фильм: сезонов/озвучек-чипов нет, раздача выбирается автоматически (кнопкой «Смотреть»).
+    // Film source/audio choices stay visible and are applied only on playback.
     sourcesSeasonWrap.hidden = true;
     sourcesEpisodesWrap.hidden = true;
-    sourcesRelWrap.hidden = true;
     showNote(seasonNote, '');
     showNote(episodesNote, '');
-    showNote(relNote, '');
-    sourcesEl.hidden = true;
+    renderMovieSources(items, id);
+    sourcesEl.hidden = false;
   }
 }
 
@@ -290,6 +298,84 @@ function applyWanted() {
   if (wantSeason && selectedSeason === null) selectedSeason = wantSeason;
   if (wantVoice && selectedSeason && !voicePref[selectedSeason]) voicePref[selectedSeason] = wantVoice;
 }
+
+function renderMovieSources(items, id) {
+  if (!items.length) {
+    sourcesMovieWrap.hidden = true;
+    sourcesRelWrap.hidden = true;
+    return;
+  }
+  if (sourcesMovieWrap.previousElementSibling !== sourcesRelWrap) sourcesMovieWrap.before(sourcesRelWrap);
+  const voices = [...new Set(items.flatMap(source => titleVoices(source.title)))];
+  if (!movieSelectionReady) {
+    const entry = historyEntry(id);
+    const preferred = wantVoice || entry?.voice || Personal.preferences().voice || '';
+    selectedMovieVoice = voices.includes(preferred) ? preferred : '';
+    selectedMovieMagnet = startMagnet || entry?.magnet || '';
+    movieSelectionReady = true;
+  }
+  if (selectedMovieVoice && !voices.includes(selectedMovieVoice)) selectedMovieVoice = '';
+  const candidates = selectedMovieVoice
+    ? items.filter(source => titleVoices(source.title).includes(selectedMovieVoice)) : items;
+  if (!candidates.some(source => source.magnet === selectedMovieMagnet)) {
+    selectedMovieMagnet = (Personal.rank(candidates, selectedMovieVoice)[0] || candidates[0])?.magnet || '';
+  }
+  const focusVoice = sourcesRel.contains(document.activeElement) ? document.activeElement.dataset.voice : null;
+  sourcesRel.replaceChildren();
+  for (const voice of ['', ...voices]) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'chip' + (voice === selectedMovieVoice ? ' active' : '');
+    button.dataset.voice = voice;
+    button.textContent = voice || filmText('Авто', 'Auto');
+    button.setAttribute('aria-pressed', String(voice === selectedMovieVoice));
+    button.addEventListener('click', () => {
+      selectedMovieVoice = voice;
+      movieSelectionExplicit = true;
+      renderMovieSources(lastSourceItems, id);
+    });
+    sourcesRel.append(button);
+    if (voice === focusVoice) button.focus({ preventScroll: true });
+  }
+  sourcesRelWrap.hidden = !items.length;
+  showNote(relNote, filmText('Аудиодорожки выбранного источника можно сменить в плеере.', 'Audio tracks of the selected source can be changed in the player.'));
+  movieSourceSelect.replaceChildren();
+  for (const source of candidates) {
+    const option = document.createElement('option');
+    option.value = source.magnet;
+    option.textContent = [source.title || filmText('Источник', 'Source'), source.size].filter(Boolean).join(' · ');
+    movieSourceSelect.append(option);
+  }
+  movieSourceSelect.value = selectedMovieMagnet;
+  document.getElementById('film-source-label').textContent = filmText('Источник', 'Source');
+  const entry = historyEntry(id);
+  const resume = VV.user && entry?.position >= 30 && !(entry.duration > 0 && entry.duration - entry.position < 30);
+  document.getElementById('film-source-note').textContent = resume
+    ? filmText('Выбранный источник откроется с ', 'The selected source will start at ') + fmtTime(entry.position) + '.'
+    : filmText('Выбор источника и озвучки применяется при запуске просмотра.', 'Source and audio selection is applied when playback starts.');
+  movieSourcePlay.textContent = resume
+    ? filmText('Продолжить с выбранным источником', 'Continue with selected source')
+    : filmText('Смотреть выбранный источник', 'Play selected source');
+  movieSourcePlay.disabled = !selectedMovieMagnet;
+  sourcesMovieWrap.hidden = !items.length;
+}
+
+movieSourceSelect?.addEventListener('change', () => {
+  selectedMovieMagnet = movieSourceSelect.value;
+  movieSelectionExplicit = true;
+});
+movieSourcePlay?.addEventListener('click', () => {
+  if (!lastSourceId) return;
+  const source = lastSourceItems.find(item => item.magnet === selectedMovieMagnet);
+  if (!source) return;
+  const entry = historyEntry(lastSourceId);
+  const resume = VV.user && entry?.position >= 30 && !(entry.duration > 0 && entry.duration - entry.position < 30);
+  const sameSource = entry?.magnet === source.magnet;
+  const options = { pos: resume ? entry.position : 0 };
+  if (sameSource && typeof entry.track === 'number' && (!selectedMovieVoice || selectedMovieVoice === entry.voice)) options.track = entry.track;
+  if (sameSource && typeof entry.subs === 'number') options.subs = entry.subs;
+  openWatch(lastSourceId, source, sameSource && entry.file >= 0 ? { index: entry.file } : null, 0, 0, selectedMovieVoice, options);
+});
 
 // Scroll only the chip row, keeping page and player position unchanged.
 function setupFilmChipRail(rail, name) {
@@ -637,8 +723,8 @@ async function playEpisode(id, season, ep) {
   return true;
 }
 
-// Фильм: играем лучшую раздачу (её выбирает сервер) — без выбора сезона/серии.
-function openWatch(id, src, file, season, ep, voice) {
+// Film playback opens the selected source without season/episode controls.
+function openWatch(id, src, file, season, ep, voice, options) {
   storeItem(currentItem);
   go(watchUrl(id, {
     magnet: src.magnet,
@@ -647,10 +733,11 @@ function openWatch(id, src, file, season, ep, voice) {
     season: season || 0,
     ep: ep || 0,
     voice: voice || '',
+    ...options,
   }));
 }
 
-// «▶ Смотреть»: фильм — лучшая раздача, сериал — выбранная/первая серия сезона.
+// «▶ Смотреть»: фильм — выбранный источник, сериал — выбранная/первая серия сезона.
 async function watchNow() {
   wantPlay = false; // кнопку прячем: просмотр запущен вручную
   syncWatchBtn();
@@ -664,6 +751,11 @@ async function startWanted(id) {
   const items = lastSourceItems;
   if (!id || !items || !items.length) return false;
   if (!isSeriesKind(currentItem && currentItem.kind)) {
+    const selected = items.find(source => source.magnet === selectedMovieMagnet);
+    if (selected && (movieSelectionExplicit || Personal.rank([selected], selectedMovieVoice).length)) {
+      openWatch(id, selected, null, 0, 0, selectedMovieVoice);
+      return true;
+    }
     const ranked = Personal.rank(items);
     if (!ranked.length) { flashFilmNote('Нет источников в пределах ваших настроек. Измените предпочтения или выберите вручную.'); return false; }
     openWatch(id, ranked[0], null, 0, 0, Personal.preferences().voice || '');
@@ -826,12 +918,15 @@ function syncFilmLayout() {
   const series = isSeriesKind(currentItem?.kind);
   const visible = playerWrapEl && !playerWrapEl.hidden;
   const trailer = playerWrapEl?.classList.contains('trailer-mode');
-  layout.hidden = !visible && !(series && !sourcesEl.hidden);
+  layout.hidden = !visible && sourcesEl.hidden;
   layout.classList.toggle('no-player', !visible);
   column.hidden = !visible;
   sourcesEl.classList.toggle('film-movie-sources', !series);
   if (series) {
     const title = filmText('Сезоны и серии', 'Seasons and episodes');
+    if (sourcesTitle.textContent !== title) sourcesTitle.textContent = title;
+  } else if (lastSourceItems.length) {
+    const title = filmText('Источник и озвучка', 'Source and audio');
     if (sourcesTitle.textContent !== title) sourcesTitle.textContent = title;
   }
   const state = PP.available ? PP.state() : {};
@@ -840,7 +935,7 @@ function syncFilmLayout() {
     : state.season > 0 && state.episode > 0
       ? t('seasonLabel') + ' ' + state.season + ' · ' + t('episodeLabel') + ' ' + state.episode
       : dispTitle(currentItem || {});
-  const message = !series && !sourcesEl.hidden
+  const message = !series && !sourcesEl.hidden && !lastSourceItems.length
     ? (sourcesEmpty.hidden ? sourcesTitle.textContent : sourcesEmpty.textContent) : '';
   status.hidden = !message;
   if (status.textContent !== message) status.textContent = message;

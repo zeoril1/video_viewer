@@ -32,6 +32,16 @@ async function fixture(options = {}) {
     viewers: options.viewer ? [{ username: '<script>evil()</script>', film_id: 'tt1234567', hash, file: 2,
       season: 1, episode: 3, watched_seconds: 85, position: 400, duration: 1800, playing: true }] : [],
   };
+  if (options.pending) {
+    const torrent = data.storage.torrents[0], file = torrent.files[0];
+    torrent.pending_removal = true;
+    torrent.logical_bytes = file.logical_bytes = 1024 ** 3;
+    torrent.downloaded = file.downloaded = options.sparse ? 0 : file.size;
+    torrent.stored_bytes = file.stored_bytes = options.sparse ? 0 : 1024 ** 3;
+    file.percent = 100;
+    file.available = false;
+    file.downloading = false;
+  }
   const users = [{ id: 1, username: 'zeoril', role: 'admin', created_at: '2026-10-07T10:00:00Z' },
     { id: 2, username: '<script>evil()</script>', role: 'user', created_at: '2026-10-07T10:00:00Z' }];
   await page.route('**/*', async route => {
@@ -84,6 +94,47 @@ test('file deletion confirms exact filename and refreshes the inventory', async 
     await f.page.waitForFunction(() => document.getElementById('storage-status').textContent.startsWith('Удалено:'));
     assert.match(message, /Series\.S01E03\.mkv/);
     assert.ok(f.requests.some(req => req.method === 'DELETE' && req.path.endsWith(hash) && req.search === '?file=2'));
+    assert.equal(await f.page.locator('.storage-release').count(), 0);
+    assert.deepEqual(f.errors, []);
+  } finally { await f.context.close(); }
+});
+
+test('pending removal shows a retry state instead of normal download progress', async () => {
+  const f = await fixture({ pending: true });
+  try {
+    await f.page.waitForSelector('.storage-release');
+    const text = await f.page.locator('#storage-files').innerText();
+    assert.match(text, /Не удалось удалить файлы/);
+    assert.match(text, /Ожидает удаления/);
+    assert.match(text, /Ожидает повторной попытки/);
+    assert.doesNotMatch(text, /Загружено|Загружается|100%|3 МиБ\/с/);
+    assert.equal(await f.page.locator('#storage-files progress').count(), 0);
+    assert.equal(await f.page.getByRole('button', { name: 'Удалить файл', exact: true }).count(), 0);
+    let message = '';
+    f.page.on('dialog', async dialog => { message = dialog.message(); await dialog.accept(); });
+    await f.page.getByRole('button', { name: 'Повторить удаление', exact: true }).click();
+    await f.page.waitForFunction(() => document.getElementById('storage-status').textContent.startsWith('Удалено:'));
+    assert.match(message, /Повторить удаление файла «Series\.S01E03\.mkv»/);
+    assert.ok(f.requests.some(req => req.method === 'DELETE' && req.path.endsWith(hash) && req.search === '?file=2'));
+    assert.equal(await f.page.locator('.storage-release').count(), 0);
+    assert.deepEqual(f.errors, []);
+  } finally { await f.context.close(); }
+});
+
+test('sparse pending files remain visible and the whole release can be retried', async () => {
+  const f = await fixture({ pending: true, sparse: true });
+  try {
+    await f.page.waitForSelector('.storage-release');
+    assert.equal(await f.page.locator('#storage-files tbody tr').count(), 1);
+    assert.match(await f.page.locator('#storage-files tbody tr').innerText(), /Series\.S01E03\.mkv/);
+    assert.match(await f.page.locator('#storage-files tbody tr').innerText(), /1 ГиБ/);
+    assert.match(await f.page.locator('#storage-count').innerText(), /файлов: 1, загружается: 0/);
+    let message = '';
+    f.page.on('dialog', async dialog => { message = dialog.message(); await dialog.accept(); });
+    await f.page.getByRole('button', { name: 'Повторить удаление раздачи', exact: true }).click();
+    await f.page.waitForFunction(() => document.getElementById('storage-status').textContent.startsWith('Удалено:'));
+    assert.match(message, /Повторить удаление оставшихся файлов раздачи «Fixture Series»/);
+    assert.ok(f.requests.some(req => req.method === 'DELETE' && req.path.endsWith(hash) && req.search === ''));
     assert.equal(await f.page.locator('.storage-release').count(), 0);
     assert.deepEqual(f.errors, []);
   } finally { await f.context.close(); }

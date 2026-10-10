@@ -17,10 +17,7 @@ func (m *Manager) PinCached(hash string) (func(), error) {
 		return nil, ErrCacheNotFound
 	}
 	m.readers[hash]++
-	if timer := m.dropTimers[hash]; timer != nil {
-		timer.Stop()
-		delete(m.dropTimers, hash)
-	}
+	m.cancelDropLocked(hash)
 	m.mu.Unlock()
 	var once sync.Once
 	return func() {

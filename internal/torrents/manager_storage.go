@@ -34,19 +34,20 @@ type StorageSnapshot struct {
 }
 
 type CachedTorrent struct {
-	Hash          string       `json:"hash"`
-	Name          string       `json:"name"`
-	Total         int64        `json:"total"`
-	Downloaded    int64        `json:"downloaded"`
-	StoredBytes   int64        `json:"stored_bytes"`
-	LogicalBytes  int64        `json:"logical_bytes"`
-	WrittenBytes  int64        `json:"written_bytes"`
-	DownloadRate  float64      `json:"download_rate"`
-	ActiveReaders int          `json:"active_readers"`
-	Busy          bool         `json:"busy"`
-	MetadataReady bool         `json:"metadata_ready"`
-	Kept          bool         `json:"kept"`
-	Files         []CachedFile `json:"files"`
+	Hash           string       `json:"hash"`
+	Name           string       `json:"name"`
+	Total          int64        `json:"total"`
+	Downloaded     int64        `json:"downloaded"`
+	StoredBytes    int64        `json:"stored_bytes"`
+	LogicalBytes   int64        `json:"logical_bytes"`
+	WrittenBytes   int64        `json:"written_bytes"`
+	DownloadRate   float64      `json:"download_rate"`
+	ActiveReaders  int          `json:"active_readers"`
+	Busy           bool         `json:"busy"`
+	MetadataReady  bool         `json:"metadata_ready"`
+	PendingRemoval bool         `json:"pending_removal,omitempty"`
+	Kept           bool         `json:"kept"`
+	Files          []CachedFile `json:"files"`
 }
 
 type CachedFile struct {
@@ -163,6 +164,17 @@ func (m *Manager) StorageStatus() StorageSnapshot {
 		out.WrittenBytes += row.WrittenBytes
 		out.Torrents = append(out.Torrents, row)
 	}
+	if m.spool != nil {
+		for _, row := range m.spool.pendingRemovalRows() {
+			if _, active := m.open[row.Hash]; active {
+				continue
+			}
+			out.UsedBytes += row.StoredBytes
+			out.LogicalBytes += row.LogicalBytes
+			out.WrittenBytes += row.WrittenBytes
+			out.Torrents = append(out.Torrents, row)
+		}
+	}
 	sort.Slice(out.Torrents, func(i, j int) bool { return out.Torrents[i].Hash < out.Torrents[j].Hash })
 	return out
 }
@@ -231,6 +243,14 @@ func (m *Manager) RemoveCached(hash string, index *int) error {
 	defer m.mu.Unlock()
 	t := m.open[hash]
 	if t == nil {
+		if m.spool != nil {
+			if st := m.spool.torrent(hash); st != nil && !st.isOpen() {
+				if index != nil {
+					return st.removePendingFile(*index)
+				}
+				return st.Close()
+			}
+		}
 		return ErrCacheNotFound
 	}
 	if m.readers[hash] > 0 || len(m.fileWants[hash]) > 0 {

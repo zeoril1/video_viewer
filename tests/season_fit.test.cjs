@@ -79,7 +79,7 @@ test('запуск второго сезона не теряет подходя�
   ctx.document = { querySelector: () => null };
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../web/personal.js'), 'utf8'), ctx);
   const film = fs.readFileSync(path.join(__dirname, '../web/film.js'), 'utf8');
-  vm.runInContext(film.slice(film.indexOf('async function playEpisode('), film.indexOf('// Фильм: играем лучшую раздачу')), ctx);
+  vm.runInContext(film.slice(film.indexOf('async function playEpisode('), film.indexOf('\nfunction openWatch(')), ctx);
   const wrong = Array.from({ length: 6 }, (_, i) => ({ magnet: 'wrong' + i, season: 0, quality: '2160', seeds: 100 }));
   let played;
   Object.assign(ctx, {

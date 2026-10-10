@@ -11,7 +11,7 @@
   <link rel="stylesheet" href="playback-extras.css?v=2">
   <link rel="stylesheet" href="skip-segments.css?v=2">
   <link rel="stylesheet" href="redesign.css?v=2" />
-  <link rel="stylesheet" href="film-page.css?v=3" />
+  <link rel="stylesheet" href="film-page.css?v=4" />
 </head>
 <body data-page="film">
   <header class="topbar">
@@ -84,13 +84,6 @@
           </div>
           <button id="ctrl-seek-f" class="ctrl-btn ctrl-seek" type="button" title="Вперёд 5 секунд" aria-label="Вперёд 5 секунд">+5</button>
           <span id="ctrl-time" class="ctrl-time">0:00 / 0:00</span>
-          <div id="ctrl-quality" class="ctrl-quality" role="group" aria-label="Качество">
-            <button data-quality="source" class="q-btn active" type="button">SRC</button>
-            <button data-quality="2160" class="q-btn" type="button">4K</button>
-            <button data-quality="1080" class="q-btn" type="button">1080</button>
-            <button data-quality="720" class="q-btn" type="button">720</button>
-            <button data-quality="480" class="q-btn" type="button">480</button>
-          </div>
           <div class="film-player-tools">
             <button id="ctrl-mute" class="ctrl-btn" type="button" aria-label="Mute">🔊</button>
             <input id="ctrl-volume" class="ctrl-volume" type="range" min="0" max="1" step="0.05" value="1" aria-label="Volume" />
@@ -117,6 +110,12 @@
           <div class="film-series-heading">
             <h2 id="sources-title" class="sources-title"></h2>
             <div id="season-personal"></div>
+          </div>
+          <div id="sources-movie-wrap" class="src-group film-source-picker" hidden>
+            <label id="film-source-label" class="src-group-label" for="film-source-select">Источник</label>
+            <select id="film-source-select"></select>
+            <p id="film-source-note" class="tracks-note"></p>
+            <button id="film-source-play" class="auth-btn" type="button">Смотреть выбранный источник</button>
           </div>
           <div id="sources-season-wrap" class="src-group" hidden>
             <div class="src-group-label" data-i18n="seasonLabel">Сезон</div>
@@ -166,8 +165,8 @@
   <script src="watch-room.js?v=2"></script>
   <script src="skip-segments.js?v=2"></script>
   <script src="watch-order.js?v=1"></script>
-  <script src="film-features.js?v=5"></script>
-  <script src="film.js?v=7"></script>
+  <script src="film-features.js?v=6"></script>
+  <script src="film.js?v=8"></script>
   <script src="recovery.js?v=1"></script>
   <script src="tv.js?v=3"></script>
 </body>

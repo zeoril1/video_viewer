@@ -112,7 +112,6 @@ const I18N = {
     minShort: 'мин',
     seasonsOf: 'сез.',
     playbackError: 'Не удалось воспроизвести этот вариант (возможно, видео в H.265/HEVC, который браузер не поддерживает). Выберите вариант с H.264 или другую дорожку.',
-    codecFallback: 'Видео в H.265/HEVC — автоматически перекодируем в H.264 (1080p), это может занять время.',
     login: 'Войти',
     register: 'Регистрация',
     logout: 'Выйти',
@@ -121,7 +120,8 @@ const I18N = {
     authErrorShort: 'Логин: 3–32 символа (буквы, цифры, _ . -). Пароль — не короче 6 символов.',
     authErrorInvalid: 'Неверный логин или пароль.',
     authErrorTaken: 'Этот логин уже занят.',
-    authErrorAuth: 'Авторизация недоступна (сервис работает без базы данных).',
+    authErrorAuth: 'Авторизация на сайте отключена.',
+    authErrorUnavailable: 'Вход временно недоступен. Попробуйте чуть позже.',
     authErrorServer: 'Ошибка сервера. Попробуйте позже.',
     continueWatching: 'Продолжить просмотр',
     removeFromHistory: 'Удалить из истории',
@@ -201,7 +201,6 @@ const I18N = {
     minShort: 'min',
     seasonsOf: 'seasons',
     playbackError: 'Could not play this option (possibly H.265/HEVC video not supported by your browser). Try an H.264 option or another track.',
-    codecFallback: 'H.265/HEVC video — automatically transcoding to H.264 (1080p), this may take a while.',
     login: 'Log in',
     register: 'Sign up',
     logout: 'Log out',
@@ -210,7 +209,8 @@ const I18N = {
     authErrorShort: 'Username: 3–32 chars (letters, digits, _ . -). Password must be at least 6 chars.',
     authErrorInvalid: 'Invalid username or password.',
     authErrorTaken: 'This username is already taken.',
-    authErrorAuth: 'Auth is unavailable (service is running without a database).',
+    authErrorAuth: 'Sign-in is disabled on this site.',
+    authErrorUnavailable: 'Sign-in is temporarily unavailable. Please try again shortly.',
     authErrorServer: 'Server error. Try again later.',
     continueWatching: 'Continue watching',
     removeFromHistory: 'Remove from history',
@@ -415,8 +415,16 @@ langBtns.forEach((b) => {
 });
 
 // ---- Авторизация и история просмотра ----
-let currentUser = null;    // {id, username, role} текущего пользователя
+let currentUser = cachedUser(); // cached identity is presentation only; APIs still check the cookie.
 let authDisabled = false;  // auth отключён (сервис без БД) — скрываем кнопки
+let authUnavailable = false;
+let authVerified = false;
+let authGeneration = 0;
+let authRequest = null;
+let authController = null;
+let authRetryTimer = null;
+let authRetryAttempt = 0;
+let historyRequest = null;
 let watchHistory = [];     // история просмотра текущего пользователя
 
 // Шапка: либо «Войти» (ссылка на login.html), либо имя + админка + выход.
@@ -427,6 +435,18 @@ function renderAuth(initial) {
   const adminLink = document.getElementById('admin-link');
   const userNameEl = document.getElementById('user-name');
   const shown = currentUser || (initial ? cachedUser() : null);
+  let status = document.getElementById('auth-status');
+  if (!status && authOpen) {
+    status = document.createElement('small');
+    status.id = 'auth-status';
+    status.className = 'user-name';
+    status.setAttribute('role', 'status');
+    authOpen.insertAdjacentElement('afterend', status);
+  }
+  if (status) {
+    status.hidden = !authUnavailable;
+    status.textContent = lang === 'en' ? 'Profile temporarily unavailable' : 'Профиль временно недоступен';
+  }
   if (authDisabled) {
     if (userArea) userArea.hidden = true;
     if (authOpen) authOpen.hidden = true;
@@ -458,7 +478,7 @@ function cachedUser() {
 
 function cacheUser(u) {
   try {
-    if (u) localStorage.setItem('vv_user', JSON.stringify({ username: u.username, role: u.role || '' }));
+    if (u) localStorage.setItem('vv_user', JSON.stringify({ id: u.id, username: u.username, role: u.role || '' }));
     else localStorage.removeItem('vv_user');
   } catch (e) { /* приватный режим — просто без кэша */ }
 }
@@ -467,65 +487,165 @@ function cacheUser(u) {
 // у гостя — кнопка «Войти». Иначе состояние кнопки висело до ответа /api/auth/me.
 renderAuth(true);
 
-async function initAuth() {
-  // Кэш может быть устаревшим (вышел на другом устройстве) — перепроверяем в фоне.
-  const res = await apiGet('/api/auth/me', 6000);
-  if (res && res.status === 503) {
-    // Сервис без БД — авторизация и история отключены.
-    authDisabled = true;
-    cacheUser(null);
-    renderAuth(true);
-    authHooks.forEach((fn) => fn());
-    return;
-  }
-  if (res && res.ok) {
-    currentUser = res.data.user || null;
-  } else if (res) {
-    currentUser = null;
-  }
-  // res === null: сеть/таймаут — остаёмся на кэше, чтобы шапка не мигала «Войти».
-  cacheUser(currentUser);
-  renderAuth(true);
-  await loadHistory();
+function clearAuthRetry() {
+  if (authRetryTimer !== null) clearTimeout(authRetryTimer);
+  authRetryTimer = null;
+}
+
+function invalidateAuthChecks() {
+  authGeneration++;
+  clearAuthRetry();
+  if (authController) authController.abort();
+  authController = null;
+  authRequest = null;
+  historyRequest = null;
+  authVerified = false;
+  authRetryAttempt = 0;
+}
+
+function resetAuthUser(disabled) {
+  invalidateAuthChecks();
+  currentUser = null;
+  watchHistory = [];
+  episodeHistory.clear();
+  episodeHistoryPending.clear();
+  authDisabled = !!disabled;
+  authUnavailable = false;
+  cacheUser(null);
+  renderAuth();
+  authHooks.forEach((fn) => fn());
+}
+
+function scheduleAuthRetry() {
+  if (authRetryTimer !== null || authDisabled) return;
+  const delay = Math.min(30000, 2000 * 2 ** Math.min(authRetryAttempt++, 4));
+  const generation = authGeneration;
+  // The interval is bounded, even during a long outage; one cycle per tab.
+  authRetryTimer = setTimeout(() => {
+    authRetryTimer = null;
+    if (generation === authGeneration) initAuth();
+  }, Math.round(delay * (0.9 + Math.random() * 0.1)));
+}
+
+function markAuthUnavailable() {
+  authUnavailable = true;
+  renderAuth();
+  scheduleAuthRetry();
+}
+
+function initAuth() {
+  if (authRequest) return authRequest;
+  clearAuthRetry();
+  const generation = authGeneration;
+  const controller = new AbortController();
+  authController = controller;
+  const pending = (async () => {
+    const res = await apiGet('/api/auth/me', 6000, controller.signal);
+    if (generation !== authGeneration) return;
+    if (res && res.status === 401) {
+      resetAuthUser(false);
+      return;
+    }
+    if (res && res.status === 503 && res.data && res.data.code === 'auth_disabled') {
+      resetAuthUser(true);
+      return;
+    }
+    if (!res || !res.ok || !res.data || !res.data.user) {
+      markAuthUnavailable();
+      return;
+    }
+    const user = res.data.user;
+    if (currentUser && (currentUser.username !== user.username ||
+        (currentUser.id != null && currentUser.id !== user.id))) {
+      watchHistory = [];
+      episodeHistory.clear();
+      episodeHistoryPending.clear();
+    }
+    currentUser = user;
+    authVerified = true;
+    authDisabled = false;
+    authUnavailable = false;
+    cacheUser(currentUser);
+    renderAuth();
+    const historyLoaded = await loadHistory();
+    if (generation !== authGeneration) return;
+    const episodesLoaded = await Promise.all([...episodeHistoryPending].map(loadEpisodeHistory));
+    if (historyLoaded && episodesLoaded.every(Boolean) && generation === authGeneration) authRetryAttempt = 0;
+  })().finally(() => {
+    if (authRequest === pending) {
+      authRequest = null;
+      authController = null;
+    }
+  });
+  authRequest = pending;
+  return pending;
 }
 
 // apiGet — fetch с таймаутом и разбором JSON; null при ошибке/таймауте.
-async function apiGet(url, timeoutMs) {
+async function apiGet(url, timeoutMs, signal) {
   const ctrl = new AbortController();
+  const abort = () => ctrl.abort();
+  if (signal) {
+    if (signal.aborted) ctrl.abort();
+    else signal.addEventListener('abort', abort, { once: true });
+  }
   const timer = timeoutMs ? setTimeout(() => ctrl.abort(), timeoutMs) : null;
   try {
     const res = await fetch(url, { signal: ctrl.signal });
     let data = null;
-    if (res.ok) {
-      try { data = await res.json(); } catch (e) { data = null; }
-    }
+    try { data = await res.json(); } catch (e) { data = null; }
     return { ok: res.ok, status: res.status, data };
   } catch (e) {
     return null;
   } finally {
     if (timer) clearTimeout(timer);
+    if (signal) signal.removeEventListener('abort', abort);
   }
 }
 
-async function loadHistory() {
+function loadHistory() {
+  if (historyRequest) return historyRequest;
   if (!currentUser) {
     watchHistory = [];
     episodeHistory.clear();
     authHooks.forEach((fn) => fn());
-    return;
+    return Promise.resolve(true);
   }
-  const res = await apiGet('/api/history', 10000);
-  watchHistory = (res && res.ok && res.data && res.data.items) || [];
-  authHooks.forEach((fn) => fn());
+  if (!authVerified) return Promise.resolve(false);
+  const generation = authGeneration, uid = currentUser.id;
+  const pending = (async () => {
+    const res = await apiGet('/api/history', 10000);
+    if (generation !== authGeneration || !currentUser || currentUser.id !== uid) return false;
+    if (res && res.status === 401) { resetAuthUser(false); return false; }
+    if (res && res.ok && res.data && Array.isArray(res.data.items)) {
+      watchHistory = res.data.items;
+      authHooks.forEach((fn) => fn());
+      return true;
+    }
+    markAuthUnavailable();
+    return false;
+  })().finally(() => { if (historyRequest === pending) historyRequest = null; });
+  historyRequest = pending;
+  return pending;
 }
 
 const episodeHistory = new Map();
+const episodeHistoryPending = new Set();
 
 async function loadEpisodeHistory(id) {
-  episodeHistory.delete(id);
-  if (!currentUser || !id) return;
+  if (!currentUser || !id) return false;
+  const generation = authGeneration, uid = currentUser.id;
   const res = await apiGet('/api/history?film_id=' + encodeURIComponent(id), 10000);
-  if (res && res.ok && res.data) episodeHistory.set(id, res.data.items || []);
+  if (generation !== authGeneration || !currentUser || currentUser.id !== uid) return false;
+  if (res && res.status === 401) { resetAuthUser(false); return false; }
+  if (res && res.ok && res.data && Array.isArray(res.data.items)) {
+    episodeHistory.set(id, res.data.items);
+    episodeHistoryPending.delete(id);
+    return true;
+  }
+  episodeHistoryPending.add(id);
+  markAuthUnavailable();
+  return false;
 }
 
 function episodeHistoryEntry(id, season, episode, magnet, file) {
@@ -552,27 +672,55 @@ function historyEntry(id) {
 
 // В истории хранится только последняя серия — удаление убирает фильм целиком.
 async function removeHistoryEntry(filmId) {
-  episodeHistory.delete(filmId);
+  if (!currentUser) return false;
+  const generation = authGeneration, uid = currentUser.id;
+  const sameUser = () => generation === authGeneration && currentUser && currentUser.id === uid;
   try {
-    await fetch('/api/history/' + encodeURIComponent(filmId), { method: 'DELETE' });
-  } catch (err) { /* игнорируем: локальный список всё равно обновим */ }
+    const res = await fetch('/api/history/' + encodeURIComponent(filmId), { method: 'DELETE' });
+    if (!sameUser()) return false;
+    if (res.status === 401) { resetAuthUser(false); return false; }
+    if (!res.ok) {
+      if (res.status >= 500 || res.status === 429) markAuthUnavailable();
+      return false;
+    }
+  } catch (err) {
+    if (sameUser()) markAuthUnavailable();
+    return false;
+  }
+  episodeHistory.delete(filmId);
+  episodeHistoryPending.delete(filmId);
   watchHistory = watchHistory.filter((x) => x.film_id !== filmId);
   authHooks.forEach((fn) => fn());
+  return true;
 }
 
 const logoutBtn = document.getElementById('auth-logout');
 if (logoutBtn) {
   logoutBtn.addEventListener('click', async () => {
+    // Invalidate immediately: a late /me or history response cannot restore the user.
+    resetAuthUser(false);
     try {
       await fetch('/api/auth/logout', { method: 'POST' });
     } catch (e) { /* всё равно выходим локально */ }
-    currentUser = null;
-    watchHistory = [];
-    cacheUser(null);
-    renderAuth();
-    authHooks.forEach((fn) => fn());
   });
 }
+
+window.addEventListener('storage', (event) => {
+  if (event.key !== 'vv_user') return;
+  // Another tab explicitly logged out. Do not race its pending logout request.
+  if (event.newValue === null) { resetAuthUser(false); return; }
+  invalidateAuthChecks();
+  currentUser = cachedUser();
+  watchHistory = [];
+  episodeHistory.clear();
+  episodeHistoryPending.clear();
+  authDisabled = false;
+  authUnavailable = false;
+  renderAuth();
+  authHooks.forEach((fn) => fn());
+  initAuth();
+});
+window.addEventListener('online', () => { if (authUnavailable) initAuth(); });
 
 // ---- Переходы между страницами ----
 // Ключ фильма — то, что принимает /api/films/{id}: сначала IMDb, затем id каталога.
@@ -702,5 +850,6 @@ window.VV = {
   tvBack,
   get lang() { return lang; },
   get user() { return currentUser; },
+  get authGeneration() { return authGeneration; },
   get history() { return watchHistory; },
 };

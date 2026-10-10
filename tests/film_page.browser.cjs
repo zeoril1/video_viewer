@@ -37,8 +37,8 @@ const history = [movie, series].map(item => ({ ...item, film_id: item.id, magnet
   position: 1500, duration: item === series ? 2880 : 9960, file: item === series ? 4 : 0,
   season: item === series ? 2 : 0, episode: item === series ? 2 : 0,
   voice: 'LostFilm', track: 2, subs: 3, quality: '720', updated_at: '2026-10-08T08:00:00Z' }));
-const sources = id => [{ magnet: savedMagnet, title: id === series.id ? 'Silo S01-S02 LostFilm WEB-DL 1080p' : 'Dune Part Two 1080p', seasons: [1, 2], seeds: 30, quality: '1080', size: '20 GB' },
-  { magnet: otherMagnet, title: id === series.id ? 'Silo S01-S02 NewStudio WEB-DL 720p' : 'Dune Part Two 720p', seasons: [1, 2], seeds: 12, quality: '720', size: '10 GB' }];
+const sources = id => [{ magnet: savedMagnet, title: id === series.id ? 'Silo S01-S02 LostFilm WEB-DL 1080p' : 'Dune Part Two LostFilm 1080p', seasons: [1, 2], seeds: 30, quality: '1080', size: '20 GB' },
+  { magnet: otherMagnet, title: id === series.id ? 'Silo S01-S02 NewStudio WEB-DL 720p' : 'Dune Part Two NewStudio 720p', seasons: [1, 2], seeds: 12, quality: '720', size: '10 GB' }];
 let server, browser, base;
 
 function poster(filename) {
@@ -116,7 +116,7 @@ async function open(f, item = movie) {
       title: await f.page.locator('#details-title').textContent() });
     throw error;
   }
-  await f.page.locator('#manual-sources').waitFor({ state: 'attached' });
+  await f.page.locator(item === series ? '#manual-sources' : '#film-source-select').waitFor({ state: 'attached' });
   if (item === series) await f.page.waitForFunction(() => document.querySelectorAll('#sources-episodes .ep-btn').length === 3 && /Порядок|Холстон/.test(document.querySelector('#sources-episodes').textContent));
 }
 async function capturePlayback(page) {
@@ -206,6 +206,73 @@ test('series resume identifies season/episode and start over keeps the saved sou
     await f.page.locator('#startover-btn').click();
     assert.deepEqual(await f.page.evaluate(() => { const play = window.__plays.at(-1); return { magnet: play.magnet, file: play.file, season: play.season, ep: play.ep, pos: play.pos }; }),
       { magnet: savedMagnet, file: 4, season: 2, ep: 2, pos: 0 });
+    healthy(f);
+  } finally { await f.context.close(); }
+});
+
+test('movie source and audio controls stay visible, keep manual selection and continue at the saved position', async () => {
+  const f = await fixture();
+  try {
+    await open(f);
+    await capturePlayback(f.page);
+    assert.equal(await f.page.locator('#sources').isVisible(), true);
+    assert.equal(await f.page.locator('#film-source-select').isVisible(), true);
+    assert.equal(await f.page.getByRole('button', { name: 'LostFilm', exact: true }).getAttribute('aria-pressed'), 'true');
+    await f.page.getByRole('button', { name: 'NewStudio', exact: true }).click();
+    assert.equal(await f.page.locator('#film-source-select').inputValue(), otherMagnet);
+    assert.equal(await f.page.getByRole('button', { name: 'NewStudio', exact: true }).getAttribute('aria-pressed'), 'true');
+    assert.equal(await f.page.evaluate(() => window.__navigation), undefined, 'Browsing sources does not start playback');
+    await f.page.evaluate(() => renderSources(lastSourceItems, filmId));
+    await f.page.locator('.profile-toggle').click();
+    await f.page.locator('#lang-en').click();
+    await f.page.keyboard.press('Escape');
+    assert.equal(await f.page.locator('#film-source-select').inputValue(), otherMagnet);
+    assert.equal(await f.page.locator('#sources-title').textContent(), 'Source and audio');
+    await f.page.locator('#film-source-play').click();
+    const selected = await f.page.evaluate(() => window.__navigation.params);
+    assert.equal(selected.magnet, otherMagnet);
+    assert.equal(selected.voice, 'NewStudio');
+    assert.equal(selected.pos, '1500');
+    assert.equal(selected.track, undefined, 'A new source must not inherit the old audio ordinal');
+    assert.equal(selected.subs, undefined, 'A new source must not inherit the old subtitle ordinal');
+    await f.page.locator('#resume-btn').click();
+    const saved = await f.page.evaluate(() => window.__navigation.params);
+    assert.equal(saved.magnet, savedMagnet, 'History resume keeps its exact source independently of browsing');
+    assert.equal(saved.voice, 'LostFilm');
+    assert.equal(saved.track, '2');
+    healthy(f);
+  } finally { await f.context.close(); }
+});
+
+test('a fresh movie main action honors the chosen source and audio', async () => {
+  const f = await fixture({ resume: false });
+  try {
+    await open(f);
+    await capturePlayback(f.page);
+    await f.page.locator('#film-source-select').selectOption(otherMagnet);
+    await f.page.evaluate(() => renderSources(lastSourceItems, filmId));
+    assert.equal(await f.page.locator('#film-source-select').inputValue(), otherMagnet);
+    await f.page.getByRole('button', { name: 'NewStudio', exact: true }).click();
+    await f.page.locator('#watch-btn').click();
+    const selected = await f.page.evaluate(() => window.__navigation.params);
+    assert.equal(selected.magnet, otherMagnet);
+    assert.equal(selected.voice, 'NewStudio');
+    healthy(f);
+  } finally { await f.context.close(); }
+});
+
+test('automatic movie playback respects source preferences while an explicit source selection can override them', async () => {
+  const f = await fixture({ resume: false });
+  try {
+    await open(f);
+    await capturePlayback(f.page);
+    await f.page.evaluate(() => Personal.put('preferences', 'playback', { max_size_gb: 1 }));
+    await f.page.locator('#watch-btn').click();
+    assert.equal(await f.page.evaluate(() => window.__navigation), undefined);
+    assert.match(await f.page.locator('#film-note').textContent(), /Нет источников в пределах/);
+    await f.page.locator('#film-source-select').selectOption(otherMagnet);
+    await f.page.locator('#watch-btn').click();
+    assert.equal(await f.page.evaluate(() => window.__navigation.params.magnet), otherMagnet);
     healthy(f);
   } finally { await f.context.close(); }
 });

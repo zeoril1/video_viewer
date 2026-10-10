@@ -238,7 +238,7 @@ func TestCachedSourceHLSHTTPWindow(t *testing.T) {
 			defer server.Close()
 			m.selfBase = server.URL
 			base := server.URL + hlsOutputPath + token + "/"
-			args := hlsInputArgs(input, seek, "source")
+			args := hlsInputArgs(input, seek)
 			args = append(args, "-i", subtitles, "-map", "0:v:0", "-map", "0:a:0", "-map", "1:0", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-ac", "2")
 			args = append(args, hlsHTTPMuxArgs(base+"seg_%05d.m4s")...)
 			args = append(args, "-c:s", "webvtt", "-var_stream_map", "v:0,a:0,s:0,sgroup:subtitle", "-master_pl_name", "master.m3u8", base+"playlist.m3u8")

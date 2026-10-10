@@ -91,7 +91,7 @@ func newFakeHlsSession(t *testing.T, subs int, subsLabel string) *hlsManager {
 		"playlist0.vtt\n")
 	m := newHLSManager("http://127.0.0.1:8082")
 	m.sessions["tt123"] = &hlsSession{
-		id: "tt123", magnet: "magnet:?xt=urn:btih:ABCD", file: 2, track: 1,
+		id: "tt123", magnet: "magnet:?xt=urn:btih:ABCD", file: 2, track: 1, quality: "source",
 		subs: subs, subsLabel: subsLabel, dir: dir,
 		playlist: filepath.Join(dir, "playlist.m3u8"),
 	}

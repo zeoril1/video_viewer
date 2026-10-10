@@ -126,3 +126,32 @@ func TestParticipantIdentityExpiryAndLeave(t *testing.T) {
 		t.Fatal("stale participant remains")
 	}
 }
+
+func TestRoomWaitingStatusVisibleOnlyToHost(t *testing.T) {
+	s := newRoomStore()
+	s.rooms["room"] = &watchRoom{secret: "host-secret", expires: time.Now().Add(time.Hour), members: make(map[string]roomMember)}
+	call := func(member, host, waiting string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("GET", "/api/rooms/room", nil)
+		r.SetPathValue("room", "room")
+		r.Header.Set("X-Room-Member", member)
+		r.Header.Set("X-Room-Host", host)
+		r.Header.Set("X-Room-Waiting", waiting)
+		w := httptest.NewRecorder()
+		s.serve(w, r, 0)
+		return w
+	}
+	guest := strings.Repeat("a", 32)
+	if w := call(guest, "", "1"); w.Code != 200 || strings.Contains(w.Body.String(), "participants") {
+		t.Fatalf("participant exposed presence: %s", w.Body.String())
+	}
+	if w := call(strings.Repeat("b", 32), "host-secret", ""); !strings.Contains(w.Body.String(), `"waiting":true`) {
+		t.Fatalf("host did not receive buffering status: %s", w.Body.String())
+	}
+	call(guest, "", "")
+	if s.rooms["room"].members[guest].Waiting {
+		t.Fatal("legacy/ready presence retained waiting state")
+	}
+	if s.rooms["room"].State.Paused || s.rooms["room"].Revision != 0 {
+		t.Fatal("waiting status changed the host playback")
+	}
+}

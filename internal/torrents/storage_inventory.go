@@ -100,6 +100,73 @@ func (c *spoolClient) fileUsage(key string) []spoolFileUsage {
 	return result
 }
 
+// A stopped torrent may still own files which Windows refused to delete.
+// Keep those files in the admin inventory without exposing playable storage.
+func (c *spoolClient) pendingRemovalRows() []CachedTorrent {
+	c.mu.Lock()
+	sts := make([]*spoolTorrent, 0, len(c.open))
+	for _, st := range c.open {
+		sts = append(sts, st)
+	}
+	c.mu.Unlock()
+	var rows []CachedTorrent
+	for _, st := range sts {
+		st.mu.RLock()
+		if !st.closed || st.removed || st.info == nil {
+			st.mu.RUnlock()
+			continue
+		}
+		row := CachedTorrent{Hash: st.key, Name: st.info.BestName(), Total: st.info.TotalLength(),
+			MetadataReady: true, PendingRemoval: true, Files: make([]CachedFile, len(st.files))}
+		infos := st.info.UpvertedFiles()
+		for i, f := range st.files {
+			u := f.usage()
+			file := CachedFile{Index: i, Path: infos[i].DisplayPath(st.info), Size: f.size,
+				Downloaded: u.written, WrittenBytes: u.written, StoredBytes: u.allocated, LogicalBytes: u.logical}
+			if file.Size > 0 {
+				file.Percent = float64(file.Downloaded) * 100 / float64(file.Size)
+			}
+			row.Files[i] = file
+			row.Downloaded += file.Downloaded
+			row.StoredBytes += file.StoredBytes
+			row.LogicalBytes += file.LogicalBytes
+			row.WrittenBytes += file.WrittenBytes
+		}
+		st.mu.RUnlock()
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+// Retry one pending file without reopening the stopped torrent. Close handles
+// whole-torrent retries; both paths release accounting only after removal.
+func (st *spoolTorrent) removePendingFile(index int) error {
+	st.mu.Lock()
+	if !st.closed || st.removed {
+		st.mu.Unlock()
+		return ErrCacheNotFound
+	}
+	if index < 0 || index >= len(st.files) {
+		st.mu.Unlock()
+		return ErrInvalidCacheKey
+	}
+	if !st.files[index].exists() {
+		st.mu.Unlock()
+		return ErrCacheNotFound
+	}
+	err := st.files[index].Close()
+	remaining := false
+	for _, f := range st.files {
+		remaining = remaining || f.exists()
+	}
+	st.removed = !remaining
+	st.mu.Unlock()
+	if !remaining && st.client != nil {
+		st.client.forget(st.key, st)
+	}
+	return err
+}
+
 // removeFile is called only after Torrent.Drop has finished storage users.
 // Storage itself stays alive for the replacement torrent. A piece straddling
 // files becomes incomplete, while bytes in the neighboring file remain intact.

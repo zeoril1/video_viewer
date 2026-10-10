@@ -13,9 +13,18 @@ const authError = document.getElementById('auth-error');
 const authSubmit = document.getElementById('auth-submit');
 
 const loginParams = new URLSearchParams(location.search);
-// ?next= — только свой относительный путь («//host» — внешний адрес, не пускаем).
-let nextUrl = loginParams.get('next') || '/';
-if (nextUrl.indexOf('/') !== 0 || nextUrl.indexOf('//') === 0) nextUrl = '/';
+// Браузер считает /\host внешним адресом, поэтому одной проверки // недостаточно.
+function safeLoginNext(raw) {
+  if (!raw.startsWith('/') || raw.startsWith('//') || raw.includes('\\')) return '/';
+  try {
+    const target = new URL(raw, location.origin);
+    if (target.origin !== location.origin) return '/';
+    return target.pathname + target.search + target.hash;
+  } catch (_) {
+    return '/';
+  }
+}
+const nextUrl = safeLoginNext(loginParams.get('next') || '/');
 let authMode = loginParams.get('mode') === 'register' ? 'register' : 'login';
 
 function updateAuthTabs() {
@@ -47,7 +56,8 @@ authForm.addEventListener('submit', async (e) => {
       body: JSON.stringify({ username, password }),
     });
     if (res.status === 503) {
-      authError.textContent = t('authErrorAuth');
+      const data = await res.json().catch(() => null);
+      authError.textContent = t(data && data.code === 'auth_disabled' ? 'authErrorAuth' : 'authErrorUnavailable');
       authError.hidden = false;
       return;
     }
@@ -61,6 +71,10 @@ authForm.addEventListener('submit', async (e) => {
       authError.hidden = false;
       return;
     }
+    // A pending check belongs to the previous cookie/account and cannot publish now.
+    invalidateAuthChecks();
+    const data = await res.json().catch(() => null);
+    cacheUser(data && data.user || null);
     location.href = nextUrl;
   } catch (err) {
     authError.textContent = t('authErrorServer');

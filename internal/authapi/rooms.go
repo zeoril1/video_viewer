@@ -2,6 +2,7 @@ package authapi
 
 import (
 	"crypto/subtle"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -33,9 +34,10 @@ type watchRoom struct {
 	members  map[string]roomMember
 }
 type roomMember struct {
-	Name string `json:"name"`
-	Kind string `json:"kind"`
-	seen time.Time
+	Name    string `json:"name"`
+	Kind    string `json:"kind"`
+	Waiting bool   `json:"waiting,omitempty"`
+	seen    time.Time
 }
 
 const roomPresenceTTL = 15 * time.Second
@@ -54,7 +56,13 @@ func validRoomPlayback(s roomPlayback) bool {
 func (s *roomStore) handler(auth *authHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
-		u, _ := auth.currentUser(r)
+		u, _, err := auth.currentUser(r)
+		// Anonymous rooms also work without a configured database. A failed
+		// lookup of an existing session must not silently change its identity.
+		if err != nil && !errors.Is(err, errAuthDisabled) {
+			writeAuthServiceError(w, err)
+			return
+		}
 		if r.Method != "GET" && !checkOrigin(w, r) {
 			return
 		}
@@ -161,6 +169,7 @@ func (s *roomStore) serve(w http.ResponseWriter, r *http.Request, uid int64, use
 			return
 		}
 		member.seen = now
+		member.Waiting = r.Header.Get("X-Room-Waiting") == "1"
 		room.members[memberKey] = member
 	}
 	writePersonalJSON(w, response)

@@ -51,7 +51,7 @@ func selectSubtitle(items []subtitleTrack, ordinal int) (subtitleTrack, error) {
 	return subtitleTrack{}, fmt.Errorf("subtitle track %d not found", ordinal)
 }
 
-// hlsSession — запущенный ffmpeg-процесс HLS (видео копируется или перекодируется, звук — в AAC).
+// hlsSession — запущенный ffmpeg-процесс HLS (исходное видео копируется, звук — в AAC).
 type hlsSession struct {
 	done                chan struct{}
 	id                  string
@@ -60,7 +60,7 @@ type hlsSession struct {
 	track               int
 	subs                int     // выбранная субтитр-дорожка (-1 — без субтитров)
 	start               float64 // позиция в секундах, с которой начата сессия (перемотка)
-	quality             string  // "source", "2160", "1080", "720", "480"
+	quality             string  // Всегда "source"; поле оставлено для совместимости состояния.
 	dir                 string
 	playlist            string
 	cmd                 *exec.Cmd
@@ -392,6 +392,9 @@ func (m *hlsManager) videoStartProbe(ctx context.Context, id, magnet string, fil
 // ensure держит один ffmpeg на фильм и сессию просмотра: смена дорожки/серии/
 // позиции перезапускает только процесс этого зрителя (без токена — старые клиенты).
 func (m *hlsManager) ensure(ctx context.Context, id, magnet string, file, track, subs int, start float64, quality string, playback ...string) (*hlsSession, error) {
+	// Старые ссылки и история могли сохранить пониженное качество. Оно больше
+	// не меняет поток: видео всегда копируется из выбранной раздачи.
+	quality = "source"
 	key := hlsSessionKey(id, playback...)
 	m.mu.Lock()
 	generation := m.beginLaunchLocked(key)
@@ -406,7 +409,7 @@ func (m *hlsManager) ensure(ctx context.Context, id, magnet string, file, track,
 			m.mu.Unlock()
 			return s, nil
 		}
-		// Параметры изменились (серия/дорожка/субтитры/перемотка/качество) — перезапуск.
+		// Параметры изменились (серия/дорожка/субтитры/перемотка) — перезапуск.
 		log.Printf("hls: ensure %s: перезапуск (file=%d track=%d subs=%d start=%.0f quality=%s)", id, file, track, subs, start, quality)
 		s.stop()
 		delete(m.sessions, key)
@@ -492,7 +495,7 @@ func (m *hlsManager) ensure(ctx context.Context, id, magnet string, file, track,
 		seekStart = vstart
 		log.Printf("hls: ensure %s: видео стартует с %.3fs — поток с этой позиции (A/V согласованы)", id, vstart)
 	}
-	args := hlsInputArgs(m.inputURL(id, magnet, file), seekStart, quality)
+	args := hlsInputArgs(m.inputURL(id, magnet, file), seekStart)
 	args = append(args, "-map", "0:v:0")
 	// track — ПОРЯДКОВЫЙ номер аудио-потока (ordinal в /tracks): -map 0:a:N не
 	// зависит от глобального индекса, а маппинг по индексу (у MKV 0 — видео)
@@ -507,18 +510,7 @@ func (m *hlsManager) ensure(ctx context.Context, id, magnet string, file, track,
 	if hasSubs {
 		args = append(args, "-map", subsMap)
 	}
-	if h := qualityHeight(quality); h > 0 {
-		// Понижение качества (H.264, высота ≤ исходной). Важно для HDR/10-бит: без
-		// -pix_fmt yuv420p ffmpeg сохранит глубину исходника, и MSE такой поток не
-		// декодирует; тонамаппинг нужен, чтобы HDR-рипы не выглядели выцветшими.
-		args = append(args,
-			"-vf", fmt.Sprintf("scale=-2:'min(%d,ih)',tonemap=hable", h),
-			"-pix_fmt", "yuv420p",
-			"-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-		)
-	} else {
-		args = append(args, "-c:v", "copy")
-	}
+	args = append(args, "-c:v", "copy")
 	args = append(args,
 		"-c:a", "aac", "-b:a", "192k", "-ac", "2",
 	)
@@ -572,14 +564,12 @@ func (m *hlsManager) ensure(ctx context.Context, id, magnet string, file, track,
 // The output window applies backpressure at the actual HLS byte limit. Reading
 // cached input can therefore fill a useful forward buffer as fast as available
 // without materializing the whole source or pacing it by an arbitrary duration.
-func hlsInputArgs(input string, seekStart float64, quality string) []string {
+func hlsInputArgs(input string, seekStart float64) []string {
 	args := []string{"-hide_banner", "-loglevel", "error", "-y"}
 	if seekStart > 0 {
 		args = append(args, "-ss", strconv.FormatFloat(seekStart, 'f', -1, 64))
 		// Copy retains the preceding keyframe: seek audio to the same point.
-		if qualityHeight(quality) == 0 {
-			args = append(args, "-noaccurate_seek")
-		}
+		args = append(args, "-noaccurate_seek")
 	}
 	return append(args, "-i", input)
 }
@@ -651,21 +641,6 @@ func (m *hlsManager) stopAll() {
 	m.mu.Unlock()
 }
 
-// qualityHeight — высота кадра для качества (0 — исходное, без транскодинга).
-func qualityHeight(q string) int {
-	switch strings.TrimSpace(q) {
-	case "2160":
-		return 2160
-	case "1080":
-		return 1080
-	case "720":
-		return 720
-	case "480":
-		return 480
-	}
-	return 0
-}
-
 // status возвращает число активных ffmpeg-сессий (для диагностики).
 func (m *hlsManager) status() int {
 	m.mu.Lock()
@@ -722,7 +697,7 @@ func subsParam(r *http.Request) int {
 }
 
 // handleTracks — GET /api/films/{id}/tracks: дорожки, субтитры, длительность,
-// кодек/высота видео (для фолбэка на H.264, если браузер не играет HEVC).
+// кодек/высота исходного видео (для диагностики совместимости браузера).
 func handleTracks(hls *hlsManager, mgr *torrents.Manager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
@@ -766,8 +741,8 @@ func handleTracks(hls *hlsManager, mgr *torrents.Manager) http.HandlerFunc {
 	}
 }
 
-// servePlaylist — GET /api/films/{id}/hls.m3u8?magnet&track&subs&start&quality
-// (start — перемотка в сек; quality — source|2160|1080|720|480; subs — -1 без субтитров).
+// servePlaylist — GET /api/films/{id}/hls.m3u8?magnet&track&subs&start
+// (start — перемотка в сек; subs — -1 без субтитров). Видео — исходного качества.
 // Запускает ffmpeg и ждёт появления плейлиста (с субтитрами — master-плейлиста).
 func (m *hlsManager) servePlaylist(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
@@ -780,11 +755,7 @@ func (m *hlsManager) servePlaylist(w http.ResponseWriter, r *http.Request) {
 	file := fileParam(r)
 	subs := subsParam(r)
 	start, _ := strconv.ParseFloat(r.URL.Query().Get("start"), 64)
-	quality := strings.TrimSpace(r.URL.Query().Get("quality"))
-	if quality == "" {
-		quality = "source"
-	}
-	s, err := m.ensure(r.Context(), id, magnet, file, track, subs, start, quality, r.URL.Query().Get("session"))
+	s, err := m.ensure(r.Context(), id, magnet, file, track, subs, start, "source", r.URL.Query().Get("session"))
 	if err != nil {
 		resourceError(w, err)
 		return

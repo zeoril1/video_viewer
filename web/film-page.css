@@ -125,7 +125,13 @@ html[data-theme="dark"] .film-rating-badge.rating-tmdb { background: #153540; co
 }
 body:not(.film-series) .film-watch-layout { grid-template-columns: minmax(0, 1fr); }
 .film-watch-layout.no-player { grid-template-columns: minmax(0, 1fr); }
-.film-page .film-movie-sources { display: none; }
+.film-source-picker { display: grid; gap: 10px; }
+.film-source-picker .src-group-label { margin: 0; }
+.film-source-picker select { width: 100%; min-width: 0; padding: 12px; border: 1px solid var(--border-strong); border-radius: 9px; background: var(--input-bg); color: var(--text); font: inherit; font-size: 13px; }
+.film-source-picker .tracks-note { margin: 0; line-height: 1.6; }
+.film-source-picker .auth-btn { justify-self: start; min-height: 42px; white-space: normal; text-align: center; }
+.film-page .film-movie-sources { max-width: 100%; }
+.film-page .film-movie-sources .tracks-note { margin: 0; padding: 0; border: 0; background: transparent; color: var(--muted); font-size: 12px; line-height: 1.6; }
 .film-playback-column { min-width: 0; }
 .film-playing-title { margin: 0 0 12px; font-size: 18px; line-height: 1.4; font-weight: 600; }
 .film-page .player-wrap { width: 100%; min-width: 0; margin: 0; border-radius: 14px; overflow: hidden; container-type: inline-size; }
@@ -227,7 +233,6 @@ body:not(.film-series) .film-watch-layout { grid-template-columns: minmax(0, 1fr
 @container (max-width: 800px) {
   .film-page .player-controls { flex-wrap: wrap; gap: 8px; }
   .film-page .ctrl-bar { order: -1; flex: 1 1 100%; min-width: 0; }
-  .film-page .ctrl-quality { flex-wrap: wrap; }
   .film-page .ctrl-volume { width: 65px; }
 }
 @container (max-width: 400px) {

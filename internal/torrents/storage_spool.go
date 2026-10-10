@@ -88,13 +88,15 @@ func removeAbandonedSpool(dir string) {
 type spoolTorrent struct {
 	client *spoolClient
 	key    string // info hash (для реестра)
+	info   *metainfo.Info
 	files  []*spoolFile
 	pieces []*spoolPiece
 
 	// mu защищает closed и сериализует закрытие с чтением/записью
 	// (операции держат RLock, Close — Lock).
-	mu     sync.RWMutex
-	closed bool
+	mu      sync.RWMutex
+	closed  bool
+	removed bool // successful removal is terminal; stale Close calls cannot touch a replacement
 	// Retain once when an idle torrent is replaced during per-file eviction.
 	// Torrent.Drop waits for storage users before calling Close.
 	retainOnClose bool
@@ -147,33 +149,35 @@ var (
 func (c *spoolClient) OpenTorrent(_ context.Context, info *metainfo.Info, infoHash metainfo.Hash) (storage.TorrentImpl, error) {
 	key := infoHash.String()
 
-	c.mu.Lock()
-	if st := c.open[key]; st != nil && st.isOpen() {
-		c.mu.Unlock()
-		return implFor(st), nil
-	}
-	c.mu.Unlock()
-
 	if err := os.MkdirAll(c.dir, 0o755); err != nil {
 		return storage.TorrentImpl{}, fmt.Errorf("spool: create dir %s: %w", c.dir, err)
 	}
 
-	st := newSpoolTorrent(c, key, info)
-
-	c.mu.Lock()
-	// Гонка одновременных открытий одного hash: побеждает первый.
-	if prev := c.open[key]; prev != nil && prev.isOpen() {
+	for {
+		c.mu.Lock()
+		if prev := c.open[key]; prev != nil {
+			if prev.isOpen() {
+				c.mu.Unlock()
+				return implFor(prev), nil
+			}
+			c.mu.Unlock()
+			// A closed spool can still own files after a failed Windows removal.
+			// Finish deleting them before new storage may reuse the same paths.
+			if err := prev.Close(); err != nil {
+				return storage.TorrentImpl{}, err
+			}
+			continue
+		}
+		st := newSpoolTorrent(c, key, info)
+		c.open[key] = st
 		c.mu.Unlock()
-		return implFor(prev), nil
+		return implFor(st), nil
 	}
-	c.open[key] = st
-	c.mu.Unlock()
-	return implFor(st), nil
 }
 
 // newSpoolTorrent раскладывает торрент по сериям и кускам (файлов на диске не создаёт).
 func newSpoolTorrent(c *spoolClient, key string, info *metainfo.Info) *spoolTorrent {
-	t := &spoolTorrent{client: c, key: key}
+	t := &spoolTorrent{client: c, key: key, info: info}
 
 	// TorrentOffset — глобальное смещение файла в торренте; совпадает с File.Offset() anacrolix.
 	fileInfos := info.UpvertedFiles()
@@ -292,7 +296,11 @@ func (c *spoolClient) Close() error {
 	c.mu.Unlock()
 
 	var errs []error
+	tracked := make(map[string]bool)
 	for _, st := range sts {
+		for _, f := range st.files {
+			tracked[f.path] = true
+		}
 		if err := st.Close(); err != nil {
 			errs = append(errs, err)
 		}
@@ -305,8 +313,15 @@ func (c *spoolClient) Close() error {
 		if !ownedSpoolName.MatchString(filepath.Base(p)) {
 			continue
 		}
+		// Registered files have already been handled by st.Close. Retain their
+		// bookkeeping when deletion failed instead of bypassing it here.
+		if tracked[p] {
+			continue
+		}
 		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
 			errs = append(errs, fmt.Errorf("spool: remove %s: %w", p, err))
+		} else {
+			_ = c.budget.Resize(p, 0)
 		}
 	}
 	_ = os.Remove(c.dir) // каталог пуст — убираем
@@ -317,23 +332,29 @@ func (c *spoolClient) Close() error {
 // закрытие клиента → данные с диска освобождаются).
 func (t *spoolTorrent) Close() error {
 	t.mu.Lock()
+	if t.removed {
+		t.mu.Unlock()
+		return nil
+	}
 	if t.retainOnClose {
 		t.retainOnClose = false
 		t.mu.Unlock()
 		return nil
 	}
 	t.closed = true
-	t.mu.Unlock()
-
-	if t.client != nil {
-		t.client.forget(t.key, t)
-	}
 
 	var errs []error
+	pending := false
 	for _, f := range t.files {
 		if err := f.Close(); err != nil {
 			errs = append(errs, err)
 		}
+		pending = pending || f.exists()
+	}
+	t.removed = !pending
+	t.mu.Unlock()
+	if !pending && t.client != nil {
+		t.client.forget(t.key, t)
 	}
 	return errors.Join(errs...)
 }
@@ -397,22 +418,25 @@ func (f *spoolFile) writeAt(off int64, b []byte) (int, error) {
 
 func (f *spoolFile) Close() error {
 	f.mu.Lock()
-	file := f.f
-	f.f = nil
+	defer f.mu.Unlock()
+	var closeErr error
+	if f.f != nil {
+		if allocated, err := disklimit.Allocated(f.f); err == nil {
+			f.allocated = allocated
+		}
+		closeErr = f.f.Close()
+		f.f = nil
+	}
+	// Файл удаляем после закрытия дескриптора (важно на Windows).
+	// Retry the path even when an earlier attempt already closed its handle.
+	if err := os.Remove(f.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		f.present = true
+		return errors.Join(closeErr, fmt.Errorf("spool: remove %s: %w", f.path, err))
+	}
 	f.high = 0
 	f.ranges = nil
 	f.present = false
 	f.allocated = 0
-	f.mu.Unlock()
-
-	if file == nil {
-		return nil
-	}
-	closeErr := file.Close()
-	// Файл удаляем после закрытия дескриптора (важно на Windows).
-	if err := os.Remove(f.path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return errors.Join(closeErr, fmt.Errorf("spool: remove %s: %w", f.path, err))
-	}
 	_ = f.budget.Resize(f.path, 0)
 	return closeErr
 }

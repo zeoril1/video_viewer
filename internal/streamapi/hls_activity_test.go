@@ -29,11 +29,14 @@ func TestBufferedPlaybackRenewsOnlyItsExactHLSSession(t *testing.T) {
 	if m.touchPlayback("film", "other", "magnet", 2, 120, 1, -1, "source", 500) {
 		t.Fatal("other viewer affected session")
 	}
-	if m.touchPlayback("film", "session", "magnet", 2, 120, 1, -1, "720", 500) {
-		t.Fatal("old quality affected successor")
+	if m.touchPlayback("film", "session", "magnet", 2, 120, 1, 0, "source", 500) {
+		t.Fatal("old subtitle track affected successor")
 	}
 	if s.playhead != 30 || !s.lastUsed.Equal(previous) {
 		t.Fatal("stale state changed retention")
+	}
+	if !m.touchPlayback("film", "session", "magnet", 2, 120, 1, -1, "720", 150) {
+		t.Fatal("legacy quality must not expire current source playback")
 	}
 }
 
