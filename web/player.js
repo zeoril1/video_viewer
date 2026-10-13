@@ -270,20 +270,22 @@ const PP = (() => {
   }
 
   function playbackHlsConfig() {
+    const android = typeof navigator !== 'undefined' && /Android|VVTV\//i.test(navigator.userAgent || '');
     return {
       // ffmpeg already applies the absolute seek; every returned HLS timeline
       // starts at zero, even when a cached file has been remuxed far ahead.
       startPosition: 0,
       lowLatencyMode: false,
       liveDurationInfinity: true,
-      maxBufferLength: 60,
+      // Android/WebView uses the pinned hls.js defaults instead of the 1 GiB target.
+      maxBufferLength: android ? 30 : 60,
       // A byte target needs a long time ceiling for low-bitrate files. Keep it
       // finite so hls.js can reduce it when the browser's MSE quota is smaller.
-      maxMaxBufferLength: 6 * 60 * 60,
-      maxBufferSize: 1024 * 1024 * 1024,
+      maxMaxBufferLength: android ? 600 : 6 * 60 * 60,
+      maxBufferSize: android ? 60 * 1000 * 1000 : 1024 * 1024 * 1024,
       // Plain media playlists have no BANDWIDTH attribute. Learn the encoded
       // bitrate from loaded fragments so the byte target also works for them.
-      abrMaxWithRealBitrate: true,
+      abrMaxWithRealBitrate: !android,
       backBufferLength: 30,
       // The growing playlist represents a file, rather than a live broadcast.
       // Keep its live start at the first fragment regardless of generated length.
@@ -561,6 +563,12 @@ const PP = (() => {
  autoPlay();
       });
       hls.on(Hls.Events.LEVEL_SWITCHED, (_e, d) => dbg('hls: уровень переключён: ' + d.level));
+      hls.on(Hls.Events.FRAG_CHANGED, () => {
+        if (hlsPlayer !== hls) return;
+        // A small forward window needs the current fragment boundary immediately,
+        // rather than waiting for the next ten-second session heartbeat.
+        window.dispatchEvent(new Event('playbackfragment'));
+      });
       hls.on(Hls.Events.FRAG_BUFFERED, (_e, d) => {
         if (hlsPlayer !== hls || !d || !d.frag) return;
         // A manifest can succeed while every fragment is still 404. Reset the

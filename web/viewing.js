@@ -119,6 +119,7 @@
   });
   for (const event of ['pause', 'ended']) video.addEventListener(event, report);
   window.addEventListener('playbackchange', report);
+  window.addEventListener('playbackfragment', report);
   window.addEventListener('playbackstop', () => end());
   if (typeof VV !== 'undefined' && VV.onAuth) VV.onAuth(report);
   setInterval(report, 10000);

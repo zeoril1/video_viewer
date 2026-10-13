@@ -18,14 +18,31 @@ import (
 
 const (
 	defaultHLSForwardBytes = int64(1 << 30)
+	androidHLSForwardBytes = int64(60_000_000)
 	hlsOutputPath          = "/api/stream/hls-output/"
 	maxHLSPlaylistBytes    = 8 << 20
 )
 
-var errHLSSegmentTooLarge = errors.New("HLS fragment exceeds the forward buffer limit")
+// Android uses the ordinary player buffer instead of the desktop 1 GiB window.
+// The initial manifest fixes this target for the output's whole lifetime; later
+// segment requests and playback heartbeats retain the same session and window.
+func (m *hlsManager) forwardBytesForRequest(r *http.Request) int64 {
+	limit := m.forwardBytes
+	if limit <= 0 {
+		limit = defaultHLSForwardBytes
+	}
+	ua := strings.ToLower(r.UserAgent())
+	if (strings.Contains(ua, "android") || strings.Contains(ua, "vvtv/")) && limit > androidHLSForwardBytes {
+		limit = androidHLSForwardBytes
+	}
+	return limit
+}
+
+var errHLSSegmentTooLarge = errors.New("HLS fragment exceeds the maximum fragment size")
 
 type hlsBufferedFile struct {
 	bytes   int64
+	start   float64 // known alongside end after a completed media playlist.
 	end     float64 // zero until a complete playlist establishes its media time.
 	writing bool
 }
@@ -34,22 +51,33 @@ type hlsBufferedFile struct {
 // files remain available for the separate back cache until pruneConsumed runs.
 // This lock is never held while waiting for HTTP, FFmpeg, or the manager lock.
 type hlsOutputWindow struct {
-	mu       sync.Mutex
-	limit    int64
-	playhead float64
-	files    map[string]hlsBufferedFile
-	wakeup   chan struct{}
-	done     chan struct{}
-	closed   bool
-	waiting  int
-	uploads  sync.WaitGroup
+	mu            sync.Mutex
+	limit         int64 // forward target; one unpublished GOP may exceed it.
+	fragmentLimit int64 // hard bound for unpublished output, including init/VTT.
+	playhead      float64
+	files         map[string]hlsBufferedFile
+	wakeup        chan struct{}
+	done          chan struct{}
+	closed        bool
+	waiting       int
+	uploads       sync.WaitGroup
 }
 
 func newHLSOutputWindow(limit int64) *hlsOutputWindow {
+	return newHLSOutputWindowWithFragmentLimit(limit, limit)
+}
+
+func newHLSOutputWindowWithFragmentLimit(limit, fragmentLimit int64) *hlsOutputWindow {
 	if limit <= 0 {
 		limit = defaultHLSForwardBytes
 	}
-	return &hlsOutputWindow{limit: limit, files: make(map[string]hlsBufferedFile), wakeup: make(chan struct{}), done: make(chan struct{})}
+	if fragmentLimit <= 0 {
+		fragmentLimit = defaultHLSForwardBytes
+	}
+	if fragmentLimit < limit {
+		fragmentLimit = limit
+	}
+	return &hlsOutputWindow{limit: limit, fragmentLimit: fragmentLimit, files: make(map[string]hlsBufferedFile), wakeup: make(chan struct{}), done: make(chan struct{})}
 }
 
 func newHLSOutputToken() (string, error) {
@@ -93,8 +121,14 @@ func (b *hlsOutputWindow) advance(position float64) {
 
 func (b *hlsOutputWindow) forwardBytesLocked() int64 {
 	var total int64
-	for _, f := range b.files {
+	for name, f := range b.files {
 		if f.end == 0 || f.end > b.playhead {
+			// A soft Android window counts media ahead of the current GOP,
+			// including when paused or exactly at its first frame. Keep its file
+			// for playback and seeking. Desktop hard windows are unchanged.
+			if b.fragmentLimit > b.limit && strings.HasPrefix(name, "seg_") && f.start <= b.playhead && b.playhead < f.end {
+				continue
+			}
 			total += f.bytes
 		}
 	}
@@ -115,8 +149,9 @@ func (b *hlsOutputWindow) begin(name string) bool {
 }
 
 // Reserve each chunk before it reaches disk, including unpublished .tmp bytes.
-// An individually oversized GOP fails rather than waiting forever for its own
-// unpublished bytes to become playable. Ordinary full windows just wait.
+// A soft forward target may hold one larger GOP, which must finish before it
+// becomes playable. Preserve the hard bound and wait for other forward media
+// to drain instead of rejecting a valid source-quality GOP at the soft target.
 func (b *hlsOutputWindow) reserve(ctx context.Context, name string, size int64) error {
 	for {
 		b.mu.Lock()
@@ -126,18 +161,19 @@ func (b *hlsOutputWindow) reserve(ctx context.Context, name string, size int64) 
 			return context.Canceled
 		}
 		minimum := size
-		for _, held := range b.files {
+		for heldName, held := range b.files {
 			// Init and untimed subtitle output cannot be freed by watching a
-			// completed segment. FFmpeg publishes their timeline after video.
-			if held.end == 0 {
+			// completed segment. A previous completed video GOP can become
+			// playable once its playlist arrives; it must not enlarge this GOP.
+			if held.end == 0 && (heldName == name || held.writing || !strings.HasPrefix(heldName, "seg_")) {
 				minimum += held.bytes
 			}
 		}
-		if minimum > b.limit {
+		if minimum > b.fragmentLimit {
 			b.mu.Unlock()
 			return errHLSSegmentTooLarge
 		}
-		if b.forwardBytesLocked()+size <= b.limit {
+		if b.forwardBytesLocked()+size <= max(b.limit, minimum) {
 			file.bytes += size
 			b.files[name] = file
 			b.mu.Unlock()
@@ -197,9 +233,11 @@ func (b *hlsOutputWindow) updateTimeline(data []byte) {
 		if duration <= 0 || !consumedHLSName.MatchString(line) {
 			return
 		}
+		start := elapsed
 		elapsed += duration
 		duration = 0
 		if f, exists := b.files[line]; exists && !f.writing {
+			f.start = start
 			f.end = elapsed
 			b.files[line] = f
 		}

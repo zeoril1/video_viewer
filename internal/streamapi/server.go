@@ -25,7 +25,7 @@ type Config struct {
 	DisableSegmentAnalysis    bool
 	MaxSessions               int
 	MaxHLSBytes, MinFreeBytes int64
-	HLSForwardBytes           int64 // per-viewer prepared media ahead; 0 = 1 GiB.
+	HLSForwardBytes           int64 // prepared media ahead; 0 = 1 GiB, Android target is 60 MB.
 	Torrents                  *torrents.Manager
 	Addr                      string // адрес прослушивания (для внутреннего URL ffmpeg)
 	// TMDB — опциональный клиент TMDB (nil — файлы раскладываются только по именам):

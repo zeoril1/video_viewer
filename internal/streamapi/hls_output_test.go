@@ -67,6 +67,14 @@ func TestHLSForwardWindowWaitsAndResumesWithoutLosingSession(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(s.dir, "seg_00001.m4s")); !os.IsNotExist(err) {
 		t.Fatal("incomplete segment was published", err)
 	}
+	if !m.touchPlayback("tt1", "session", "magnet", 0, 0, 0, -1, "source", 1) {
+		t.Fatal("desktop heartbeat rejected")
+	}
+	select {
+	case w := <-completed:
+		t.Fatal("desktop hard window credited a still-playing fragment", w.Code)
+	case <-time.After(30 * time.Millisecond):
+	}
 	// No segment or playlist request is needed to retain a buffered player.
 	old := time.Now().Add(-2 * time.Minute)
 	m.mu.Lock()
@@ -100,6 +108,89 @@ func TestHLSForwardWindowWaitsAndResumesWithoutLosingSession(t *testing.T) {
 	s.output.mu.Unlock()
 	if remaining != 44 {
 		t.Fatal("window did not count only init and media ahead", remaining)
+	}
+}
+
+func TestHLSSoftForwardTargetAllowsOneLargeFragment(t *testing.T) {
+	m, s, token := outputTestSession(t, 64)
+	s.output = newHLSOutputWindowWithFragmentLimit(64, 160)
+	if w := outputRequest(m, token, "init.mp4", strings.NewReader("init")); w.Code != http.StatusCreated {
+		t.Fatal(w.Code)
+	}
+	// Original keyframes can make one valid GOP larger than the Android target.
+	// It still needs to finish so the player can consume it and advance playback.
+	largeFragment := io.MultiReader(strings.NewReader(strings.Repeat("a", 40)), strings.NewReader(strings.Repeat("a", 60)))
+	if w := outputRequest(m, token, "seg_00000.m4s", largeFragment); w.Code != http.StatusCreated {
+		t.Fatal("large playable GOP was rejected", w.Code, w.Body.String())
+	}
+	playlist := "#EXTM3U\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:6,\nseg_00000.m4s\n"
+	completed := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		largeFragment := io.MultiReader(strings.NewReader(strings.Repeat("b", 60)), strings.NewReader(strings.Repeat("b", 40)))
+		completed <- outputRequest(m, token, "seg_00001.m4s", largeFragment)
+	}()
+	select {
+	case w := <-completed:
+		t.Fatal("prefilled a second GOP beyond the forward target", w.Code, w.Body.String())
+	case <-time.After(30 * time.Millisecond):
+	}
+	// Even before the first playlist establishes its timing, the completed GOP
+	// must not be counted as metadata that can expand a second soft window.
+	if w := outputRequest(m, token, "playlist.m3u8", strings.NewReader(playlist)); w.Code != http.StatusCreated {
+		t.Fatal(w.Code)
+	}
+	// The first GOP is current even at position zero. Preparing the next one
+	// must not wait for a positive timestamp or a ten-second periodic heartbeat.
+	select {
+	case w := <-completed:
+		if w.Code != http.StatusCreated {
+			t.Fatal("next large GOP did not resume", w.Code, w.Body.String())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("next GOP remained blocked at the first frame of its predecessor")
+	}
+	if m.sessions[hlsSessionKey("tt1", "session")] != s || s.resourceLimited {
+		t.Fatal("soft target ended or replaced the viewing session")
+	}
+	s.output.mu.Lock()
+	remaining := s.output.forwardBytesLocked()
+	s.output.mu.Unlock()
+	if remaining != 104 || s.output.limit != 64 || s.output.fragmentLimit != 160 {
+		t.Fatal("soft target or hard bound changed", remaining, s.output.limit, s.output.fragmentLimit)
+	}
+	playlist += "#EXTINF:6,\nseg_00001.m4s\n"
+	if w := outputRequest(m, token, "playlist.m3u8", strings.NewReader(playlist)); w.Code != http.StatusCreated {
+		t.Fatal(w.Code)
+	}
+	go func() {
+		completed <- outputRequest(m, token, "seg_00002.m4s", strings.NewReader(strings.Repeat("c", 100)))
+	}()
+	select {
+	case w := <-completed:
+		t.Fatal("prefilled two future GOPs while the first was playing", w.Code, w.Body.String())
+	case <-time.After(30 * time.Millisecond):
+	}
+	if !m.touchPlayback("tt1", "session", "magnet", 0, 0, 0, -1, "source", 6) {
+		t.Fatal("second GOP's playback heartbeat was rejected")
+	}
+	select {
+	case w := <-completed:
+		if w.Code != http.StatusCreated {
+			t.Fatal("third GOP did not resume at the first frame of the second", w.Code, w.Body.String())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("third GOP waited for the end of the current GOP")
+	}
+	for _, name := range []string{"seg_00000.m4s", "seg_00001.m4s", "seg_00002.m4s"} {
+		if _, err := os.Stat(filepath.Join(s.dir, name)); err != nil {
+			t.Fatal("playing/consumed GOP was removed from the back cache", name, err)
+		}
+	}
+	if w := outputRequest(m, token, "seg_00003.m4s", strings.NewReader(strings.Repeat("d", 157))); w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatal("soft target bypassed the existing hard fragment bound", w.Code)
+	}
+	if _, err := os.Stat(filepath.Join(s.dir, "seg_00003.m4s.tmp")); !os.IsNotExist(err) {
+		t.Fatal("hard-limit failure retained partial media", err)
 	}
 }
 

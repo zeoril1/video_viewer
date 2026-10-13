@@ -28,9 +28,10 @@ function malformedFragment(data) {
 const bootstrap = `
 const VV={user:null},DEBUG=false;
 let currentItem={id:'tt-mse',kind:'movie'};
-const fixture={logs:[],errors:[],failures:[],recoveries:[],starts:[],stages:[],stops:0};window.fixture=fixture;
+const fixture={logs:[],errors:[],failures:[],recoveries:[],starts:[],stages:[],fragmentChanges:0,stops:0};window.fixture=fixture;
 window.addEventListener('playbackstage',event=>fixture.stages.push(event.detail));
 window.addEventListener('playbackfailure',event=>fixture.failures.push(event.detail));
+window.addEventListener('playbackfragment',()=>fixture.fragmentChanges++);
 const t=x=>x,dbg=x=>fixture.logs.push(x),fmtTime=x=>String(x),isHevcCodec=()=>false,isSeriesKind=()=>false;
 const episodeHistoryEntry=()=>null,rememberWatchProgress=()=>{},seasonEpisodeCount=()=>0,canonicalByNumber=()=>null,titleVoices=()=>[];
 const fetchFiles=async()=>[{index:0,name:'fixture.mkv'}];
@@ -48,7 +49,7 @@ window.Hls=class extends Hls {
   const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROMIUM_PATH,
     args: ['--no-sandbox', '--autoplay-policy=no-user-gesture-required'] });
   try {
-    const context = await browser.newContext();
+    const context = await browser.newContext(process.env.TEST_PLAYER_USER_AGENT ? { userAgent: process.env.TEST_PLAYER_USER_AGENT } : {});
     let page = await context.newPage();
     const pageErrors = [], streamRequests = [];
     let badRequests = 0, stopped = 0, persistentFailure = false, badRecoveryFloor = 0, allowPausedFailure = false;
@@ -109,6 +110,14 @@ window.Hls=class extends Hls {
     assert.equal(stopped, 0, 'recovery does not delete the server session');
     assert.equal(await page.evaluate(() => PP.state().quality), 'source');
     assert.equal(await page.evaluate(() => fixture.recoveries.length), 1);
+    assert.ok(await page.evaluate(() => fixture.fragmentChanges > 0), 'actual HLS playback publishes fragment boundaries for prompt session renewal');
+    if (process.env.TEST_PLAYER_USER_AGENT && /Android|VVTV\//i.test(process.env.TEST_PLAYER_USER_AGENT)) {
+      const config = await page.evaluate(() => ({ seconds: activeHls.config.maxBufferLength,
+        bytes: activeHls.config.maxBufferSize, ceiling: activeHls.config.maxMaxBufferLength,
+        expanded: activeHls.config.abrMaxWithRealBitrate }));
+      assert.deepEqual(config, { seconds: 30, bytes: 60000000, ceiling: 600, expanded: false },
+        'an Android WebView user agent selects the standard buffer in the actual browser player');
+    }
     assert.equal(await page.evaluate(() => fixture.failures.length), 0);
     assert.equal(await page.locator('#player-error').isVisible(), false);
     assert.equal(await page.locator('.recovery-offer').isVisible(), false);

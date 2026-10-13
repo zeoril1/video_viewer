@@ -4,6 +4,11 @@ const Hls=require('../web/vendor/hls.min.js');
 const player=fs.readFileSync(path.join(__dirname,'../web/player.js'),'utf8');
 const start=player.indexOf('  function playbackHlsConfig('),end=player.indexOf('  // Запуск HLS-потока',start);
 const configContext=vm.createContext({DEBUG:false});vm.runInContext(player.slice(start,end),configContext);
+function configForAgent(userAgent) {
+  const context=vm.createContext({DEBUG:false,navigator:{userAgent}});
+  vm.runInContext(player.slice(start,end),context);
+  return context.playbackHlsConfig();
+}
 const playlist='#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:6\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-MAP:URI="init.mp4"\n'+
   Array.from({length:3},(_,n)=>'#EXTINF:6,\nseg_'+n+'.m4s\n').join('')+'#EXT-X-ENDLIST\n';
 class PlaylistLoader{
@@ -11,9 +16,10 @@ class PlaylistLoader{
   load(context,config,callbacks){this.context=context;queueMicrotask(()=>callbacks.onSuccess({url:context.url,data:playlist,code:200},this.stats,context,null));}
   getResponseHeader(){return null;}getCacheAge(){return null;}abort(){}destroy(){}
 }
-async function realHls(run){
+async function realHls(run,userAgent){
   const previous=global.self,previousLocation=global.location;global.self=globalThis;global.location={href:'http://fixture.local/watch.html'};
-  const hls=new Hls({...configContext.playbackHlsConfig(),autoStartLoad:false,enableWorker:false,loader:PlaylistLoader});
+  const config=userAgent === undefined ? configContext.playbackHlsConfig() : configForAgent(userAgent);
+  const hls=new Hls({...config,autoStartLoad:false,enableWorker:false,loader:PlaylistLoader});
   try{
     const errors=[];hls.on(Hls.Events.ERROR,(_event,data)=>errors.push({details:data.details,message:data.error?.message||data.reason}));
     await new Promise(resolve=>{hls.once(Hls.Events.MANIFEST_PARSED,resolve);hls.loadSource('http://fixture.local/hls.m3u8');});
@@ -42,6 +48,33 @@ test('a plain playlist with no declared bitrate learns real fragment bitrate and
   assert.equal(level.realBitrate,6*1024**2);
   assert.ok(Math.abs(controller.getMaxBufferLength(level.maxBitrate)*level.maxBitrate/8-1024**3)<1);
 }));
+
+test('Android Chrome, WebView and the existing TV app keep standard HLS buffering after real fragment downloads', async()=>{
+  for(const agent of ['Mozilla/5.0 (Linux; Android 14) Chrome/129.0 Mobile Safari/537.36',
+    'Mozilla/5.0 (Linux; Android 9; wv) Version/4.0 Chrome/120.0 VVTV/1.0', 'VVTV/1.0']) {
+    await realHls(hls=>{
+      for(const name of ['maxBufferLength','maxMaxBufferLength','maxBufferSize','abrMaxWithRealBitrate']) {
+        assert.equal(hls.config[name],Hls.DefaultConfig[name],name+' for '+agent);
+      }
+      const level=hls.levels[0],controller=hls.streamController;
+      assert.equal(controller.getMaxBufferLength(level.maxBitrate),30);
+      loaded(hls,0,6*1024**2);loaded(hls,1,3*1024**2);
+      assert.equal(controller.getMaxBufferLength(level.maxBitrate),30,
+        'Real bitrate samples must not expand an Android media playlist to the 1 GiB target');
+      assert.equal(hls.config.startPosition,0);assert.equal(hls.config.liveSyncDurationCount,Infinity);
+      assert.equal(hls.config.backBufferLength,30);
+    },agent);
+  }
+});
+
+test('desktop clients keep the 1 GiB target and TV presentation alone does not lower their buffer',()=>{
+  for(const agent of ['Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/129.0',
+    'Mozilla/5.0 (X11; Linux x86_64) Firefox/130.0', 'SMART-TV Desktop']) {
+    const config=configForAgent(agent);
+    assert.equal(config.maxBufferSize,1024**3);assert.equal(config.maxMaxBufferLength,21600);
+    assert.equal(config.maxBufferLength,60);assert.equal(config.abrMaxWithRealBitrate,true);
+  }
+});
 
 test('init segments do not distort the media bitrate or the byte-based forward target',()=>realHls(hls=>{
   loaded(hls,0,6*1024**2);

@@ -112,6 +112,21 @@ test('metadata preparation does not send premature automatic-file heartbeats', a
   assert.equal(f.requests[0].body.playing, false);
 });
 
+test('moving into the next HLS fragment immediately renews the same session without waiting for the periodic timer', async () => {
+  const f = fixture();
+  f.emit('playbackchange'); await flush();
+  const session = f.requests[0].body.session;
+  for (const position of [6, 12, 18]) {
+    f.state.position = position; f.state.stream_start = 0;
+    f.emit('playbackfragment'); await flush();
+    assert.equal(f.requests.at(-1).method, 'POST');
+    assert.equal(f.requests.at(-1).body.session, session);
+    assert.equal(f.requests.at(-1).body.position, position);
+    assert.equal(f.requests.at(-1).body.playing, true);
+  }
+  assert.equal(f.requests.length, 4);
+});
+
 test('same-source preparation retains its session and resumes the latest track heartbeat', async () => {
   const f = fixture();
   f.emit('playbackchange'); await flush();

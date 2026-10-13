@@ -150,7 +150,7 @@ function playbackHarness() {
   const instances = [], dispatched = [], eventDetails = [], timers = [], diagnostics = [], stages = [], mediaHandlers = new Map();
   class FakeHls {
     static Events = { MANIFEST_PARSED: 'manifest', SUBTITLE_TRACKS_UPDATED: 'subs',
-      LEVEL_SWITCHED: 'level', FRAG_BUFFERED: 'frag', ERROR: 'error' };
+      LEVEL_SWITCHED: 'level', FRAG_CHANGED: 'fragmentchange', FRAG_BUFFERED: 'frag', ERROR: 'error' };
     static isSupported() { return true; }
     constructor(config) { this.config = config; this.handlers = new Map(); this.subtitleTracks = []; instances.push(this); }
     on(event, handler) { this.handlers.set(event, handler); }
@@ -199,6 +199,17 @@ const missingFragment = { fatal: true, type: 'networkError', details: 'fragLoadE
 const failedAppend = { fatal: true, type: 'mediaError', details: 'bufferAppendError', sourceBufferName: 'video',
   error: { name: 'Error', message: 'video SourceBuffer error. MediaSource readyState: open', code: 0 },
   frag: { sn: 45, start: 270, duration: 6 } };
+
+test('entering a playback fragment renews its window immediately while stale HLS instances cannot report progress', () => {
+  const f = playbackHarness(), old = f.instances[0];
+  old.handlers.get('fragmentchange')();
+  assert.deepEqual(f.dispatched, ['playbackfragment']);
+  f.context.playHls('tt1', 'magnet:test', 2, 0, 500, 'source', -1);
+  old.handlers.get('fragmentchange')();
+  assert.deepEqual(f.dispatched, ['playbackfragment']);
+  f.instances.at(-1).handlers.get('fragmentchange')();
+  assert.deepEqual(f.dispatched, ['playbackfragment', 'playbackfragment']);
+});
 
 test('a fatal MSE append rebuilds only the browser buffer and resumes the same relative position after its range arrives', () => {
   const f = playbackHarness(), active = f.instances[0], originalURL = active.url;

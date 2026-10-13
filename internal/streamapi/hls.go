@@ -392,6 +392,10 @@ func (m *hlsManager) videoStartProbe(ctx context.Context, id, magnet string, fil
 // ensure держит один ffmpeg на фильм и сессию просмотра: смена дорожки/серии/
 // позиции перезапускает только процесс этого зрителя (без токена — старые клиенты).
 func (m *hlsManager) ensure(ctx context.Context, id, magnet string, file, track, subs int, start float64, quality string, playback ...string) (*hlsSession, error) {
+	return m.ensureWithForwardBytes(ctx, id, magnet, file, track, subs, start, quality, m.forwardBytes, playback...)
+}
+
+func (m *hlsManager) ensureWithForwardBytes(ctx context.Context, id, magnet string, file, track, subs int, start float64, quality string, forwardBytes int64, playback ...string) (*hlsSession, error) {
 	// Старые ссылки и история могли сохранить пониженное качество. Оно больше
 	// не меняет поток: видео всегда копируется из выбранной раздачи.
 	quality = "source"
@@ -473,7 +477,7 @@ func (m *hlsManager) ensure(ctx context.Context, id, magnet string, file, track,
 		return nil, err
 	}
 	s := &hlsSession{done: make(chan struct{}), id: id, magnet: magnet, file: file, track: track, subs: subs, subsLabel: subsLabel, start: start, quality: quality, dir: dir, playlist: playlist, lastUsed: time.Now(), generation: generation,
-		output: newHLSOutputWindow(m.forwardBytes), outputToken: token}
+		output: newHLSOutputWindowWithFragmentLimit(forwardBytes, m.forwardBytes), outputToken: token}
 	outputBase := m.selfBase + hlsOutputPath + token + "/"
 	segPattern := outputBase + "seg_%05d.m4s"
 	m.mu.Lock()
@@ -755,7 +759,7 @@ func (m *hlsManager) servePlaylist(w http.ResponseWriter, r *http.Request) {
 	file := fileParam(r)
 	subs := subsParam(r)
 	start, _ := strconv.ParseFloat(r.URL.Query().Get("start"), 64)
-	s, err := m.ensure(r.Context(), id, magnet, file, track, subs, start, "source", r.URL.Query().Get("session"))
+	s, err := m.ensureWithForwardBytes(r.Context(), id, magnet, file, track, subs, start, "source", m.forwardBytesForRequest(r), r.URL.Query().Get("session"))
 	if err != nil {
 		resourceError(w, err)
 		return
