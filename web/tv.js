@@ -45,6 +45,8 @@
 
   // Самый верхний (последний в DOM среди видимых) открытый модал.
   function topModal() {
+    var dialog = document.querySelector('dialog[open]');
+    if (dialog) return dialog;
     var profile = document.querySelector('.profile-menu[open]');
     if (profile) return profile;
     var found = null;
@@ -248,6 +250,13 @@
     var k = keyOf(e);
     var dir = dirOf(k);
     if (!dir && k !== 'Enter' && k !== 'Space') return;
+    // Radio choices in the source dialog need D-pad navigation and an OK action.
+    if (t && t.matches && t.matches('#source-picker input[type="radio"]')) {
+      e.preventDefault(); e.stopPropagation();
+      if (dir) moveFocus(dir, t);
+      else if (!t.disabled) { t.checked = true; t.dispatchEvent(new Event('change', { bubbles: true })); }
+      return;
+    }
     // В текстовых полях (поиск, логин) стрелки/Enter отдаём браузеру/IME.
     if (isTyping(t)) return;
     if (topModal() && dir) {
@@ -256,7 +265,7 @@
       return;
     }
 
-    var pOpen = playerOpen();
+    var pOpen = !topModal() && playerOpen();
 
     // Видео играет: ←/→ = перемотка (её делает watch.js), если фокус не в панели.
     if (pOpen && dir && (dir === 'left' || dir === 'right')) {
@@ -328,6 +337,8 @@
   // ---- Мост для нативной обёртки: кнопка Back ----------------------------
   function handleBack() {
     try {
+      var dialog = document.querySelector('dialog[open]');
+      if (dialog) { dialog.close(); return 'consumed'; }
       var profile = document.querySelector('.profile-menu[open]');
       if (profile) {
         profile.open = false;

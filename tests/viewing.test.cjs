@@ -94,6 +94,86 @@ test('viewing permits automatic movie file and does not report inactive preloadi
   assert.equal(f.requests.at(-1).method, 'DELETE');
 });
 
+test('metadata preparation does not send premature automatic-file heartbeats', async () => {
+  const f = fixture();
+  f.state.file = -1;
+  f.state.preparing = true;
+  f.setReady(false);
+  f.emit('playbackchange');
+  f.media('emptied');
+  f.media('pause');
+  f.intervals[0]();
+  await flush();
+  assert.equal(f.requests.length, 0, 'Pending files/tracks cannot resolve an open cached file yet');
+  f.state.preparing = false;
+  f.emit('playbackchange'); await flush();
+  assert.equal(f.requests.length, 1, 'Start renewing as soon as HLS opens, before media becomes ready');
+  assert.equal(f.requests[0].body.file, -1);
+  assert.equal(f.requests[0].body.playing, false);
+});
+
+test('same-source preparation retains its session and resumes the latest track heartbeat', async () => {
+  const f = fixture();
+  f.emit('playbackchange'); await flush();
+  const session = f.requests[0].body.session;
+  f.state.preparing = true;
+  f.setReady(false);
+  f.emit('playbackchange'); f.media('emptied'); f.intervals[0]();
+  await flush();
+  assert.equal(f.requests.length, 1, 'Track preparation must neither post nor release the current session');
+  f.state.track = 2; f.state.stream_start = 350; f.state.position = 350;
+  f.state.preparing = false;
+  f.emit('playbackchange'); await flush();
+  assert.equal(f.requests.length, 2);
+  assert.equal(f.requests[1].method, 'POST');
+  assert.equal(f.requests[1].body.session, session);
+  assert.equal(f.requests[1].body.track, 2);
+  assert.equal(f.requests[1].body.stream_start, 350);
+  assert.equal(f.requests[1].body.playing, false);
+  // Ordinary media buffering, including MSE recovery, still renews the lease.
+  f.media('waiting'); await flush();
+  assert.equal(f.requests.length, 3);
+  assert.equal(f.requests[2].body.session, session);
+});
+
+test('preparing a different episode ends the old session before opening the replacement', async () => {
+  const f = fixture();
+  f.emit('playbackchange'); await flush();
+  const previous = f.requests[0].body.session;
+  f.state.file = 4; f.state.episode = 4; f.state.preparing = true;
+  f.emit('playbackchange'); await flush();
+  assert.deepEqual(f.requests.map(item => item.method), ['POST', 'DELETE']);
+  assert.equal(f.requests[1].body.session, previous);
+  f.intervals[0](); await flush();
+  assert.equal(f.requests.length, 2);
+  f.state.preparing = false;
+  f.emit('playbackchange'); await flush();
+  assert.equal(f.requests[2].method, 'POST');
+  assert.notEqual(f.requests[2].body.session, previous);
+  assert.equal(f.requests[2].body.file, 4);
+});
+
+test('queued heartbeat is suppressed when the same source enters metadata preparation', async () => {
+  const f = fixture();
+  let finish;
+  f.setFetch(() => new Promise(resolve => { finish = resolve; }));
+  f.emit('playbackchange'); await flush();
+  const session = f.requests[0].body.session;
+  f.state.position = 350;
+  f.intervals[0]();
+  f.state.preparing = true;
+  f.emit('playbackchange');
+  f.setFetch(async () => ({ ok: true }));
+  finish({ ok: true }); await flush();
+  assert.equal(f.requests.length, 1, 'An old queued report must not be sent during preparation');
+  f.state.preparing = false;
+  f.state.position = 400;
+  f.emit('playbackchange'); await flush();
+  assert.equal(f.requests.length, 2);
+  assert.equal(f.requests[1].body.session, session);
+  assert.equal(f.requests[1].body.position, 400);
+});
+
 test('a queued playback report cannot recreate a stopped session after pagehide', async () => {
   const f = fixture();
   f.emit('playbackchange');

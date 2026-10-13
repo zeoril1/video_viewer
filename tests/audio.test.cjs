@@ -29,28 +29,31 @@ test('missing audio falls back to a valid track or video-only', () => {
 });
 
 function startupHarness() {
-  const pending = [], launches = [];
+  const pending = [], launches = [], notified = [];
   const context = vm.createContext({
     pendingPlayback: null, mediaRecovery: null, playbackFailurePosition: null, hlsPlayer: null, currentQuality: 'source',
     player: { currentTime: 999, pause() {}, removeAttribute() {}, load() {} },
-    stage() {}, window: { dispatchEvent() {} }, Event: function () {},
+    stage() {}, notify() { notified.push({ preparing: !!context.pendingPlayback, launched: launches.length }); },
+    window: { dispatchEvent() {} }, Event: function () {},
     CustomEvent: function () {}, clearMediaRecovery() {},
     loadTracks: () => new Promise(resolve => pending.push(resolve)),
     playHls: (...args) => launches.push(args),
   });
   vm.runInContext(player.slice(player.indexOf('  function beginPlayback('), player.indexOf('  function playHls(')), context);
-  return { context, pending, launches };
+  return { context, pending, launches, notified };
 }
 
 test('initial stream waits for audio/subtitles and never inherits old media time', async () => {
-  const { context, pending, launches } = startupHarness();
+  const { context, pending, launches, notified } = startupHarness();
   context.beginPlayback('tt1', 'm', 2, 1, 0, 'source');
   assert.equal(launches.length, 0);
+  assert.equal(notified.length, 0, 'viewing is not announced before source metadata is ready');
   context.currentTrack = 3;
   context.currentSubs = 2;
   pending[0](true);
   await Promise.resolve();
   assert.deepEqual(launches, [['tt1', 'm', 2, 3, 0, 'source', 2]]);
+  assert.deepEqual(notified, [{ preparing: false, launched: 1 }], 'the ready stream immediately triggers its viewing heartbeat');
 });
 
 test('late preparation cannot launch an episode after a newer selection', async () => {

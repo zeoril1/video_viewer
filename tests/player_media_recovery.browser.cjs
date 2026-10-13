@@ -28,8 +28,9 @@ function malformedFragment(data) {
 const bootstrap = `
 const VV={user:null},DEBUG=false;
 let currentItem={id:'tt-mse',kind:'movie'};
-const fixture={logs:[],errors:[],recoveries:[],starts:[],stages:[],stops:0};window.fixture=fixture;
+const fixture={logs:[],errors:[],failures:[],recoveries:[],starts:[],stages:[],stops:0};window.fixture=fixture;
 window.addEventListener('playbackstage',event=>fixture.stages.push(event.detail));
+window.addEventListener('playbackfailure',event=>fixture.failures.push(event.detail));
 const t=x=>x,dbg=x=>fixture.logs.push(x),fmtTime=x=>String(x),isHevcCodec=()=>false,isSeriesKind=()=>false;
 const episodeHistoryEntry=()=>null,rememberWatchProgress=()=>{},seasonEpisodeCount=()=>0,canonicalByNumber=()=>null,titleVoices=()=>[];
 const fetchFiles=async()=>[{index:0,name:'fixture.mkv'}];
@@ -61,7 +62,7 @@ window.Hls=class extends Hls {
       if (u.pathname === '/watch.html') {
         let html = fs.readFileSync(path.join(web, 'watch.html'), 'utf8').replace(/<script\b[^>]*>[\s\S]*?<\/script>/g, '');
         html = html.replace('</body>', '<script src="/vendor/hls.min.js"></script><script>' + bootstrap +
-          '</script><script src="/player.js"></script><script src="/playback-extras.js"></script></body>');
+          '</script><script src="/player.js"></script><script src="/playback-extras.js"></script><script src="/recovery.js"></script></body>');
         return route.fulfill({ contentType: 'text/html; charset=utf-8', body: html });
       }
       if (u.pathname.startsWith('/api/films/')) {
@@ -108,7 +109,9 @@ window.Hls=class extends Hls {
     assert.equal(stopped, 0, 'recovery does not delete the server session');
     assert.equal(await page.evaluate(() => PP.state().quality), 'source');
     assert.equal(await page.evaluate(() => fixture.recoveries.length), 1);
+    assert.equal(await page.evaluate(() => fixture.failures.length), 0);
     assert.equal(await page.locator('#player-error').isVisible(), false);
+    assert.equal(await page.locator('.recovery-offer').isVisible(), false);
     assert.ok(streamRequests.every(query => query.start === '1139.51' && query.session === streamRequests[0].session));
     assert.deepEqual(pageErrors, []);
     console.log('PASS: real asynchronous MSE append failure recovers at the same position, source and server session.');
@@ -124,17 +127,22 @@ window.Hls=class extends Hls {
     });
     await page.waitForFunction(() => !document.getElementById('player-error').hidden, null, { timeout: 20000 });
     const failed = await page.evaluate(() => ({ ready: PP.ready(), position: PP.state().position,
-      recoveries: fixture.recoveries, starts: fixture.starts.length, message: document.getElementById('player-error').textContent }));
-    assert.equal(failed.recoveries.length, 2, 'a permanently bad fragment cannot cause an infinite recovery loop');
+      recoveries: fixture.recoveries, failures: fixture.failures, starts: fixture.starts.length, message: document.getElementById('player-error').textContent }));
+    assert.equal(failed.recoveries.length, 1, 'a second rejection of the same fragment stops before another pointless buffer rebuild');
     assert.equal(failed.starts, 1);
     assert.equal(failed.ready, false);
-    assert.match(failed.message, /Браузер.*видеофрагмент.*восстановление не помогло/);
+    assert.equal(failed.failures.length, 1);
+    assert.equal(failed.failures[0].reason, 'repeated_media_fragment');
+    assert.match(failed.message, /Один и тот же видеофрагмент повторно не удалось обработать/);
     assert.equal(await page.locator('#loading-title').textContent(), 'Просмотр прерван');
-    assert.match(await page.locator('#loading-detail').textContent(), /Браузер.*видеофрагмент.*восстановление не помогло/);
+    assert.equal(await page.locator('#loading-detail').textContent(), failed.failures[0].message);
+    assert.equal(await page.locator('.recovery-offer').isVisible(), true);
+    assert.equal(await page.locator('.recovery-offer p').textContent(), failed.failures[0].message,
+      'Source recovery presents the actual repeat failure instead of claiming a slow connection');
     assert.ok(failed.position >= 1199.93 + 1, 'the retry position survives final MSE teardown');
     assert.equal(stopped, 0);
     assert.deepEqual(pageErrors, []);
-    console.log('PASS: persistent real MSE append failure stops after two recoveries and retains the retry position.');
+    console.log('PASS: repeated rejection of the same real MSE fragment stops after one recovery, explains the failure and retains the retry position.');
 
     const retryState = await page.evaluate(() => PP.state());
     assert.equal(retryState.paused, true, 'terminal MSE teardown leaves a paused media element');

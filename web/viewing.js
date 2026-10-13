@@ -52,6 +52,9 @@
         while (queue.length) {
           const item = queue.shift();
           if (item.method === 'POST' && (closed || item.body.session !== session)) continue;
+          // A queued report can outlive the switch into metadata preparation.
+          // The files/tracks requests own their source leases during this phase.
+          if (item.method === 'POST' && PP.state().preparing) continue;
           await send(item.method, item.body);
         }
       } finally {
@@ -81,6 +84,13 @@
     if (!state.active || !state.id || !state.magnet) { end(); return; }
     const file = Number.isInteger(state.file) ? state.file : -1;
     const key = [state.id, state.magnet, file, state.season, state.episode].join('|');
+    if (state.preparing) {
+      // ResolveCachedFile cannot resolve an unopened/incomplete torrent yet.
+      // Keep an existing same-source session through track preparation, but
+      // release the previous episode/source before waiting for its replacement.
+      if (identity && key !== identity) end();
+      return;
+    }
     if (key !== identity) {
       end();
       identity = key;

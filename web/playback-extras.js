@@ -65,7 +65,7 @@ const PlaybackExtras = (() => {
     if (stage === 'paused') { video.play().catch(() => loading('paused','Нажмите кнопку воспроизведения в плеере.')); return; }
     const s = PP.state(); if(!s.id){window.dispatchEvent(new Event('retryplayback'));return;} if (s.id) PP.start({...s, pos:s.position, ep:s.episode, release:PP.release()});
   };
-  el('loading-source').onclick = () => {if(PP.state().id)window.dispatchEvent(new Event('requestsourcechange'));else{loading('');document.getElementById('sources')?.scrollIntoView({block:'center'});}};
+  el('loading-source').onclick = () => { if (!PP.isFollower()) window.dispatchEvent(new Event('requestsourcechange')); };
 
   const defaults = {size:100, background:'dark', position:'bottom', delay:0, language:'off', prepare:true};
   let preferences = {...defaults}, cueOrigins = new WeakMap();

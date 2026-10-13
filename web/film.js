@@ -1095,7 +1095,7 @@ async function onReleaseEnd() {
 
 // Escape на карточке сериала — остановить просмотр (страница остаётся открытой).
 document.addEventListener('keydown', (e) => {
-  if (e.key !== 'Escape' || e.defaultPrevented || e.target?.closest?.('.profile-menu')) return;
+  if (e.key !== 'Escape' || e.defaultPrevented || document.querySelector('dialog[open]') || e.target?.closest?.('.profile-menu')) return;
   if (PP.playing()) {
     PP.stop();
     flashFilmNote(t('viewingClosed'));

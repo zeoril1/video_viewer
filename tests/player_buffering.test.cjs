@@ -226,24 +226,23 @@ test('a fatal MSE append rebuilds only the browser buffer and resumes the same r
   assert.equal(f.eventDetails.length, 0);
 });
 
-test('MSE recovery stops after two attempts even when prefetched fragments succeed between failures', () => {
+test('a repeated append failure stops after one recovery even when prefetched fragments succeed between failures', () => {
   const f = playbackHarness(), active = f.instances[0];
   f.context.player.currentTime = 13; f.context.player.paused = false;
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    active.handlers.get('error')(null, failedAppend); f.runTimers();
-    f.ranges([[10, 40]]);
-    active.handlers.get('frag')(null, { frag: { sn: attempt, start: 10 } });
-    assert.equal(active.recoveries, attempt);
-    assert.equal(f.context.player.currentTime, 13);
-  }
+  active.handlers.get('error')(null, failedAppend); f.runTimers();
+  f.ranges([[10, 40]]);
+  active.handlers.get('frag')(null, { frag: { sn: 1, start: 10 } });
+  assert.equal(active.recoveries, 1);
+  assert.equal(f.context.player.currentTime, 13);
   active.handlers.get('error')(null, failedAppend);
   f.runTimers();
-  assert.equal(active.recoveries, 2);
+  assert.equal(active.recoveries, 1);
   assert.equal(f.context.hlsPlayer, null);
   assert.equal(f.context.playbackReady, false, 'A failed stream must not remain ready for room synchronization');
   assert.equal(active.destroyed, true);
   assert.deepEqual(f.dispatched, ['playbackfailure']);
-  assert.match(f.eventDetails[0].message, /Браузер не смог обработать видеофрагмент.*восстановление не помогло/);
+  assert.equal(f.eventDetails[0].reason, 'repeated_media_fragment');
+  assert.match(f.eventDetails[0].message, /Один и тот же видеофрагмент.*Выберите другой источник.*позиция просмотра сохранится/);
   assert.equal(f.eventDetails[0].title, 'Просмотр прерван');
   assert.match(f.diagnostics.join('\n'), /sourceBuffer=video.*frag=45 start=270 duration=6/);
   assert.match(f.diagnostics.join('\n'), /message=video SourceBuffer error/);
@@ -257,13 +256,50 @@ test('a failing replacement SourceBuffer cannot reset or lose the original recov
   active.handlers.get('error')(null, failedAppend);
   f.runTimers();
   assert.equal(active.recoveries, 1, 'Duplicate errors before the queued recovery share one attempt');
-  active.handlers.get('error')(null, failedAppend); f.runTimers();
+  active.handlers.get('error')(null, { ...failedAppend, frag: undefined }); f.runTimers();
   assert.equal(active.recoveries, 2);
   assert.equal(active.restartPosition, 29.5);
-  active.handlers.get('error')(null, failedAppend); f.runTimers();
+  active.handlers.get('error')(null, { ...failedAppend, frag: undefined }); f.runTimers();
   assert.equal(active.recoveries, 2);
   assert.equal(f.context.playbackFailurePosition, 129.5, 'The retry button retains the original absolute position after another failed reattach');
   assert.deepEqual(f.dispatched, ['playbackfailure']);
+});
+
+test('a synchronous append callback during reattach cannot classify the same failure as a second download', () => {
+  const f = playbackHarness(), active = f.instances[0];
+  f.context.player.currentTime = 13;
+  active.recoverMediaError = function() {
+    this.recoveries = (this.recoveries || 0) + 1;
+    this.handlers.get('error')(null, failedAppend);
+    this.media.load();
+  };
+  active.handlers.get('error')(null, failedAppend); f.runTimers();
+  assert.equal(active.recoveries, 1);
+  assert.equal(active.destroyed, undefined);
+  assert.deepEqual(f.dispatched, []);
+  f.ranges([[10, 40]]); f.media('canplay');
+  assert.equal(f.context.mediaRecovery, null);
+  assert.equal(f.context.player.currentTime, 13);
+});
+
+test('different append fragments retain the bounded recovery budget and a new stream can retry the original fragment', () => {
+  const f = playbackHarness(), active = f.instances[0];
+  f.context.player.currentTime = 13;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    active.handlers.get('error')(null, { ...failedAppend, frag: { ...failedAppend.frag, sn: 44 + attempt, start: 264 + attempt * 6 } });
+    f.runTimers(); f.ranges([[10, 40]]); f.media('canplay');
+    assert.equal(active.recoveries, attempt);
+    assert.equal(f.dispatched.length, 0, 'different fragments must not be classified as a repeated failure');
+  }
+  active.handlers.get('error')(null, { ...failedAppend, frag: { ...failedAppend.frag, sn: 47, start: 282 } });
+  assert.equal(active.recoveries, 2);
+  assert.equal(f.eventDetails[0].reason, '');
+  assert.match(f.eventDetails[0].message, /Автоматическое восстановление не помогло/);
+  f.context.playHls('tt1', 'magnet:replacement', 2, 0, 113, 'source', -1);
+  const replacement = f.instances.at(-1);
+  replacement.handlers.get('error')(null, failedAppend); f.runTimers();
+  assert.equal(replacement.recoveries, 1, 'the original signature does not leak into a new HLS generation');
+  assert.equal(replacement.destroyed, undefined);
 });
 
 test('MSE recovery respects both a local pause and a new pause commanded by the room host', () => {

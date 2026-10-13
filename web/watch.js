@@ -83,7 +83,7 @@ function nextFromFilmPage() {
 
 // Escape — назад к карточке фильма (поток при этом гасится в pagehide).
 document.addEventListener('keydown', (e) => {
-  if (e.key !== 'Escape') return;
+  if (e.key !== 'Escape' || e.defaultPrevented || document.querySelector('dialog[open]')) return;
   go(filmLink ? filmLink.getAttribute('href') : '/');
 });
 

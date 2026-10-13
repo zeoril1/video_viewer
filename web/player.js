@@ -180,6 +180,7 @@ const PP = (() => {
       voice: selectedVoice,
       paused: player.paused,
       active: !!currentPlay,
+      preparing: !!pendingPlayback,
       playing: !!hlsPlayer && !playerWrap.hidden && !trailerActive,
     };
   }
@@ -337,6 +338,7 @@ const PP = (() => {
         return;
       }
       playHls(id, magnet, file, currentTrack, pending.position, pending.quality, currentSubs);
+      notify();
     });
   }
 
@@ -392,6 +394,7 @@ const PP = (() => {
       const hls = new Hls(hlsConfig);
       let mediaRecoveryAttempts = 0;
       const maxMediaRecoveryAttempts = 2;
+      const failedAppendFragments = new Map();
       hlsPlayer = hls;
       hls.loadSource(src);
       hls.attachMedia(player);
@@ -404,7 +407,10 @@ const PP = (() => {
         } catch (_) { ranges.push('unavailable'); }
         return '[' + ranges.join(', ') + ']';
       }
-      function errorText(data, exhausted) {
+      function errorText(data, exhausted, reason) {
+        if (reason === 'repeated_media_fragment') {
+          return 'Один и тот же видеофрагмент повторно не удалось обработать. Восстановление плеера не помогло. Выберите другой источник — позиция просмотра сохранится.';
+        }
         if (data.type === 'mediaError') {
           if (['bufferAppendError', 'bufferAppendingError', 'bufferStalledError'].includes(data.details)) {
             return exhausted
@@ -432,14 +438,14 @@ const PP = (() => {
         }
         return 'Воспроизведение прервалось. Повторите запуск или выберите другой источник.';
       }
-      function fail(data, exhausted = false) {
+      function fail(data, exhausted = false, reason = '') {
         if (hlsPlayer !== hls) return;
         const position = mediaRecovery && mediaRecovery.hls === hls
           ? streamStart + mediaRecovery.position : streamStart + (player.currentTime || 0);
         dbg('hls: поток перед остановкой: id=' + id + ' file=' + currentFile + ' track=' + currentTrack
           + ' subs=' + currentSubs + ' start=' + streamStart + ' position=' + position.toFixed(3)
           + ' codec=' + (currentVideoCodec || '?') + ' q=' + currentQuality + ' [' + hlsLogSrc(src) + ']');
-        const message = errorText(data, exhausted);
+        const message = errorText(data, exhausted, reason);
         const technical = [data.type, data.details].filter(Boolean).join(' / ')
           + (data.response ? ' (HTTP ' + data.response.code + ')' : '');
         const hadPlayback = playbackReady || position > streamStart;
@@ -449,7 +455,7 @@ const PP = (() => {
         clearMediaRecovery();
         window.dispatchEvent(new CustomEvent('playbackfailure', { detail: {
           title: hadPlayback ? 'Просмотр прерван' : 'Не удалось начать просмотр',
-          message, type: data.type, details: data.details,
+          message, type: data.type, details: data.details, reason,
           status: data.response && data.response.code,
         } }));
         hlsPlayer = null;
@@ -459,8 +465,25 @@ const PP = (() => {
         showDebug();
         if (typeof playerError.scrollIntoView === 'function') playerError.scrollIntoView({ block: 'nearest' });
       }
+      function repeatedAppendFragment(data) {
+        // Duplicate callbacks before a reattach do not mean the media was retried.
+        if (mediaRecovery && mediaRecovery.hls === hls
+            && ['queued', 'recovering'].includes(mediaRecovery.phase)) return false;
+        const fragment = data.frag;
+        if (!['bufferAppendError', 'bufferAppendingError'].includes(data.details)
+            || !fragment || !Number.isInteger(fragment.sn) || fragment.sn < 0
+            || !Number.isFinite(fragment.start) || !Number.isFinite(fragment.duration)
+            || fragment.duration <= 0) return false;
+        const key = JSON.stringify([fragment.type, fragment.level, fragment.cc, fragment.sn,
+          fragment.start, fragment.duration, data.sourceBufferName]);
+        const failedAttempt = failedAppendFragments.get(key);
+        if (failedAttempt != null && failedAttempt < mediaRecoveryAttempts) return true;
+        failedAppendFragments.set(key, mediaRecoveryAttempts);
+        return false;
+      }
       function recoverMedia() {
-        if (mediaRecovery && mediaRecovery.hls === hls && mediaRecovery.phase === 'queued') return true;
+        if (mediaRecovery && mediaRecovery.hls === hls
+            && ['queued', 'recovering'].includes(mediaRecovery.phase)) return true;
         if (mediaRecoveryAttempts >= maxMediaRecoveryAttempts) return false;
         const previous = mediaRecovery && mediaRecovery.hls === hls ? mediaRecovery : null;
         const position = previous ? previous.position : Math.max(0, player.currentTime || 0);
@@ -576,6 +599,11 @@ const PP = (() => {
         if (data && data.fatal) {
           if (data.type === 'mediaError'
               && ['bufferAppendError', 'bufferAppendingError', 'bufferStalledError'].includes(data.details)) {
+            if (repeatedAppendFragment(data)) {
+              dbg('hls: тот же фрагмент повторно отвергнут после восстановления медиабуфера; нужен другой источник');
+              fail(data, true, 'repeated_media_fragment');
+              return;
+            }
             if (recoverMedia()) return;
             fail(data, true);
             return;
@@ -1265,6 +1293,7 @@ const PP = (() => {
     // ←/→ — перемотка на 5 секунд (когда курсор не в поле ввода).
     document.addEventListener('keydown', (e) => {
       if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+      if (e.defaultPrevented || document.querySelector('dialog[open]')) return;
       if (e.target && e.target.closest && e.target.closest('.skip-segments-panel, .skip-segments-toolbar')) return;
       const tag = ((e.target && e.target.tagName) || '').toLowerCase();
       if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
