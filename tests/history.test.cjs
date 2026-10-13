@@ -177,7 +177,7 @@ test('each episode keeps its own position, including across releases', async () 
 test('opening an episode restores its position and respects explicit restart from zero', () => {
   const source = player.slice(player.indexOf('  function start(opts)'), player.indexOf('  function stop(opts)'));
   let position;
-  const ctx = vm.createContext({ available: true, currentPlay: null, selectedVoice: '', currentTrack: 0, currentQuality: 'source',
+  const ctx = vm.createContext({ available: true, follower: false, currentPlay: null, selectedVoice: '', currentTrack: 0, currentQuality: 'source',
     playerWrap: {}, closeTrailer() {}, updateQualityButtons() {}, loadFiles() {}, loadTracks() {}, notify() {},
     episodeHistoryEntry: () => ({ position: 136 }), maybeSaveProgress() {},
     beginPlayback: (id, magnet, file, track, pos) => { position = pos; },

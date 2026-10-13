@@ -89,7 +89,7 @@ const PP = (() => {
   }
   function autoPlay() {
     if (pendingPlayback || mediaRecovery || playbackFailurePosition != null) return;
-    if (remotePaused) {
+    if (follower && remotePaused) {
       stage('paused', 'Просмотр на паузе.');
       return;
     }
@@ -97,6 +97,7 @@ const PP = (() => {
       const attemptedHls = hlsPlayer, attemptedPlay = currentPlay, attemptedStart = streamStart;
       player.play().catch(() => {
         if (pendingPlayback || mediaRecovery || playbackFailurePosition != null || trailerActive
+            || (follower && remotePaused)
             || attemptedHls !== hlsPlayer || attemptedPlay !== currentPlay || attemptedStart !== streamStart) return;
         stage('paused', 'Нажмите ▶, чтобы начать просмотр.');
       });
@@ -478,12 +479,13 @@ const PP = (() => {
           if (player.readyState < 2 || !bufferedContains(streamStart + recovery.position)) return;
           try { player.currentTime = recovery.position; }
           catch (_) { return; }
-          const stayPaused = recovery.paused || remotePaused || trailerActive;
+          const pausedByHost = follower && remotePaused;
+          const stayPaused = recovery.paused || pausedByHost || trailerActive;
           clearMediaRecovery();
           playbackReady = true;
           if (stayPaused) {
             player.pause();
-            stage('paused', remotePaused ? 'Просмотр на паузе у ведущего.' : 'Просмотр на паузе.');
+            stage('paused', pausedByHost ? 'Просмотр на паузе у ведущего.' : 'Просмотр на паузе.');
           } else {
             stage('buffering', 'Позиция восстановлена. Возобновляем просмотр.');
             autoPlay();
@@ -1326,8 +1328,9 @@ const PP = (() => {
   function start(opts) {
     if (!available) return false;
     const o = opts || {};
- remotePaused=!!o.paused;
     if (!o.id || !o.magnet) return false;
+    // A retry copies the local media state; only room guests inherit a host pause.
+    remotePaused = follower && !!o.paused;
     closeTrailer();
     const keepAudio = currentPlay && currentPlay.id === o.id && (!o.voice || o.voice === selectedVoice);
     const initialTrack = keepAudio && currentPlay.magnet === o.magnet ? currentTrack : 0;
@@ -1428,14 +1431,19 @@ const PP = (() => {
     hide: () => { if (playerWrap) playerWrap.hidden = true; },
     ready: () => !pendingPlayback && !mediaRecovery && playbackFailurePosition == null && (playbackReady || player.readyState >= 2),
     setFollower: value => {
-      follower = value;
+      follower = !!value;
+      if (!follower) remotePaused = false;
       window.dispatchEvent(new CustomEvent('playbackrole', { detail: { follower } }));
     },
     isFollower: () => follower,
     duration: () => totalDuration,
     setRemotePaused: (value, message) => {
-      remotePaused = value;
-      if (value) {
+      if (!follower) {
+        remotePaused = false;
+        return;
+      }
+      remotePaused = !!value;
+      if (remotePaused) {
         player.pause();
         stage(message ? 'buffering' : 'paused', message || 'Ведущий поставил просмотр на паузу.');
       } else if (follower && player.readyState >= 2 && player.paused) autoPlay();

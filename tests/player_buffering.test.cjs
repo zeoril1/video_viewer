@@ -20,7 +20,7 @@ test('late follower readiness cannot autoplay or replace a terminal playback err
   let plays = 0;
   const stages = [];
   const context = vm.createContext({ pendingPlayback: null, mediaRecovery: null,
-    playbackFailurePosition: 1199.93, remotePaused: false, trailerActive: false,
+    playbackFailurePosition: 1199.93, follower: false, remotePaused: false, trailerActive: false,
     hlsPlayer: {}, currentPlay: {}, streamStart: 1139.51,
     player: { play() { plays++; return Promise.resolve(); } }, stage: (...args) => stages.push(args) });
   vm.runInContext(section('  function autoPlay()', '  let lastSavedSample'), context);
@@ -33,20 +33,69 @@ test('late follower readiness cannot autoplay or replace a terminal playback err
 });
 
 test('an old rejected play promise cannot replace recovery or failure with an autoplay prompt', async () => {
-  for (const changed of ['pendingPlayback', 'mediaRecovery', 'playbackFailurePosition', 'hlsPlayer', 'currentPlay', 'streamStart', 'trailerActive']) {
+  for (const changed of ['pendingPlayback', 'mediaRecovery', 'playbackFailurePosition', 'hlsPlayer', 'currentPlay', 'streamStart', 'trailerActive', 'hostPause']) {
     let reject;
     const stages = [];
     const context = vm.createContext({ pendingPlayback: null, mediaRecovery: null, playbackFailurePosition: null,
-      hlsPlayer: {}, currentPlay: {}, streamStart: 100, remotePaused: false, trailerActive: false,
+      hlsPlayer: {}, currentPlay: {}, streamStart: 100, follower: false, remotePaused: false, trailerActive: false,
       player: { play() { return new Promise((_, fail) => { reject = fail; }); } },
       stage: (...args) => stages.push(args) });
     vm.runInContext(section('  function autoPlay()', '  let lastSavedSample'), context);
     context.autoPlay();
-    context[changed] = changed === 'streamStart' || changed === 'playbackFailurePosition' ? 120 : {};
+    if (changed === 'hostPause') { context.follower = true; context.remotePaused = true; }
+    else context[changed] = changed === 'streamStart' || changed === 'playbackFailurePosition' ? 120 : {};
     reject(new Error('Playback aborted by replacement'));
     await Promise.resolve();
     assert.equal(stages.length, 0, changed + ' must invalidate a late play rejection');
   }
+});
+
+test('a stale host pause can hold autoplay only while the player is a room guest', () => {
+  let plays = 0;
+  const stages = [];
+  const context = vm.createContext({ pendingPlayback: null, mediaRecovery: null, playbackFailurePosition: null,
+    follower: false, remotePaused: true, trailerActive: false, hlsPlayer: {}, currentPlay: {}, streamStart: 100,
+    player: { play() { plays++; return Promise.resolve(); } }, stage: (...args) => stages.push(args) });
+  vm.runInContext(section('  function autoPlay()', '  let lastSavedSample'), context);
+  context.autoPlay();
+  assert.equal(plays, 1);
+  assert.deepEqual(stages, []);
+  context.follower = true;
+  context.autoPlay();
+  assert.equal(plays, 1, 'a real guest must wait for the host to resume');
+  assert.equal(stages.at(-1)[0], 'paused');
+});
+
+test('host pause commands apply only to guests and leaving a room does not resume a local pause', () => {
+  const stages = [], roles = [];
+  const player = { paused: false, readyState: 4, pause() { this.paused = true; },
+    play() { this.paused = false; this.plays = (this.plays || 0) + 1; } };
+  const context = vm.createContext({ follower: false, remotePaused: false, totalDuration: 100, player,
+    stage: (...args) => stages.push(args), autoPlay: () => player.play(),
+    window: { dispatchEvent: event => roles.push(event.detail.follower) },
+    CustomEvent: function(type, options) { this.detail = options.detail; } });
+  vm.runInContext('api = {\n' + section('    setFollower: value =>', '    selectSubtitle: ordinal =>') + '\n};', context);
+  context.api.setRemotePaused(true);
+  assert.equal(player.paused, false);
+  assert.equal(context.remotePaused, false);
+  assert.deepEqual(stages, []);
+  context.api.setFollower(true);
+  context.api.setRemotePaused(true);
+  assert.equal(player.paused, true);
+  assert.equal(context.remotePaused, true);
+  assert.match(stages.at(-1)[1], /Ведущий/);
+  context.api.setRemotePaused(false);
+  assert.equal(player.plays, 1, 'a ready guest resumes when the host resumes');
+  context.api.setRemotePaused(true);
+  context.api.setFollower(false);
+  assert.equal(context.remotePaused, false);
+  assert.equal(player.paused, true);
+  assert.equal(player.plays, 1, 'leaving a room keeps its current local pause');
+  const count = stages.length;
+  context.api.setRemotePaused(true, 'Ждём ведущего');
+  assert.equal(stages.length, count, 'a late room command must not change the solo overlay');
+  assert.equal(context.remotePaused, false);
+  assert.deepEqual(roles, [true, false]);
 });
 
 test('a fast remux of a downloaded movie starts from zero with real hls.js live controllers', () => {
@@ -98,7 +147,7 @@ test('seeks restart a stream for evicted back buffer and gaps instead of waiting
 });
 
 function playbackHarness() {
-  const instances = [], dispatched = [], eventDetails = [], timers = [], diagnostics = [], mediaHandlers = new Map();
+  const instances = [], dispatched = [], eventDetails = [], timers = [], diagnostics = [], stages = [], mediaHandlers = new Map();
   class FakeHls {
     static Events = { MANIFEST_PARSED: 'manifest', SUBTITLE_TRACKS_UPDATED: 'subs',
       LEVEL_SWITCHED: 'level', FRAG_BUFFERED: 'frag', ERROR: 'error' };
@@ -126,12 +175,12 @@ function playbackHarness() {
     pendingPlayback: null, mediaRecovery: null, playbackFailurePosition: null, playbackReady: false,
     hlsPlayer: null, currentPlay: { id: 'tt1', magnet: 'magnet:test' },
     currentFile: 2, currentTrack: 0, currentSubs: -1, currentQuality: 'source',
-    currentVideoCodec: 'h264', remotePaused: false, trailerActive: false,
+    currentVideoCodec: 'h264', follower: false, remotePaused: false, trailerActive: false,
     streamStart: 0, streamRestarts: 0, maxStreamRestarts: 3, playbackSession: 'session',
     playerWrap: { hidden: false }, playerError: { hidden: true },
-    stage() {}, closeTrailer() {}, updateQualityButtons() {}, fetchDuration() {},
+    stage: (...args) => stages.push(args), closeTrailer() {}, updateQualityButtons() {}, fetchDuration() {},
     dbg: message => diagnostics.push(message), hlsLogSrc: value => value,
-    autoPlay() { if (!context.mediaRecovery && !context.remotePaused && !context.trailerActive) player.play(); },
+    autoPlay() { if (!context.mediaRecovery && !(context.follower && context.remotePaused) && !context.trailerActive) player.play(); },
     notify() {}, maybeSaveProgress() {}, showDebug() {}, t: value => value,
     bufferedAhead: () => 0,
   });
@@ -140,7 +189,7 @@ function playbackHarness() {
     section('  function playbackHlsConfig(', '  // Запуск HLS-потока') +
     section('  function playHls(', '  // Полная длительность файла'), context);
   context.playHls('tt1', 'magnet:test', 2, 0, 100, 'source', -1);
-  return { context, instances, dispatched, eventDetails, diagnostics, timers,
+  return { context, instances, dispatched, eventDetails, diagnostics, stages, timers,
     runTimers() { const current = timers.splice(0); for (const timer of current) if (!timer.cancelled) timer.handler(); },
     media(event) { for (const handler of [...(mediaHandlers.get(event) || [])]) handler(); },
     ranges(ranges) { player.buffered = { length: ranges.length, start: index => ranges[index][0], end: index => ranges[index][1] }; } };
@@ -222,12 +271,29 @@ test('MSE recovery respects both a local pause and a new pause commanded by the 
     const f = playbackHarness(), active = f.instances[0];
     f.context.player.currentTime = 13; f.context.player.paused = paused;
     active.handlers.get('error')(null, failedAppend); f.runTimers();
-    if (!paused) f.context.remotePaused = true;
+    if (!paused) { f.context.follower = true; f.context.remotePaused = true; }
     f.ranges([[10, 40]]); f.media('canplay');
     assert.equal(f.context.player.currentTime, 13);
     assert.equal(f.context.player.paused, true);
     assert.equal(f.context.player.plays, undefined);
     assert.equal(f.context.mediaRecovery, null);
+    assert.equal(f.stages.at(-1)[1], paused ? 'Просмотр на паузе.' : 'Просмотр на паузе у ведущего.');
+  }
+});
+
+test('solo MSE recovery keeps a real local pause but ignores stale room state', () => {
+  for (const paused of [true, false]) {
+    const f = playbackHarness(), active = f.instances[0];
+    f.context.player.currentTime = 13; f.context.player.paused = paused;
+    f.context.remotePaused = true;
+    active.handlers.get('error')(null, failedAppend); f.runTimers();
+    f.ranges([[10, 40]]); f.media('canplay');
+    assert.equal(f.context.player.currentTime, 13);
+    assert.equal(f.context.player.paused, paused);
+    assert.equal(f.context.player.plays || 0, paused ? 0 : 1);
+    assert.equal(f.context.mediaRecovery, null);
+    assert.equal(f.stages.some(([, message]) => /ведущ/i.test(message || '')), false);
+    if (paused) assert.equal(f.stages.at(-1)[1], 'Просмотр на паузе.');
   }
 });
 
