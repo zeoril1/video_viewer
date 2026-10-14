@@ -235,3 +235,62 @@ test('host sees buffering guests and can pause everyone without changing guest p
   h.elements.get('room-pause-all').onclick();for(let i=0;i<10;i++)await Promise.resolve();
   assert.equal(JSON.parse(h.requests.at(-1).body).paused,true);assert.equal(h.isFollower(),false);
 });
+
+test('host retry publishes resume once actual media plays after a terminal failure',async()=>{
+  const h=harness({paused:false});
+  h.respond(async(url,options)=>options.method==='POST'?{room:'b'.repeat(32),host_token:'host'}:{participants:[]});
+  await h.elements.get('room-create').onclick();
+  h.setReady(false);
+  await h.pageEvent('playbackfailure');
+  h.video.pause();await h.video.play();
+  assert.equal(JSON.parse(h.requests.at(-1).body).paused,true,'an early play request is not media readiness');
+  h.setReady(true);h.video.emit('playing');for(let i=0;i<10;i++)await Promise.resolve();
+  assert.equal(JSON.parse(h.requests.at(-1).body).paused,false,'guests resume once the host stream really plays');
+});
+
+test('a terminal host playback failure pauses the room at the retained position even after the player loses readiness',async()=>{
+  const h=harness({paused:false});
+  h.respond(async(url,options)=>options.method==='POST'?{room:'b'.repeat(32),host_token:'host'}:{participants:[]});
+  await h.elements.get('room-create').onclick();
+  h.setLocal(119.75);h.setReady(false);
+  const count=h.requests.length;
+  h.video.pause();assert.equal(h.requests.length,count,'The ordinary pause handler cannot publish an unready stream');
+  await h.pageEvent('playbackfailure');
+  assert.equal(h.requests.at(-1).method,'PUT');
+  const published=JSON.parse(h.requests.at(-1).body);
+  assert.equal(published.paused,true);
+  assert.equal(published.position,119.75);
+  assert.equal(published.id,'tt1');assert.equal(published.file,0);
+  assert.equal(h.starts.length,0);assert.equal(h.restarts.length,0);
+  assert.equal(h.timerCount(),1);
+});
+
+test('a host failure during an in-flight update publishes one paused snapshot after that request completes',async()=>{
+  const h=harness({paused:false});let finish;
+  h.respond(async(url,options)=>options.method==='POST'?{room:'b'.repeat(32),host_token:'host'}:new Promise(resolve=>{finish=resolve;}));
+  const creating=h.elements.get('room-create').onclick();
+  for(let i=0;i<10&&!finish;i++)await Promise.resolve();
+  assert.ok(finish);
+  h.setLocal(119.75);h.setReady(false);
+  await h.pageEvent('playbackfailure');
+  assert.equal(h.requests.filter(request=>request.method==='PUT').length,1,'The old PUT is allowed to finish before another is sent');
+  finish({participants:[]});await creating;
+  assert.equal(h.nextDelay(),0);
+  h.respond(async()=>({participants:[]}));await h.poll();
+  assert.equal(h.requests.filter(request=>request.method==='PUT').length,2);
+  const published=JSON.parse(h.requests.at(-1).body);
+  assert.equal(published.paused,true);assert.equal(published.position,119.75);
+  assert.equal(h.timerCount(),1);
+});
+
+test('a terminal guest failure does not publish or change the host playback state',async()=>{
+  const h=harness({paused:false});await h.join();
+  h.setLocal(119.75);h.setReady(false);
+  const count=h.requests.length;
+  await h.pageEvent('playbackfailure');
+  assert.equal(h.requests.length,count);
+  assert.equal(h.requests.every(request=>request.method==='GET'),true);
+  assert.equal(h.position(),119.75);assert.equal(h.isFollower(),true);
+  assert.equal(h.starts.length,0);assert.equal(h.restarts.length,0);
+  assert.equal(h.timerCount(),1);
+});

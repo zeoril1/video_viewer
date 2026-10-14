@@ -73,3 +73,32 @@ test('the actual buffer-full recovery reduces its ceiling without flushing a use
   assert.equal(flush,false);assert.equal(hls.config.maxMaxBufferLength,10800);
   assert.equal(controller.state,'IDLE');
 }));
+
+test('an asynchronous SourceBuffer failure is distinct from quota pressure and carries the fatal append cause',()=>realHls(hls=>{
+  const buffer=hls.bufferController,frag=hls.levels[0].details.fragments[0],errors=[];
+  const originalQueue=buffer.operationQueue,originalMediaSource=buffer.mediaSource;
+  let append;
+  // Capture the actual operation created by the pinned buffer controller. Its
+  // callbacks, retry counter and emitted errors all remain production code.
+  buffer.operationQueue={append(operation){append=operation;},current(){return append;}};
+  buffer.mediaSource={readyState:'open'};
+  buffer.appendErrors.video=hls.config.appendErrorMaxRetry-1;
+  hls.on(Hls.Events.ERROR,(_event,error)=>errors.push(error));
+  try{
+    buffer.onBufferAppending(Hls.Events.BUFFER_APPENDING,{data:new Uint8Array(1),type:'video',frag,
+      chunkMeta:{buffering:{video:{start:0,executeStart:0,executeEnd:0,end:0}},id:1,sn:frag.sn}});
+    buffer._onSBUpdateError('video',{type:'error'});
+    assert.deepEqual(errors.map(error=>({details:error.details,fatal:error.fatal})),[
+      {details:Hls.ErrorDetails.BUFFER_APPENDING_ERROR,fatal:false},
+      {details:Hls.ErrorDetails.BUFFER_APPEND_ERROR,fatal:true},
+    ]);
+    assert.equal(errors[1].sourceBufferName,'video');
+    assert.equal(errors[1].frag,frag);
+    assert.equal(errors[1].error,errors[0].error);
+    assert.match(errors[1].error.message,/video SourceBuffer error.*readyState: open/);
+    assert.notEqual(errors[1].details,Hls.ErrorDetails.BUFFER_FULL_ERROR,
+      'An asynchronous decoder/append failure must not be diagnosed as MSE quota exhaustion');
+  }finally{
+    buffer.operationQueue=originalQueue;buffer.mediaSource=originalMediaSource;
+  }
+}));

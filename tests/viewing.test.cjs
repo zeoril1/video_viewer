@@ -5,7 +5,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 function fixture() {
-  const handlers = {}, events = {}, requests = [], intervals = [], timeouts = [];
+  const handlers = {}, events = {}, requests = [], intervals = [], timeouts = [], diagnostics = [];
   let fetchImpl = async () => ({ ok: true });
   const state = { active: true, id: 'tt1234567', magnet: 'magnet:?xt=urn:btih:' + 'a'.repeat(40),
     file: 2, season: 1, episode: 3, position: 345, duration: 1200,
@@ -22,13 +22,14 @@ function fixture() {
     crypto: { getRandomValues(array) { array.fill(++sequence); return array; } },
     fetch: async (url, options) => { requests.push({ url, ...options, body: JSON.parse(options.body) }); return fetchImpl(url, options); },
     AbortController,
+    dbg: message => diagnostics.push(message),
     setTimeout(fn, delay) { const timer = { fn, delay, cleared: false }; timeouts.push(timer); return timer; },
     clearTimeout(timer) { if (timer) timer.cleared = true; },
     setInterval(fn) { intervals.push(fn); },
   });
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../web/viewing.js'), 'utf8'), context);
   const emit = (name, target = events) => { for (const fn of target[name] || []) fn(); };
-  return { state, video, requests, intervals, timeouts, emit, media: name => emit(name, handlers),
+  return { state, video, requests, intervals, timeouts, diagnostics, emit, media: name => emit(name, handlers),
     setFetch: fn => { fetchImpl = fn; },
     setReady: value => { ready = value; }, setVisible: value => { visible = value; } };
 }
@@ -130,4 +131,42 @@ test('a hung heartbeat cannot prevent renewal from the current playback state', 
   assert.equal(f.requests[0].signal.aborted, true);
   assert.equal(f.requests.at(-1).body.position, 400);
   assert.equal(f.requests.length, 2);
+  assert.match(f.diagnostics[0], /Viewing heartbeat timed out/);
+});
+
+test('rejected renewals report their HTTP status and the next heartbeat retains the session with the latest seek state', async () => {
+  for (const status of [409, 429, 503]) {
+    const f = fixture();
+    f.setFetch(async () => ({ ok: false, status }));
+    f.emit('playbackchange'); await flush();
+    const session = f.requests[0].body.session;
+    assert.equal(f.diagnostics.length, 1);
+    assert.match(f.diagnostics[0], new RegExp('viewing: POST HTTP ' + status));
+    assert.match(f.diagnostics[0], /file=2 start=300 position=345 track=1 subs=-1/);
+    assert.equal(f.diagnostics[0].includes(f.state.magnet), false, 'Diagnostics do not disclose the magnet or stream token');
+    assert.equal(f.diagnostics[0].includes('b'.repeat(32)), false);
+    f.state.stream_start = 915.25; f.state.position = 930.75; f.state.track = 0; f.state.subs = 1;
+    f.setFetch(async () => ({ ok: true, status: 204 }));
+    f.intervals[0](); await flush();
+    const report = f.requests.at(-1).body;
+    assert.equal(report.session, session);
+    assert.equal(report.stream_start, 915.25);
+    assert.equal(report.position, 930.75);
+    assert.equal(report.track, 0);
+    assert.equal(report.subs, 1);
+    assert.equal(report.playing, true, 'A heartbeat rejection must not stop buffered playback');
+    assert.equal(f.diagnostics.length, 1, 'A successful report adds no failure message');
+  }
+});
+
+test('a network failure is diagnosed without preventing the next playback heartbeat', async () => {
+  const f = fixture();
+  f.setFetch(async () => { throw new TypeError('Failed to fetch'); });
+  f.emit('playbackchange'); await flush();
+  assert.match(f.diagnostics[0], /viewing: POST Failed to fetch/);
+  f.setFetch(async () => ({ ok: true, status: 204 }));
+  f.state.position = 1100;
+  f.intervals[0](); await flush();
+  assert.equal(f.requests.at(-1).body.position, 1100);
+  assert.equal(f.requests.at(-1).body.session, f.requests[0].body.session);
 });

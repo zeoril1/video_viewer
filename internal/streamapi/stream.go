@@ -88,17 +88,17 @@ func handleStream(mgr *torrents.Manager, item catalog.Item, readahead int64) htt
 		}
 		defer releaseFile()
 
-		reader := file.NewReader()
-		defer reader.Close()
-		reader.SetContext(r.Context()) // прерываем чтение при отключении клиента
-
 		// Readahead — не буфер в RAM: при спуле данные ложатся на диск, поэтому окно
 		// можно делать большим (~минута воспроизведения) без роста памяти.
 		ra := readahead
 		if ra <= 0 {
 			ra = defaultReadahead
 		}
-		reader.SetReadahead(ra)
+		// Each new FFmpeg/HTTP reader rechecks the cached pieces it actually uses.
+		// A seek/restart therefore cannot blindly reuse an old completed bitmap,
+		// while startup never waits for a full-file or season-wide scan.
+		reader := torrents.NewVerifiedReader(r.Context(), file, ra)
+		defer reader.Close()
 
 		// В URL стрима нет расширения — ставим Content-Type по расширению файла.
 		if ct := mime.TypeByExtension(strings.ToLower(path.Ext(file.DisplayPath()))); ct != "" {

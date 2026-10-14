@@ -16,6 +16,39 @@ function hlsConfig() {
   return context.playbackHlsConfig();
 }
 
+test('late follower readiness cannot autoplay or replace a terminal playback error', () => {
+  let plays = 0;
+  const stages = [];
+  const context = vm.createContext({ pendingPlayback: null, mediaRecovery: null,
+    playbackFailurePosition: 1199.93, remotePaused: false, trailerActive: false,
+    hlsPlayer: {}, currentPlay: {}, streamStart: 1139.51,
+    player: { play() { plays++; return Promise.resolve(); } }, stage: (...args) => stages.push(args) });
+  vm.runInContext(section('  function autoPlay()', '  let lastSavedSample'), context);
+  context.autoPlay();
+  assert.equal(plays, 0);
+  assert.equal(stages.length, 0);
+  context.playbackFailurePosition = null;
+  context.autoPlay();
+  assert.equal(plays, 1, 'a subsequent user restart can autoplay normally');
+});
+
+test('an old rejected play promise cannot replace recovery or failure with an autoplay prompt', async () => {
+  for (const changed of ['pendingPlayback', 'mediaRecovery', 'playbackFailurePosition', 'hlsPlayer', 'currentPlay', 'streamStart', 'trailerActive']) {
+    let reject;
+    const stages = [];
+    const context = vm.createContext({ pendingPlayback: null, mediaRecovery: null, playbackFailurePosition: null,
+      hlsPlayer: {}, currentPlay: {}, streamStart: 100, remotePaused: false, trailerActive: false,
+      player: { play() { return new Promise((_, fail) => { reject = fail; }); } },
+      stage: (...args) => stages.push(args) });
+    vm.runInContext(section('  function autoPlay()', '  let lastSavedSample'), context);
+    context.autoPlay();
+    context[changed] = changed === 'streamStart' || changed === 'playbackFailurePosition' ? 120 : {};
+    reject(new Error('Playback aborted by replacement'));
+    await Promise.resolve();
+    assert.equal(stages.length, 0, changed + ' must invalidate a late play rejection');
+  }
+});
+
 test('a fast remux of a downloaded movie starts from zero with real hls.js live controllers', () => {
   const previousSelf = global.self;
   global.self = globalThis;
@@ -65,7 +98,7 @@ test('seeks restart a stream for evicted back buffer and gaps instead of waiting
 });
 
 function playbackHarness() {
-  const instances = [], dispatched = [];
+  const instances = [], dispatched = [], eventDetails = [], timers = [], diagnostics = [], mediaHandlers = new Map();
   class FakeHls {
     static Events = { MANIFEST_PARSED: 'manifest', SUBTITLE_TRACKS_UPDATED: 'subs',
       LEVEL_SWITCHED: 'level', FRAG_BUFFERED: 'frag', ERROR: 'error' };
@@ -73,30 +106,146 @@ function playbackHarness() {
     constructor(config) { this.config = config; this.handlers = new Map(); this.subtitleTracks = []; instances.push(this); }
     on(event, handler) { this.handlers.set(event, handler); }
     loadSource(url) { this.url = url; }
-    attachMedia() {}
+    attachMedia(media) { this.media = media; }
     startLoad(position) { this.restartPosition = position; }
+    recoverMediaError() { this.recoveries = (this.recoveries || 0) + 1; this.media.load(); }
     destroy() { this.destroyed = true; }
   }
   const player = { currentTime: 0, readyState: 4, paused: false, buffered: { length: 0 },
-    pause() {}, removeAttribute() {}, load() { this.currentTime = 0; } };
+    pause() { this.paused = true; }, removeAttribute() {},
+    play() { this.paused = false; this.plays = (this.plays || 0) + 1; return Promise.resolve(); },
+    load() { this.currentTime = 0; this.buffered = { length: 0 }; },
+    addEventListener(event, handler) { if (!mediaHandlers.has(event)) mediaHandlers.set(event, new Set()); mediaHandlers.get(event).add(handler); },
+    removeEventListener(event, handler) { mediaHandlers.get(event)?.delete(handler); } };
   const context = vm.createContext({ player, Hls: FakeHls, URLSearchParams, DEBUG: false,
-    window: { Hls: FakeHls, dispatchEvent: event => dispatched.push(event.type) },
+    window: { Hls: FakeHls, dispatchEvent: event => { dispatched.push(event.type); eventDetails.push(event.detail); } },
     Event: function Event(type) { this.type = type; },
-    pendingPlayback: null, hlsPlayer: null, currentPlay: { id: 'tt1', magnet: 'magnet:test' },
+    CustomEvent: function CustomEvent(type, options) { this.type = type; this.detail = options.detail; },
+    setTimeout(handler) { const timer = { handler, cancelled: false }; timers.push(timer); return timer; },
+    clearTimeout(timer) { if (timer) timer.cancelled = true; },
+    pendingPlayback: null, mediaRecovery: null, playbackFailurePosition: null, playbackReady: false,
+    hlsPlayer: null, currentPlay: { id: 'tt1', magnet: 'magnet:test' },
     currentFile: 2, currentTrack: 0, currentSubs: -1, currentQuality: 'source',
+    currentVideoCodec: 'h264', remotePaused: false, trailerActive: false,
     streamStart: 0, streamRestarts: 0, maxStreamRestarts: 3, playbackSession: 'session',
     playerWrap: { hidden: false }, playerError: { hidden: true },
     stage() {}, closeTrailer() {}, updateQualityButtons() {}, fetchDuration() {},
-    dbg() {}, hlsLogSrc: value => value, autoPlay() {}, showDebug() {}, t: value => value,
+    dbg: message => diagnostics.push(message), hlsLogSrc: value => value,
+    autoPlay() { if (!context.mediaRecovery && !context.remotePaused && !context.trailerActive) player.play(); },
+    notify() {}, maybeSaveProgress() {}, showDebug() {}, t: value => value,
     bufferedAhead: () => 0,
   });
-  vm.runInContext(section('  function playbackHlsConfig(', '  // Запуск HLS-потока') +
+  vm.runInContext(section('  function clearMediaRecovery(', '  function stage(') +
+    section('  function bufferedContains(', '  // Абсолютная позиция:') +
+    section('  function playbackHlsConfig(', '  // Запуск HLS-потока') +
     section('  function playHls(', '  // Полная длительность файла'), context);
   context.playHls('tt1', 'magnet:test', 2, 0, 100, 'source', -1);
-  return { context, instances, dispatched };
+  return { context, instances, dispatched, eventDetails, diagnostics, timers,
+    runTimers() { const current = timers.splice(0); for (const timer of current) if (!timer.cancelled) timer.handler(); },
+    media(event) { for (const handler of [...(mediaHandlers.get(event) || [])]) handler(); },
+    ranges(ranges) { player.buffered = { length: ranges.length, start: index => ranges[index][0], end: index => ranges[index][1] }; } };
 }
 
 const missingFragment = { fatal: true, type: 'networkError', details: 'fragLoadError', response: { code: 404 } };
+const failedAppend = { fatal: true, type: 'mediaError', details: 'bufferAppendError', sourceBufferName: 'video',
+  error: { name: 'Error', message: 'video SourceBuffer error. MediaSource readyState: open', code: 0 },
+  frag: { sn: 45, start: 270, duration: 6 } };
+
+test('a fatal MSE append rebuilds only the browser buffer and resumes the same relative position after its range arrives', () => {
+  const f = playbackHarness(), active = f.instances[0], originalURL = active.url;
+  f.context.player.currentTime = 13.4; f.context.player.paused = false;
+  active.handlers.get('error')(null, failedAppend);
+  assert.equal(active.recoveries, undefined, 'Recovery is deferred until the SourceBuffer callback unwinds');
+  assert.equal(f.context.mediaRecovery.position, 13.4);
+  assert.equal(f.dispatched.length, 0);
+  f.runTimers();
+  assert.equal(active.recoveries, 1);
+  assert.equal(active.restartPosition, 13.4);
+  assert.equal(active.config.startPosition, 13.4, 'Late MEDIA_ATTACHED auto-start must not jump to zero');
+  assert.equal(active.url, originalURL);
+  assert.equal(f.instances.length, 1);
+  assert.equal(f.context.streamStart, 100);
+  assert.equal(f.context.currentQuality, 'source');
+  assert.equal(f.context.player.currentTime, 0, 'Detach genuinely recreates the MSE buffer');
+  f.ranges([[20, 30]]); f.media('canplay');
+  assert.equal(f.context.player.plays, undefined, 'An unrelated range must not start playback at zero');
+  f.ranges([[10, 20]]); f.media('progress');
+  assert.equal(f.context.player.currentTime, 13.4);
+  assert.equal(f.context.player.plays, 1);
+  assert.equal(f.context.mediaRecovery, null);
+  assert.equal(active.destroyed, undefined);
+  assert.equal(f.eventDetails.length, 0);
+});
+
+test('MSE recovery stops after two attempts even when prefetched fragments succeed between failures', () => {
+  const f = playbackHarness(), active = f.instances[0];
+  f.context.player.currentTime = 13; f.context.player.paused = false;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    active.handlers.get('error')(null, failedAppend); f.runTimers();
+    f.ranges([[10, 40]]);
+    active.handlers.get('frag')(null, { frag: { sn: attempt, start: 10 } });
+    assert.equal(active.recoveries, attempt);
+    assert.equal(f.context.player.currentTime, 13);
+  }
+  active.handlers.get('error')(null, failedAppend);
+  f.runTimers();
+  assert.equal(active.recoveries, 2);
+  assert.equal(f.context.hlsPlayer, null);
+  assert.equal(f.context.playbackReady, false, 'A failed stream must not remain ready for room synchronization');
+  assert.equal(active.destroyed, true);
+  assert.deepEqual(f.dispatched, ['playbackfailure']);
+  assert.match(f.eventDetails[0].message, /Браузер не смог обработать видеофрагмент.*восстановление не помогло/);
+  assert.equal(f.eventDetails[0].title, 'Просмотр прерван');
+  assert.match(f.diagnostics.join('\n'), /sourceBuffer=video.*frag=45 start=270 duration=6/);
+  assert.match(f.diagnostics.join('\n'), /message=video SourceBuffer error/);
+  assert.match(f.diagnostics.join('\n'), /поток перед остановкой: id=tt1 file=2 track=0 subs=-1 start=100 position=113.000 codec=h264 q=source/);
+});
+
+test('a failing replacement SourceBuffer cannot reset or lose the original recovery position before media is buffered', () => {
+  const f = playbackHarness(), active = f.instances[0];
+  f.context.player.currentTime = 29.5; f.context.player.paused = false;
+  active.handlers.get('error')(null, failedAppend);
+  active.handlers.get('error')(null, failedAppend);
+  f.runTimers();
+  assert.equal(active.recoveries, 1, 'Duplicate errors before the queued recovery share one attempt');
+  active.handlers.get('error')(null, failedAppend); f.runTimers();
+  assert.equal(active.recoveries, 2);
+  assert.equal(active.restartPosition, 29.5);
+  active.handlers.get('error')(null, failedAppend); f.runTimers();
+  assert.equal(active.recoveries, 2);
+  assert.equal(f.context.playbackFailurePosition, 129.5, 'The retry button retains the original absolute position after another failed reattach');
+  assert.deepEqual(f.dispatched, ['playbackfailure']);
+});
+
+test('MSE recovery respects both a local pause and a new pause commanded by the room host', () => {
+  for (const paused of [true, false]) {
+    const f = playbackHarness(), active = f.instances[0];
+    f.context.player.currentTime = 13; f.context.player.paused = paused;
+    active.handlers.get('error')(null, failedAppend); f.runTimers();
+    if (!paused) f.context.remotePaused = true;
+    f.ranges([[10, 40]]); f.media('canplay');
+    assert.equal(f.context.player.currentTime, 13);
+    assert.equal(f.context.player.paused, true);
+    assert.equal(f.context.player.plays, undefined);
+    assert.equal(f.context.mediaRecovery, null);
+  }
+});
+
+test('a queued MSE recovery from a replaced HLS stream cannot detach its successor', () => {
+  const f = playbackHarness(), old = f.instances[0];
+  f.context.player.currentTime = 13;
+  old.handlers.get('error')(null, failedAppend);
+  const staleCallback = f.timers[0].handler;
+  f.context.playHls('tt1', 'magnet:test', 2, 0, 500, 'source', -1);
+  const active = f.instances.at(-1);
+  staleCallback(); f.runTimers();
+  assert.equal(old.recoveries, undefined);
+  assert.equal(active.recoveries, undefined);
+  assert.equal(f.context.hlsPlayer, active);
+  assert.equal(f.context.mediaRecovery, null);
+  assert.equal(f.context.streamStart, 500);
+  assert.equal(f.dispatched.length, 0);
+});
 
 test('fragment timeouts retry the same stream at its relative position, with a bounded budget', () => {
   const f = playbackHarness(), active = f.instances[0];
@@ -159,6 +308,7 @@ function continuationHarness(position = 0) {
     playHls: (...args) => launches.push(args),
     window: { dispatchEvent: event => dispatched.push(event.type) },
     Event: function Event(type) { this.type = type; },
+    CustomEvent: function CustomEvent(type, options) { this.type = type; this.detail = options.detail; },
   });
   vm.runInContext(section('  function continueStream(', '  function toggleFullscreen('), context);
   return { context, launches, dispatched, position: value => { position = value; } };
@@ -193,4 +343,26 @@ test('legacy playback quality cannot request a transcoded stream', () => {
   assert.equal(query.get('start'), '157');
   assert.equal(query.get('track'), '1');
   assert.equal(f.context.currentQuality, 'source');
+});
+
+test('the loading overlay preserves the actual playback failure instead of replacing it with a source outage', () => {
+  const extras = fs.readFileSync(path.join(__dirname, '../web/playback-extras.js'), 'utf8');
+  const elements = new Map(), listeners = new Map();
+  const context = vm.createContext({ stage: '', since: 0, wrap: { hidden: false },
+    el(id) { if (!elements.has(id)) elements.set(id, {}); return elements.get(id); },
+    PP: { isFollower: () => false },
+    window: { addEventListener(event, handler) { listeners.set(event, handler); } },
+    video: { addEventListener() {} },
+  });
+  vm.runInContext(extras.slice(extras.indexOf('  const titles ='), extras.indexOf('  setInterval(')), context);
+  const message = 'Браузер не смог обработать видеофрагмент. Автоматическое восстановление не помогло.';
+  listeners.get('playbackfailure')({ detail: { title: 'Просмотр прерван', message } });
+  assert.equal(elements.get('loading-title').textContent, 'Просмотр прерван');
+  assert.equal(elements.get('loading-detail').textContent, message);
+  listeners.get('playbackfailure')({ detail: { title: 'Не удалось начать просмотр', message: 'Не удалось получить аудиодорожки.' } });
+  assert.equal(elements.get('loading-title').textContent, 'Не удалось начать просмотр');
+  assert.equal(elements.get('loading-detail').textContent, 'Не удалось получить аудиодорожки.');
+  listeners.get('playbackfailure')({});
+  assert.equal(elements.get('loading-title').textContent, 'Просмотр прерван');
+  assert.match(elements.get('loading-detail').textContent, /Воспроизведение прервалось/);
 });

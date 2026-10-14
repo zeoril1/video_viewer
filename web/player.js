@@ -66,6 +66,8 @@ const PP = (() => {
   let selectedAudio = null; // Track identity survives reordered/unnamed tracks across episodes.
   let tracksGeneration = 0;
   let pendingPlayback = null;
+  let mediaRecovery = null;
+  let playbackFailurePosition = null;
   let autoVoice = '';          // выбранная озвучка: loadTracks включит её дорожку
   let lastTracksItems = [];
   let currentFile = -1;        // индекс файла (серии) в торренте; -1 — авто
@@ -77,16 +79,28 @@ const PP = (() => {
   let lastProgressSend = 0;
   let playbackReady = false;
   let follower = false, remotePaused = false;
+  function clearMediaRecovery() {
+    const recovery = mediaRecovery;
+    mediaRecovery = null;
+    if (recovery) recovery.cancel();
+  }
   function stage(stage, message) {
     window.dispatchEvent(new CustomEvent('playbackstage', { detail: { stage, message } }));
   }
   function autoPlay() {
-    if (pendingPlayback) return;
+    if (pendingPlayback || mediaRecovery || playbackFailurePosition != null) return;
     if (remotePaused) {
       stage('paused', 'Просмотр на паузе.');
       return;
     }
-    if (!trailerActive) player.play().catch(() => stage('paused', 'Нажмите ▶, чтобы начать просмотр.'));
+    if (!trailerActive) {
+      const attemptedHls = hlsPlayer, attemptedPlay = currentPlay, attemptedStart = streamStart;
+      player.play().catch(() => {
+        if (pendingPlayback || mediaRecovery || playbackFailurePosition != null || trailerActive
+            || attemptedHls !== hlsPlayer || attemptedPlay !== currentPlay || attemptedStart !== streamStart) return;
+        stage('paused', 'Нажмите ▶, чтобы начать просмотр.');
+      });
+    }
   }
   let lastSavedSample = '';
   let cacheKeepKey = '';       // раздача#серия, для которых уже запрошен тёплый кеш
@@ -298,6 +312,8 @@ const PP = (() => {
   // Resolve tracks before opening HLS. Starting a provisional stream and then
   // restarting it at currentTime can turn an episode transition into a seek.
   function beginPlayback(id, magnet, file, track, position, quality) {
+    clearMediaRecovery();
+    playbackFailurePosition = null;
     const pending = { id, magnet, file, position, quality: currentQuality };
     pendingPlayback = pending;
     playbackReady = false;
@@ -314,8 +330,9 @@ const PP = (() => {
       if (pendingPlayback !== pending) return;
       pendingPlayback = null;
       if (!ready) {
-        stage('error', 'Не удалось получить дорожки. Повторите запуск или выберите другой источник.');
-        window.dispatchEvent(new Event('playbackfailure'));
+        const message = 'Не удалось получить аудиодорожки и сведения о видео с сервера. Повторите запуск или выберите другой источник.';
+        stage('error', message);
+        window.dispatchEvent(new CustomEvent('playbackfailure', { detail: { title: 'Не удалось начать просмотр', message } }));
         return;
       }
       playHls(id, magnet, file, currentTrack, pending.position, pending.quality, currentSubs);
@@ -329,6 +346,8 @@ const PP = (() => {
       streamStart = pendingPlayback.position;
       return;
     }
+    clearMediaRecovery();
+    playbackFailurePosition = null;
  stage('preparing');
     closeTrailer();
     playbackReady = false;
@@ -370,9 +389,133 @@ const PP = (() => {
         + ' start=' + hlsConfig.startPosition + ' buffer=' + hlsConfig.maxBufferLength + '/' + hlsConfig.maxMaxBufferLength + 's'
         + ' | плеер readyState=' + player.readyState + ' t=' + Math.round(player.currentTime || 0));
       const hls = new Hls(hlsConfig);
+      let mediaRecoveryAttempts = 0;
+      const maxMediaRecoveryAttempts = 2;
       hlsPlayer = hls;
       hls.loadSource(src);
       hls.attachMedia(player);
+      function bufferedRanges() {
+        const ranges = [];
+        try {
+          for (let index = 0; index < player.buffered.length; index++) {
+            ranges.push(player.buffered.start(index).toFixed(3) + '-' + player.buffered.end(index).toFixed(3));
+          }
+        } catch (_) { ranges.push('unavailable'); }
+        return '[' + ranges.join(', ') + ']';
+      }
+      function errorText(data, exhausted) {
+        if (data.type === 'mediaError') {
+          if (['bufferAppendError', 'bufferAppendingError', 'bufferStalledError'].includes(data.details)) {
+            return exhausted
+              ? 'Браузер не смог обработать видеофрагмент. Автоматическое восстановление не помогло. Повторите запуск или выберите другой источник.'
+              : 'Браузер не смог обработать видеофрагмент. Повторите запуск или выберите другой источник.';
+          }
+          if (['bufferAddCodecError', 'bufferIncompatibleCodecsError'].includes(data.details)) {
+            return 'Браузер не поддерживает формат видео или аудио выбранного источника. Выберите другой источник.';
+          }
+          return 'Браузер не смог разобрать видеофрагмент. Повторите запуск или выберите другой источник.';
+        }
+        if (data.details === 'manifestIncompatibleCodecsError') {
+          return 'Браузер не поддерживает формат видео или аудио выбранного источника. Выберите другой источник.';
+        }
+        if (data.response && data.response.code === 503) {
+          return 'Сервер занят или достигнут лимит диска. Подождите немного и повторите запуск.';
+        }
+        if (data.response && data.response.code === 404) {
+          return 'Серверная сессия видео недоступна. Автоматическое восстановление не помогло. Повторите запуск с текущей позиции.';
+        }
+        if (data.type === 'networkError') {
+          return data.details && /TimeOut$/.test(data.details)
+            ? 'Сервер не передал видео вовремя. Автоматические повторы не помогли. Повторите запуск.'
+            : 'Не удалось получить видео с сервера. Повторите запуск или выберите другой источник.';
+        }
+        return 'Воспроизведение прервалось. Повторите запуск или выберите другой источник.';
+      }
+      function fail(data, exhausted = false) {
+        if (hlsPlayer !== hls) return;
+        const position = mediaRecovery && mediaRecovery.hls === hls
+          ? streamStart + mediaRecovery.position : streamStart + (player.currentTime || 0);
+        dbg('hls: поток перед остановкой: id=' + id + ' file=' + currentFile + ' track=' + currentTrack
+          + ' subs=' + currentSubs + ' start=' + streamStart + ' position=' + position.toFixed(3)
+          + ' codec=' + (currentVideoCodec || '?') + ' q=' + currentQuality + ' [' + hlsLogSrc(src) + ']');
+        const message = errorText(data, exhausted);
+        const technical = [data.type, data.details].filter(Boolean).join(' / ')
+          + (data.response ? ' (HTTP ' + data.response.code + ')' : '');
+        const hadPlayback = playbackReady || position > streamStart;
+        playbackFailurePosition = position;
+        maybeSaveProgress(true);
+        playbackReady = false;
+        clearMediaRecovery();
+        window.dispatchEvent(new CustomEvent('playbackfailure', { detail: {
+          title: hadPlayback ? 'Просмотр прерван' : 'Не удалось начать просмотр',
+          message, type: data.type, details: data.details,
+          status: data.response && data.response.code,
+        } }));
+        hlsPlayer = null;
+        hls.destroy();
+        playerError.textContent = message + (technical ? ' — ' + technical : '');
+        playerError.hidden = false;
+        showDebug();
+        if (typeof playerError.scrollIntoView === 'function') playerError.scrollIntoView({ block: 'nearest' });
+      }
+      function recoverMedia() {
+        if (mediaRecovery && mediaRecovery.hls === hls && mediaRecovery.phase === 'queued') return true;
+        if (mediaRecoveryAttempts >= maxMediaRecoveryAttempts) return false;
+        const previous = mediaRecovery && mediaRecovery.hls === hls ? mediaRecovery : null;
+        const position = previous ? previous.position : Math.max(0, player.currentTime || 0);
+        const paused = previous ? previous.paused : player.paused;
+        clearMediaRecovery();
+        mediaRecoveryAttempts++;
+        playbackReady = false;
+        let timer;
+        const events = ['loadeddata', 'canplay', 'progress', 'seeked'];
+        const recovery = { hls, position, paused, phase: 'queued', cancel() {
+          clearTimeout(timer);
+          for (const event of events) player.removeEventListener(event, restore);
+        } };
+        function restore() {
+          if (hlsPlayer !== hls || mediaRecovery !== recovery || recovery.phase !== 'loading') return;
+          if (player.readyState < 2 || !bufferedContains(streamStart + recovery.position)) return;
+          try { player.currentTime = recovery.position; }
+          catch (_) { return; }
+          const stayPaused = recovery.paused || remotePaused || trailerActive;
+          clearMediaRecovery();
+          playbackReady = true;
+          if (stayPaused) {
+            player.pause();
+            stage('paused', remotePaused ? 'Просмотр на паузе у ведущего.' : 'Просмотр на паузе.');
+          } else {
+            stage('buffering', 'Позиция восстановлена. Возобновляем просмотр.');
+            autoPlay();
+          }
+          notify();
+        }
+        recovery.restore = restore;
+        mediaRecovery = recovery;
+        dbg('hls: восстанавливаем медиабуфер браузера с ' + position.toFixed(3) + 's (попытка '
+          + mediaRecoveryAttempts + '/' + maxMediaRecoveryAttempts + '); серверный поток сохраняется');
+        stage('buffering', 'Восстанавливаем видеоплеер с текущей позиции.');
+        // SourceBuffer's error callback is still on its operation queue. Let it
+        // unwind before detaching MSE; recovery recreates only the browser buffer.
+        timer = setTimeout(() => {
+          if (hlsPlayer !== hls || mediaRecovery !== recovery) return;
+          recovery.phase = 'recovering';
+          for (const event of events) player.addEventListener(event, restore);
+          try {
+            // MEDIA_ATTACHED can run later and auto-start using this config.
+            // Keep that automatic start on the same relative playback position.
+            hls.config.startPosition = recovery.position;
+            hls.recoverMediaError();
+            hls.startLoad(recovery.position);
+            recovery.phase = 'loading';
+            restore();
+          } catch (error) {
+            dbg('hls: восстановление медиабуфера не удалось: ' + hlsLogSrc(error.message || String(error)));
+            fail({ type: 'mediaError', details: 'bufferAppendError', error }, true);
+          }
+        }, 0);
+        return true;
+      }
       // The subtitle list can arrive after MANIFEST_PARSED (a separate playlist).
       hls.on(Hls.Events.SUBTITLE_TRACKS_UPDATED, () => {
         if (hlsPlayer !== hls) return;
@@ -406,6 +549,7 @@ const PP = (() => {
           + ' | ' + (stats.total || 0) + ' bytes / ' + Math.round(milliseconds) + 'ms'
           + ' | первый байт=' + Math.round(firstByteMs) + 'ms'
           + ' | buffer=' + bufferedAhead().toFixed(1) + 's');
+        if (mediaRecovery && mediaRecovery.hls === hls) mediaRecovery.restore();
       });
       hls.on(Hls.Events.ERROR, (_evt, data) => {
         // Игнорируем ошибки от уже заменённого потока.
@@ -413,10 +557,27 @@ const PP = (() => {
         const resp = data && data.response ? ' (http ' + data.response.code + ')' : '';
         dbg('hls: ERROR type=' + (data && data.type) + ' details=' + (data && data.details)
           + ' fatal=' + !!(data && data.fatal) + resp);
+        const error = data && (data.error || data.err), fragment = data && data.frag;
+        if (error || (data && (data.reason || data.sourceBufferName))) {
+          dbg('hls: причина: name=' + (error && error.name || '?') + ' code=' + (error && error.code || 0)
+            + ' message=' + hlsLogSrc(String(error && error.message || '').replace(/[\r\n]+/g, ' '))
+            + ' reason=' + hlsLogSrc(String(data && data.reason || '').replace(/[\r\n]+/g, ' ')));
+        }
+        dbg('hls: медиабуфер: sourceBuffer=' + (data && data.sourceBufferName || '?')
+          + ' mediaError=' + (player.error ? player.error.code + ':' + hlsLogSrc(player.error.message || '') : 'none')
+          + ' readyState=' + player.readyState + ' t=' + Number(player.currentTime || 0).toFixed(3)
+          + ' ranges=' + bufferedRanges()
+          + (fragment ? ' frag=' + fragment.sn + ' start=' + fragment.start + ' duration=' + fragment.duration : ''));
         // Фатальная ошибка: на сырой поток не фолбэчим — там AC3/DTS, звука не будет.
         // Плеер не скрываем: можно выбрать другую дорожку или исходную раздачу
         // с поддерживаемым браузером кодеком (например, H.264).
         if (data && data.fatal) {
+          if (data.type === 'mediaError'
+              && ['bufferAppendError', 'bufferAppendingError', 'bufferStalledError'].includes(data.details)) {
+            if (recoverMedia()) return;
+            fail(data, true);
+            return;
+          }
           // Retry the existing server stream after hls.js exhausts its request
           // retries. Do not discard downloaded media or change the source.
           if (data.type === 'networkError' && data.details === 'fragLoadTimeOut'
@@ -443,19 +604,7 @@ const PP = (() => {
             playHls(currentPlay.id, currentPlay.magnet, currentFile, currentTrack, restartPos, currentQuality, currentSubs);
             return;
           }
-          window.dispatchEvent(new Event('playbackfailure'));
- if(data.response&&data.response.code===503)stage('error','Сервер занят или достигнут лимит диска. Подождите немного и повторите запуск.');
-          if (hlsPlayer === hls) hlsPlayer = null;
-          hls.destroy();
-          const detail = [data.type, data.details].filter(Boolean).join(' / ') + resp;
-          // Показываем и технические детали ошибки — видно реальную причину (кодек, 502, таймаут).
-          playerError.textContent = t('playbackError') + (detail ? ' — ' + detail : '');
-          playerError.hidden = false;
-          showDebug();
-          // Сообщение идёт перед селекторами дорожек — доскроллим до него.
-          if (typeof playerError.scrollIntoView === 'function') {
-            playerError.scrollIntoView({ block: 'nearest' });
-          }
+          fail(data);
         }
       });
     } else if (player.canPlayType && player.canPlayType('application/vnd.apple.mpegurl')) {
@@ -875,6 +1024,8 @@ const PP = (() => {
   // Абсолютная позиция: streamStart + currentTime (при перемотке ffmpeg стартует с позиции).
   function absTime() {
     if (completedPlayback && totalDuration > 0) return totalDuration;
+    if (playbackFailurePosition != null) return playbackFailurePosition;
+    if (mediaRecovery && mediaRecovery.hls === hlsPlayer) return streamStart + mediaRecovery.position;
     return streamStart + (player.currentTime || 0);
   }
 
@@ -915,7 +1066,7 @@ const PP = (() => {
       const dur = totalDuration || streamStart + (player.duration || 0);
       const target = Math.max(0, Math.min(dur, frac * dur));
       completedPlayback = false;
-      if (bufferedContains(target)) {
+      if (!mediaRecovery && bufferedContains(target)) {
         player.currentTime = target - streamStart;
       } else if (isFinite(target) && currentPlay) {
         seekTo(target);
@@ -941,7 +1092,7 @@ const PP = (() => {
     const dur = totalDuration || streamStart + (player.duration || 0);
     const target = Math.max(0, isFinite(dur) ? Math.min(dur, absTime() + delta) : absTime() + delta);
     completedPlayback = false;
-    if (bufferedContains(target)) {
+    if (!mediaRecovery && bufferedContains(target)) {
       player.currentTime = target - streamStart;
     } else if (isFinite(target)) {
       seekTo(target);
@@ -962,7 +1113,7 @@ const PP = (() => {
       playerError.textContent = message;
       playerError.hidden = false;
       stage('error', message);
-      window.dispatchEvent(new Event('playbackfailure'));
+      window.dispatchEvent(new CustomEvent('playbackfailure', { detail: { title: 'Просмотр прерван', message } }));
       return true;
     }
     dbg('hls: продолжение файла с ' + position.toFixed(1) + 's / ' + totalDuration.toFixed(1) + 's');
@@ -1213,6 +1364,7 @@ const PP = (() => {
 
   // Остановка: гасим поток и прячем плеер (карточка фильма при этом остаётся на месте).
   function stop(opts) {
+    clearMediaRecovery();
     pendingPlayback = null;
  if(currentPlay)leave();
  window.dispatchEvent(new Event("playbackstop"));
@@ -1245,6 +1397,7 @@ const PP = (() => {
     currentSubtitles = [];
     totalDuration = 0;
     currentPlay = null;
+    playbackFailurePosition = null;
     completedPlayback = false;
     currentFile = -1;
     lastFiles = [];
@@ -1273,7 +1426,7 @@ const PP = (() => {
     showNote,
     saveProgress: maybeSaveProgress,
     hide: () => { if (playerWrap) playerWrap.hidden = true; },
-    ready: () => !pendingPlayback && (playbackReady || player.readyState >= 2),
+    ready: () => !pendingPlayback && !mediaRecovery && playbackFailurePosition == null && (playbackReady || player.readyState >= 2),
     setFollower: value => {
       follower = value;
       window.dispatchEvent(new CustomEvent('playbackrole', { detail: { follower } }));
@@ -1290,16 +1443,16 @@ const PP = (() => {
     selectSubtitle: ordinal => {
       if (currentPlay) subsSelect(currentPlay.id, currentPlay.magnet, ordinal, false);
     },
-    canSeekBuffered: (target, minimumAhead = 0) => !pendingPlayback && bufferedContains(target, minimumAhead),
+    canSeekBuffered: (target, minimumAhead = 0) => !pendingPlayback && !mediaRecovery && playbackFailurePosition == null && bufferedContains(target, minimumAhead),
     seekBuffered: target => {
-      if (!currentPlay || pendingPlayback || !bufferedContains(target)) return false;
+      if (!currentPlay || pendingPlayback || mediaRecovery || playbackFailurePosition != null || !bufferedContains(target)) return false;
       completedPlayback = false;
       player.currentTime = target - streamStart;
       return true;
     },
     seek: target => {
       completedPlayback = false;
-      if (bufferedContains(target)) player.currentTime = target - streamStart;
+      if (!mediaRecovery && bufferedContains(target)) player.currentTime = target - streamStart;
       else seekTo(target);
     },
     skipSegment: target => {
@@ -1316,7 +1469,7 @@ const PP = (() => {
         return true;
       }
       completedPlayback = false;
-      if (bufferedContains(target)) player.currentTime = target - streamStart;
+      if (!mediaRecovery && bufferedContains(target)) player.currentTime = target - streamStart;
       else seekTo(target);
       return false;
     },

@@ -198,7 +198,15 @@ const WatchRoom = (() => {
     hostUpdatePending=true;
     if(!busy){clearTimeout(timer);tick();}
   }
-  video.addEventListener('play',changed);video.addEventListener('pause',changed);video.addEventListener('seeked',changed);
+  window.addEventListener('playbackfailure',()=>{
+    // A terminal failure makes PP.ready() false before MSE is detached, so its
+    // ensuing pause event cannot publish through changed(). Pause the room at
+    // the retained failure position; transient MSE recovery emits no failure.
+    if(!room||!token||suspended)return;
+    hostPaused=true;hostUpdatePending=true;
+    if(!busy){clearTimeout(timer);return tick();}
+  });
+  video.addEventListener('play',changed);video.addEventListener('playing',changed);video.addEventListener('pause',changed);video.addEventListener('seeked',changed);
   // Guests can grant browser autoplay with a click, but do not change room state.
   video.addEventListener('click',e=>{if(room&&!token){e.stopImmediatePropagation();if(video.paused&&!pendingPaused)video.play().catch(()=>{});}},true);
   for(const name of ['loadeddata','canplay','playing','progress','seeked'])video.addEventListener(name,applyRemoteState);

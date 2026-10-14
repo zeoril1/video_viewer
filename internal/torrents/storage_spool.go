@@ -133,8 +133,9 @@ type spoolPiece struct {
 	segs   []pieceSeg
 
 	// mu защищает complete; записи/чтения данных координируются в st.mu.
-	mu       sync.Mutex
-	complete bool
+	mu          sync.Mutex
+	complete    bool
+	wasComplete bool // keep strict reads after invalidation until repaired; retries must not serve zeroes
 }
 
 var (
@@ -376,6 +377,20 @@ func (f *spoolFile) reader() *os.File {
 	return f.f
 }
 
+func (f *spoolFile) hasWrittenRange(begin, end int64) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, r := range f.ranges {
+		if r.begin > begin {
+			return false
+		}
+		if r.end >= end {
+			return true
+		}
+	}
+	return false
+}
+
 // writeAt пишет данные серии, создавая её файл при первой записи (лениво —
 // место выделяется только под качаемые серии).
 func (f *spoolFile) writeAt(off int64, b []byte) (int, error) {
@@ -455,6 +470,9 @@ func (p *spoolPiece) ReadAt(b []byte, off int64) (int, error) {
 	}
 
 	end := min(off+int64(len(b)), p.length)
+	p.mu.Lock()
+	strict := p.wasComplete
+	p.mu.Unlock()
 	ready := false
 	for _, s := range p.segs {
 		if s.file.reader() != nil {
@@ -463,6 +481,9 @@ func (p *spoolPiece) ReadAt(b []byte, off int64) (int, error) {
 		}
 	}
 	if !ready {
+		if strict {
+			_ = p.MarkNotComplete()
+		}
 		return 0, io.EOF
 	}
 
@@ -475,13 +496,25 @@ func (p *spoolPiece) ReadAt(b []byte, off int64) (int, error) {
 		}
 		lo, hi := max(off, s.pieceOff), min(end, s.pieceOff+s.length)
 		dst := b[lo-off : hi-off]
+		fileOff := s.fileOff + (lo - s.pieceOff)
 
 		f := s.file.reader()
+		// A formerly verified piece may have lost a file or a written range.
+		// Never make the torrent reader publish synthetic zeroes in that case:
+		// its retry resynchronizes Completion and waits for a repaired piece.
+		if strict && (f == nil || !s.file.hasWrittenRange(fileOff, fileOff+int64(len(dst)))) {
+			_ = p.MarkNotComplete()
+			return 0, io.EOF
+		}
 		if f == nil {
 			clear(dst) // серия ещё не качалась
 			continue
 		}
-		n, err := f.ReadAt(dst, s.fileOff+(lo-s.pieceOff))
+		n, err := f.ReadAt(dst, fileOff)
+		if strict && n < len(dst) {
+			_ = p.MarkNotComplete()
+			return 0, io.EOF
+		}
 		if n < len(dst) {
 			clear(dst[n:]) // хвост серии ещё не записан
 		}
@@ -527,6 +560,7 @@ func (p *spoolPiece) WriteAt(b []byte, off int64) (int, error) {
 func (p *spoolPiece) MarkComplete() error {
 	p.mu.Lock()
 	p.complete = true
+	p.wasComplete = true
 	p.mu.Unlock()
 	return nil
 }

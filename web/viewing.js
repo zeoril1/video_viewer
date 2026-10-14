@@ -19,13 +19,25 @@
     options.signal = controller.signal;
     let timeout;
     try {
-      await Promise.race([
+      const response = await Promise.race([
         fetch('/api/stream/viewing', options),
         new Promise((_, reject) => {
           timeout = setTimeout(() => { controller.abort(); reject(new Error('Viewing heartbeat timed out')); }, 8000);
         }),
       ]);
-    } catch (_) {
+      if (!response.ok) throw new Error('HTTP ' + response.status);
+    } catch (error) {
+      // A rejected heartbeat also means the server did not renew the stream.
+      // Retain playback and expose the failure in the player's diagnostics;
+      // the next heartbeat still reports the latest seek/track parameters.
+      if (typeof dbg === 'function') {
+        const detail = error && error.message ? error.message : 'request failed';
+        const state = method === 'POST'
+          ? ' | file=' + body.file + ' start=' + body.stream_start + ' position=' + body.position
+            + ' track=' + body.track + ' subs=' + body.subs
+          : '';
+        dbg('viewing: ' + method + ' ' + detail + state);
+      }
       // The next heartbeat retries with the current playback position.
     } finally {
       clearTimeout(timeout);

@@ -33,12 +33,12 @@ const PlaybackExtras = (() => {
   el('loading-state').className='playback-loading';
   wrap.append(el('loading-state'));
   let stage = '', since = 0;
-  const titles = {searching:'Ищем источник', preparing:'Подключаемся к источнику', buffering:'Буферизуем видео', error:'Не удалось начать просмотр', paused:'Готово к просмотру'};
-  function loading(next, message) {
+  const titles = {searching:'Ищем источник', preparing:'Подключаемся к источнику', buffering:'Буферизуем видео', error:'Просмотр прерван', paused:'Готово к просмотру'};
+  function loading(next, message, title) {
     stage = next; since = Date.now();
     if(next==='searching')wrap.hidden=false;
     el('loading-state').hidden = !next;
-    el('loading-title').textContent = titles[next] || next;
+    el('loading-title').textContent = title || titles[next] || next;
     el('loading-detail').textContent = message || (next === 'preparing' ? 'Получаем данные и подготавливаем поток.' : 'Ждём первые кадры.');
     el('loading-retry').hidden = next !== 'error' && next !== 'paused';
     el('loading-source').hidden = PP.isFollower() || next !== 'error';
@@ -46,7 +46,9 @@ const PlaybackExtras = (() => {
   window.addEventListener('playbackstage', e => loading(e.detail.stage, e.detail.message));
   video.addEventListener('playing', () => loading(''));
   video.addEventListener('waiting', () => { if (PP.playing()) loading('buffering'); });
-  window.addEventListener('playbackfailure', () => loading('error','Источник недоступен, сервер занят или формат не поддерживается. Повторите запуск или выберите другой источник.'));
+  window.addEventListener('playbackfailure', e => loading('error',
+    e.detail && e.detail.message || 'Воспроизведение прервалось. Повторите запуск или выберите другой источник.',
+    e.detail && e.detail.title));
   window.addEventListener('playbackstop', () => loading(''));
   setInterval(() => {
     if (!['searching','preparing','buffering'].includes(stage)) return;

@@ -23,6 +23,9 @@ function posterSrc(url) {
 // на странице просмотра; на остальных логи идут только в консоль).
 const DEBUG = new URLSearchParams(location.search).has('debug');
 let debugLines = [];
+const debugPlaybackContext = new Map();
+const debugFailures = [];
+let debugRetainErrorDetails = false;
 
 function debugEl() {
   return document.getElementById('player-debug');
@@ -30,13 +33,29 @@ function debugEl() {
 
 function renderDebug() {
   const el = debugEl();
-  if (el) el.textContent = debugLines.join('\n');
+  if (el) {
+    // Fast prefetch must not erase the launch parameters or the first failure.
+    const retained = [...debugPlaybackContext.values(), ...debugFailures]
+      .filter(line => !debugLines.includes(line));
+    el.textContent = [...retained, ...debugLines].join('\n');
+  }
 }
 
 function dbg(msg) {
   const line = '[' + new Date().toLocaleTimeString() + '] ' + msg;
+  if (msg.startsWith('playHls:')) debugPlaybackContext.set('launch', line);
+  else if (msg.startsWith('hls.js: создаём поток') || msg.startsWith('HLS:')) debugPlaybackContext.set('player', line);
+  else if (msg.startsWith('tracks: id=')) debugPlaybackContext.set('tracks', line);
+  const fatal = /hls: ERROR.*fatal=true|hls: ФАТАЛЬНАЯ/.test(msg);
+  if (msg.startsWith('hls: ERROR')) debugRetainErrorDetails = fatal;
+  const failureDetail = /^hls: (причина:|медиабуфер:|поток перед остановкой:)/.test(msg);
+  if (fatal || (debugRetainErrorDetails && failureDetail)) {
+    debugFailures.push(line);
+    if (debugFailures.length > 12) debugFailures.shift();
+  }
+  if (!fatal && !failureDetail) debugRetainErrorDetails = false;
   debugLines.push(line);
-  if (debugLines.length > 40) debugLines.shift();
+  if (debugLines.length > 200) debugLines.shift();
   console.log(line);
   const el = debugEl();
   if (el && !el.hidden) renderDebug();
