@@ -62,14 +62,14 @@ const FilmFeatures = (() => {
     }
     toggle("watchlist", id, text("＋ Смотреть позже", "+ Watch later"), text("✓ В списке", "✓ In watchlist"), snap);
     toggle("watched", id, text("Отметить просмотренным", "Mark as watched"), text("✓ Просмотрено", "✓ Watched"), snap, secondary, true);
+    toggle(
+      "follow",
+      id,
+      isSeriesKind(it.kind) ? text("Подписаться", "Follow series") : text("Следить за выходом", "Follow release"),
+      text("✓ Подписка оформлена", "✓ Following"),
+      snap,
+    );
     if (isSeriesKind(it.kind)) {
-      toggle(
-        "follow",
-        id,
-        text("Подписаться", "Follow series"),
-        text("✓ Подписка оформлена", "✓ Following"),
-        snap,
-      );
       const season = typeof selectedSeason !== "undefined" ? selectedSeason : null;
       const knownSeasons = typeof allKnownSeasons === "function"
         ? allKnownSeasons(id, typeof lastSourceItems !== "undefined" ? lastSourceItems : [])

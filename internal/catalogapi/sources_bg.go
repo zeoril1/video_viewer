@@ -259,12 +259,11 @@ func (m *sourcesManager) run(ctx context.Context, filmID string) error {
 		return ctx.Err()
 	}
 	if len(items) == 0 {
-		if searchErr != nil && !trackers.succeeded() {
+		if searchErr != nil {
 			return searchErr
 		}
 		// Пустая выдача — не ошибка HTTP.
 		log.Printf("sources: %s: поиск пуст (0 вариантов)", filmID)
-		return nil
 	}
 
 	// Сезоны трекера приводим к нумерации TMDB по году: у трекеров дробная нарезка (S14 = TMDB-сезон 10), иначе в UI появлялись лишние сезоны.

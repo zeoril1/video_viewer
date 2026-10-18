@@ -38,7 +38,7 @@ go=url=>fixture.navigation.push(url);
 `;
 }
 
-async function scenario(browser, { pageType = 'watch', series = false, theme = 'dark', viewport, tv = false, failed = true, initialRelease = old.title } = {}) {
+async function scenario(browser, { pageType = 'watch', series = false, theme = 'dark', viewport, tv = false, failed = true, initialRelease = old.title, identityMismatch = false } = {}) {
   const context = await browser.newContext({ viewport: viewport || { width: 1280, height: 900 } });
   const page = await context.newPage();
   const errors = [], requests = [], waiters = [], pending = new Set();
@@ -50,6 +50,7 @@ async function scenario(browser, { pageType = 'watch', series = false, theme = '
   };
   await context.route('**/*', async route => {
     const url = new URL(route.request().url());
+    if (url.pathname.endsWith('/source-check')) return route.fulfill({ contentType: 'application/json', body: JSON.stringify({status: identityMismatch ? 'mismatch' : 'matched'}) });
     if (/\/api\/films\/[^/]+\/(sources|files)$/.test(url.pathname)) {
       const item = { kind: path.basename(url.pathname), url: url.href,
         body: route.request().postDataJSON(), claimed: false,
@@ -81,7 +82,7 @@ async function scenario(browser, { pageType = 'watch', series = false, theme = '
           document.getElementById('player-wrap').hidden=false;
           document.getElementById('film-watch-layout')?.removeAttribute('hidden');
           document.getElementById('film-playback-column')?.removeAttribute('hidden');
-        </script><script src="/source-picker.js"></script><script src="/playback-extras.js"></script>
+        </script><script src="/source-identity.js"></script><script src="/source-picker.js"></script><script src="/playback-extras.js"></script>
         <script>${escape}</script><script src="/recovery.js"></script><script src="/tv.js"></script></body>`);
       return route.fulfill({ contentType: 'text/html; charset=utf-8', body: html });
     }
@@ -112,6 +113,26 @@ async function scenario(browser, { pageType = 'watch', series = false, theme = '
   const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROMIUM_PATH,
     args: ['--no-sandbox'] });
   try {
+    {
+      const s = await scenario(browser, { failed: false, identityMismatch: true });
+      try {
+        await s.page.evaluate(async () => {
+          await SourceIdentity.check({id:fixture.state.id,magnet:fixture.state.magnet,title:fixture.release});
+          window.dispatchEvent(new CustomEvent('sourceidentityfailure',{detail:{id:fixture.state.id,magnet:fixture.state.magnet}}));
+        });
+        const sources = s.request('sources');
+        await s.open('#playback-source-change');
+        await (await sources).respond({items:inventory,status:'ready'});
+        await s.page.waitForFunction(() => document.querySelectorAll('#source-picker-list input').length===2);
+        assert.equal(await s.page.locator('#source-picker-list .source-picker-current').count(),0,
+          'the wrong current release cannot be reinserted even if a stale response still includes it');
+        assert.equal(await s.page.locator('#source-picker-list').textContent().then(text=>text.includes(old.title)),false);
+        assert.match(await s.page.locator('#playback-source-label').textContent(),/другому произведению/);
+        assert.equal(await s.page.evaluate(() => fixture.starts.length),0);
+        assert.deepEqual(s.errors,[]);
+        console.log('PASS: a confirmed wrong series is removed from both current-source reinsertion and stale picker results.');
+      } finally {await s.close();}
+    }
     for (const pageType of ['film', 'watch']) {
       const s = await scenario(browser, { pageType, series: pageType === 'film', failed: false });
       try {

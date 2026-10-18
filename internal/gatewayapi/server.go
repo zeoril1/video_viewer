@@ -53,6 +53,7 @@ func NewServer(cfg Config) http.Handler {
 	// ---- Стриминг (stream-сервис) ----
 	mux.HandleFunc("GET /api/films/{id}/files", proxyTo(cfg.StreamURL))
 	mux.HandleFunc("POST /api/films/{id}/files", proxyTo(cfg.StreamURL))
+	mux.HandleFunc("POST /api/films/{id}/source-check", proxyTo(cfg.CatalogURL))
 	mux.HandleFunc("GET /api/films/{id}/tracks", proxyTo(cfg.StreamURL))
 	mux.HandleFunc("GET /api/films/{id}/hls.m3u8", proxyTo(cfg.StreamURL))
 	mux.HandleFunc("GET /api/films/{id}/hls/stop", proxyTo(cfg.StreamURL))
@@ -75,6 +76,7 @@ func NewServer(cfg Config) http.Handler {
 	mux.HandleFunc("POST /api/stream/prepare", proxyTo(cfg.StreamURL))
 	mux.HandleFunc("/api/personal", proxyTo(cfg.AuthURL))
 	mux.HandleFunc("/api/personal/", proxyTo(cfg.AuthURL))
+	mux.HandleFunc("/api/notifications/", proxyTo(cfg.AuthURL))
 	mux.HandleFunc("/api/discover/", proxyTo(cfg.CatalogURL))
 	mux.HandleFunc("GET /api/films/{id}/explore", proxyTo(cfg.CatalogURL))
 	mux.HandleFunc("GET /api/films/{id}/watch-order", proxyTo(cfg.CatalogURL))

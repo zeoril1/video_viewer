@@ -1,0 +1,30 @@
+.telegram-notifications {
+  margin: 22px 0;
+  padding: 22px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--panel);
+}
+.telegram-notifications[hidden] { display: none; }
+.telegram-notifications h2 { margin: 0; font-size: 19px; }
+.telegram-heading { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.telegram-badge {
+  padding: 4px 9px;
+  border-radius: 7px;
+  background: var(--panel-2);
+  color: var(--muted);
+  font-size: 12px;
+}
+.telegram-badge.enabled { color: var(--success); }
+.telegram-notifications p { max-width: 75ch; margin: 12px 0; line-height: 1.55; color: var(--muted); }
+.telegram-notifications .telegram-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 15px; }
+.telegram-notifications .telegram-actions > * { margin: 0; }
+.telegram-notifications .telegram-status { color: var(--text); margin-bottom: 0; overflow-wrap: anywhere; }
+.telegram-notifications .telegram-status.error { color: var(--danger, var(--text)); }
+.telegram-notifications .telegram-connect { text-decoration: none; }
+.telegram-notifications .telegram-help { font-size: 13px; }
+@media (max-width: 600px) {
+  .telegram-notifications { padding: 17px; }
+  .telegram-notifications .telegram-actions { align-items: stretch; }
+  .telegram-notifications .telegram-actions > * { min-height: 42px; }
+}

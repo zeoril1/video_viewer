@@ -22,7 +22,7 @@
         d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0"),
       );
     const jobs = [];
-    for (const sub of Personal.list("follow"))
+    for (const sub of Personal.list("follow").filter(sub => isSeriesKind(sub.data.kind)))
       for (const month of dates) jobs.push({ it: sub.data, month });
     let index = 0,
       failures = 0;

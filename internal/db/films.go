@@ -215,6 +215,9 @@ func (r *Repo) EnsureSchema(ctx context.Context) error {
 	if _, err := r.conn.ExecContext(ctx, personalSchema); err != nil {
 		return err
 	}
+	if err := r.ensureNotificationSchema(ctx); err != nil {
+		return err
+	}
 	if err := r.ensureHistorySchema(ctx); err != nil {
 		return err
 	}

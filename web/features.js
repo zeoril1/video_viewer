@@ -315,7 +315,7 @@ const FeatureUI = (() => {
               "a",
               e.item.title_ru || e.item.title,
               "calendar-event " +
-                (e.item.kind === "tvSeries" ? "series" : "movie"),
+                (isSeriesKind(e.item.kind) ? "series" : "movie"),
             );
             a.href =
               "/film.html?id=" +
@@ -349,8 +349,9 @@ const FeatureUI = (() => {
       more.hidden = true;
       let hasMore = false;
       const added = [];
-      if (mine.checked && !append && media !== "movie") {
+      if (mine.checked && !append) {
         Personal.list("follow").forEach(({ data: it }) => {
+          if (media && (isSeriesKind(it.kind) ? "tv" : "movie") !== media) return;
           if (it.release_date && it.release_date.startsWith(input.value))
             added.push({ date: it.release_date, item: it });
         });
@@ -382,7 +383,7 @@ const FeatureUI = (() => {
         }
       }
       if (!append && media !== "movie" && eventMode.value === "episodes") {
-        const followed = Personal.list("follow");
+        const followed = Personal.list("follow").filter(sub => isSeriesKind(sub.data.kind));
         let failed = 0;
         // Four workers keep a large subscription list from flooding the metadata service.
         let index = 0;
@@ -435,7 +436,7 @@ const FeatureUI = (() => {
       message(
         events.length
           ? ""
-          : "Нет событий за этот месяц. Для персонального календаря подпишитесь на сериалы.",
+          : "Нет событий за этот месяц. Для персонального календаря подпишитесь на фильмы и сериалы.",
       );
     }
     try {

@@ -169,6 +169,6 @@ func handleTorrentFiles(mgr *torrents.Manager, tmdbClient *tmdb.Client) http.Han
 		log.Printf("files: %s: файлов %d, сезонов %d, серий с номером %d", id, len(files), len(seasonsSet), eps)
 
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		_ = json.NewEncoder(w).Encode(map[string]any{"id": id, "files": files})
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": id, "torrent_title": t.Name(), "files": files})
 	}
 }

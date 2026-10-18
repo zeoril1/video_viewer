@@ -24,6 +24,9 @@ func (p *indexedFake) SearchIndexer(_ context.Context, id, q string, _ int) ([]m
 	return p.response(id, q)
 }
 func TestTrackerEmptyCooldownIsPerFilmAndExpires(t *testing.T) {
+	if trackerEmptyTTL > 6*time.Hour {
+		t.Fatal("empty tracker cooldown must permit six-hour subscription checks")
+	}
 	p := &indexedFake{calls: map[string]int{}, response: func(id, q string) ([]magnet.Result, error) {
 		switch id {
 		case "anime":

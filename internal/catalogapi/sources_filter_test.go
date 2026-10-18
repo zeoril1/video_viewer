@@ -107,11 +107,9 @@ func TestTitleMatcherForeignNames(t *testing.T) {
 		}
 	}
 
-	// Граница фильтра: чужое название, делящее с нашим слово-основу
-	// («Реальная семья» / «Реальные пацаны» → «реал»), оставляем — иначе
-	// вместе с ним потерялись бы и настоящие варианты названия.
-	if !m.matches("Реальные пацаны / Реальная семья [S7] (2015) HDTV") {
-		t.Error("раздача с общей основой слова отброшена")
+	// Общая основа «реал» не подтверждает, что другое название — псевдоним.
+	if m.matches("Реальные пацаны / Реальная семья [S7] (2015) HDTV") {
+		t.Error("раздача с чужим названием и общей основой слова оставлена")
 	}
 }
 
@@ -141,8 +139,8 @@ func TestTitleMatcherLatinAliases(t *testing.T) {
 	}
 }
 
-// TestTitleMatcherVariants — варианты названия (другой перевод того же
-// сериала) узнаются по общим словам.
+// TestTitleMatcherVariants — полный известный псевдоним допускает сокращение
+// другого варианта названия в соседнем сегменте.
 func TestTitleMatcherVariants(t *testing.T) {
 	// «Клинок, рассекающий демонов» — российский вариант названия того же
 	// сериала, что и «Истребитель демонов: Бесконечный замок».
@@ -150,10 +148,77 @@ func TestTitleMatcherVariants(t *testing.T) {
 	if !m.matches("Истребитель демонов / Клинок, рассекающий демонов: Бесконечный замок (2025) BDRip 1080p") {
 		t.Error("раздача с вариантом названия отброшена")
 	}
-	// Другой фильм с тем же словом в названии отбросить нельзя: фильтруем
-	// только очевидных «двойников» по общим основам.
+	// Полное известное название само по себе тоже достаточно.
 	if !m.matches("Истребитель демонов: Бесконечный замок (2025) BDRip") {
 		t.Error("раздача отброшена")
+	}
+}
+
+func TestSeriesSourcesRequireSpecificSeries(t *testing.T) {
+	film := db.Film{IMDBID: "tt35854736", TitleRU: "Аватар: Семь убежищ", Title: "Avatar: Seven Havens", Year: 2026, Kind: "tvSeries"}
+	m := newFilmTitleMatcher(film)
+	tests := []struct {
+		title string
+		want  bool
+	}{
+		{"Аватар: Семь убежищ / Avatar: Seven Havens [S01] (2026) WEB-DL 1080p", true},
+		{"АВАТАР. СЕМЬ-УБЕЖИЩ [S02] (2027) WEBRip 1080p", true},
+		{"Avatar.Seven.Havens.S01E01.1080p.WEB-DL", true},
+		{"E01-E12 Avatar - Seven Havens [WEBRip 720p][AVC]", true},
+		{"Аватар / Avatar: Seven Havens [S01] WEB-DL 1080p", true},
+		{"Аватар короля 2 / E01-E12 Quan Zhi Gao Shou 2 - AniLiberty.TOP [WEBRip 1080p][AVC][1-12]", false},
+		{"Аватар короля 3 / E01-E17 Quanzhi Gaoshou 3 - AniLiberty.TOP [WEBRip 1080p][AVC][1-17]", false},
+		{"Аватар короля 3 / E01-E17 Quanzhi Gaoshou 3 - AniLiberty.TOP [WEBRip 1080p][HEVC][1-17]", false},
+		{"Аватар короля / E01-E12 Quan Zhi Gao Shou - AniLiberty.TOP [WEBRip 720p][AVC][1-12]", false},
+		{"Аватар короля: Вершина Славы / Quan Zhi Gao Shou- Zhi Dianfeng Rongyao - AniLiberty.TOP [WEBRip 720p][AVC][Фильм]", false},
+		{"Аватар короля OVA / E01-E03 Quan Zhi Gao Shou OVA - AniLiberty.TOP [WEBRip 720p][AVC][1-3]", false},
+		{"Аватар: Легенда об Аанге / Avatar: The Last Airbender [S01-03] BDRip", false},
+		{"Аватар: Легенда о Корре / The Legend of Korra [S01-04] WEB-DL", false},
+		{"Аватар [S01] (2026) WEB-DL", false},
+		{"Аватар: Семь королей [S01] WEBRip", false},
+		{"Путешествие по семи убежищам [S01] WEBRip", false},
+		{"Avatar Seven Havensness [S01] WEB-DL", false},
+		{"MyAvatar Seven Havens [S01] WEB-DL", false},
+		{"Avatar / Seven Havens [S01] WEB-DL", false},
+		{"Аватар: Семь убежищ / Аватар короля [S01] WEB-DL", false},
+	}
+	var cached []db.Source
+	wantCount := 0
+	for _, tt := range tests {
+		t.Run(tt.title, func(t *testing.T) {
+			if got := m.matches(tt.title); got != tt.want {
+				t.Errorf("matches = %v, want %v", got, tt.want)
+			}
+		})
+		cached = append(cached, db.Source{Title: tt.title, Magnet: "magnet:?xt=test"})
+		if tt.want {
+			wantCount++
+		}
+	}
+	if items := sourceItemsFromDB(cached, film); len(items) != wantCount {
+		t.Errorf("cached sources = %d, want %d", len(items), wantCount)
+	}
+}
+
+func TestSeriesTitleWordsAndAliases(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		title string
+		want  bool
+	}{
+		{"Чёрное зеркало", "Черное.Зеркало [S07] (2025) WEB-DL", true},
+		{"Сверхъестественное", "Сверхъестественное [S01-15] BDRip", true},
+		{"Сверхъестественное", "Сверхъестественный отель [S01] WEB-DL", false},
+		{"Avatar", "Avatars [S01] WEB-DL", false},
+		{"Dark", "Darkness [S01] WEB-DL", false},
+		{"Медленные лошади", "Медленная жизнь [S01] WEB-DL", false},
+		{"Realnye patsany", "Realnye.Patsany.001-291.serya.WEBRip.1080p", true},
+	} {
+		t.Run(tt.title, func(t *testing.T) {
+			if got := newTitleMatcher([]string{tt.name}).matches(tt.title); got != tt.want {
+				t.Errorf("matches = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 

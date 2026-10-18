@@ -13,16 +13,62 @@ type failureRepo struct {
 	*db.Repo
 	saves    int
 	preserve bool
+	saved    []db.Source
 }
 
 func (r *failureRepo) GetByIMDBID(context.Context, string) (db.Film, bool, error) {
 	return db.Film{IMDBID: "tt123", Title: "Example", Kind: "tvSeries", Seasons: 2}, true, nil
 }
 func (r *failureRepo) ListSources(context.Context, string) ([]db.Source, error) { return nil, nil }
-func (r *failureRepo) SaveSources(_ context.Context, _ string, _ []db.Source, preserve ...bool) (int, int, int, error) {
+func (r *failureRepo) SaveSources(_ context.Context, _ string, sources []db.Source, preserve ...bool) (int, int, int, error) {
 	r.saves++
 	r.preserve = len(preserve) > 0 && preserve[0]
+	r.saved = sources
 	return 0, 0, 0, nil
+}
+
+type emptySourceProvider struct{ err error }
+
+func (emptySourceProvider) Name() string { return "test" }
+func (p emptySourceProvider) Search(context.Context, string, int) ([]magnet.Result, error) {
+	return nil, p.err
+}
+
+func TestSuccessfulEmptySourceRefreshClearsStaleSources(t *testing.T) {
+	repo := &failureRepo{}
+	m := newSourcesManager(Config{Magnet: emptySourceProvider{}})
+	m.db = repo
+	if err := m.run(context.Background(), "tt123"); err != nil {
+		t.Fatal(err)
+	}
+	if repo.saves != 1 || repo.preserve || len(repo.saved) != 0 {
+		t.Fatal("successful empty search must replace the stale source cache")
+	}
+}
+
+func TestEmptySourceRefreshWithTrackerFailurePreservesCache(t *testing.T) {
+	providers := []magnet.Provider{
+		emptySourceProvider{err: errors.New("tracker unavailable")},
+		&indexedFake{calls: map[string]int{}, response: func(id, _ string) ([]magnet.Result, error) {
+			if id == "broken" {
+				return nil, errors.New("tracker unavailable")
+			}
+			return nil, nil
+		}},
+	}
+	for _, provider := range providers {
+		t.Run(provider.Name(), func(t *testing.T) {
+			repo := &failureRepo{}
+			m := newSourcesManager(Config{Magnet: provider})
+			m.db = repo
+			if err := m.run(context.Background(), "tt123"); err == nil {
+				t.Fatal("failed empty search must retain retry status")
+			}
+			if repo.saves != 0 {
+				t.Fatal("failed empty search must not clear cached sources")
+			}
+		})
+	}
 }
 
 type partialProvider struct{ calls int }

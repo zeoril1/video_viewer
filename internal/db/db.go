@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"log"
+	"sync"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib" // драйвер PostgreSQL
@@ -56,6 +57,9 @@ func OpenRetry(ctx context.Context, dsn string, attempts int, delay time.Duratio
 // Repo — репозиторий поверх *sql.DB.
 type Repo struct {
 	conn *sql.DB
+
+	notificationLeaderMu   sync.Mutex
+	notificationLeaderConn *sql.Conn
 }
 
 // NewRepo создаёт репозиторий.

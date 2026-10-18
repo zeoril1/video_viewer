@@ -10,8 +10,8 @@ import (
 	"github.com/zeoril1/video_viewer/internal/magnet"
 )
 
-// Retry tomorrow: a release can appear after today's search.
-const trackerEmptyTTL = 24 * time.Hour
+// A release may appear before the next six-hour subscription notification scan.
+const trackerEmptyTTL = 6 * time.Hour
 
 type indexedProvider interface {
 	Indexers() []string

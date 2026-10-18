@@ -10,9 +10,12 @@ const old = 'magnet:?xt=urn:btih:' + 'a'.repeat(40);
 const good = 'magnet:?xt=urn:btih:' + 'b'.repeat(40);
 const wrong = 'magnet:?xt=urn:btih:' + 'c'.repeat(40);
 let trackDelay = 20, filmDelay = 20, failSources = false;
+let rejectedMagnet = '', trackRequests = 0;
 const history = new Map();
 const bootstrap = `
 window.hlsRequests = [];
+window.lastFailure = null;
+window.addEventListener('playbackfailure', event => {window.lastFailure = event.detail;});
 const media = document.getElementById('player');
 let fixturePaused = true;
 Object.defineProperty(media, 'paused', {get: () => fixturePaused});
@@ -72,10 +75,18 @@ const server = http.createServer((req, res) => {
       json({files});
     });
   }
-  if (u.pathname.endsWith('/tracks')) return setTimeout(() => json({
+  if (u.pathname.endsWith('/source-check')) {
+    let body = '';
+    req.on('data', chunk => {body += chunk;});
+    return req.on('end', () => {
+      const candidate = JSON.parse(body);
+      json({status: candidate.magnet === rejectedMagnet ? 'mismatch' : 'matched'});
+    });
+  }
+  if (u.pathname.endsWith('/tracks')) {trackRequests++; return setTimeout(() => json({
     duration: 900, codec: 'h264', height: 720,
     items: [{ordinal: 0, language: 'rus', title: 'LostFilm'}], subtitles: [],
-  }), trackDelay);
+  }), trackDelay);}
   if (u.pathname.endsWith('/sources')) return json({
     status: 'ready', seasons: [{season: 1, episodes: 3}],
     items: [{magnet: old, title: 'Season 1 LostFilm', season: 1, seeds: 1},
@@ -91,7 +102,7 @@ const server = http.createServer((req, res) => {
   if (u.pathname === '/api/stream/keep' || u.pathname.includes('/hls/stop')) {res.writeHead(204); return res.end();}
   if (u.pathname.startsWith('/api/')) return json({items: [], seasons: [], episodes: []});
   if (u.pathname === '/film.html' || u.pathname === '/watch.html') {
-    const keep = /^(shared|personal|series|series-catalog|player|film|watch|recovery)\.js(?:\?|$)/;
+    const keep = /^(shared|personal|series|series-catalog|source-identity|player|film|watch|recovery)\.js(?:\?|$)/;
     let html = fs.readFileSync(path.join(web, u.pathname), 'utf8');
     html = html.replace(/<script\b[^>]*src="([^"]+)"[^>]*>[\s\S]*?<\/script>/g,
       (tag, src) => keep.test(src) ? tag : '');
@@ -142,7 +153,10 @@ const server = http.createServer((req, res) => {
     await page.waitForFunction(() => PP.state().playing && PP.episode() === 2);
     assert.equal(await page.evaluate(() => PP.fileIndex()), 1);
 
-    await page.evaluate(() => window.dispatchEvent(new Event('requestsourcechange')));
+    // The manual chooser is covered separately; exercise its resulting source
+    // switch here to verify that the page restores that exact release on reload.
+    await page.evaluate(magnet => PP.start({id: 'tt1', magnet, file: 8, season: 1, ep: 2,
+      voice: 'LostFilm', pos: 123}), good);
     await page.waitForFunction(magnet => PP.magnet() === magnet && PP.state().playing, good);
     assert.equal(await page.evaluate(() => PP.fileIndex()), 8);
     assert.equal(new URL(page.url()).search, '?id=tt1');
@@ -164,6 +178,17 @@ const server = http.createServer((req, res) => {
     await page.reload();
     await page.waitForFunction(magnet => PP.magnet() === magnet && PP.state().playing, good);
     assert.equal(new URL(page.url()).searchParams.get('tv'), '1');
+    rejectedMagnet = good;
+    const probesBefore = trackRequests;
+    await page.reload();
+    await page.waitForFunction(() => window.lastFailure?.reason === 'source_mismatch');
+    assert.equal(await page.evaluate(() => window.hlsRequests.length), 0, 'a known wrong saved source cannot bypass the corrected search');
+    assert.equal(trackRequests, probesBefore, 'a wrong release is rejected before reading its audio/video');
+    await page.evaluate(() => PP.seek(200));
+    assert.equal(await page.evaluate(() => window.hlsRequests.length), 0, 'seeking cannot launch a source that failed its identity check');
+    rejectedMagnet = '';
+    await page.reload();
+    await page.waitForFunction(magnet => PP.magnet() === magnet && PP.state().playing, good);
     await page.evaluate(() => PP.stop());
     await page.reload();
     await page.waitForFunction(() => seriesUiReady);
@@ -183,7 +208,7 @@ const server = http.createServer((req, res) => {
     await page.waitForFunction(() => window.joinedRoom === 'd'.repeat(32));
     assert.equal(new URL(page.url()).searchParams.get('room'), 'd'.repeat(32));
     assert.deepEqual(errors, []);
-    console.log('Playback reload browser checks passed: pending tracks, active HLS, episode switch, saved position, source recovery, late metadata, failed source search, TV flag, explicit stop, movie page, room invitation.');
+    console.log('Playback reload browser checks passed: pending tracks, active HLS, episode switch, saved position, manual source switch, late metadata, failed source search, wrong saved source and seek blocked, TV flag, explicit stop, movie page, room invitation.');
   } finally {
     await browser.close();
     server.close();

@@ -49,8 +49,24 @@ func (r *Repo) SavePersonal(ctx context.Context, uid int64, p PersonalItem) erro
 	return err
 }
 func (r *Repo) DeletePersonal(ctx context.Context, uid int64, kind, key string) error {
-	_, err := r.conn.ExecContext(ctx, `DELETE FROM personal_items WHERE user_id=$1 AND kind=$2 AND item_key=$3`, uid, kind, key)
-	return err
+	if kind != "follow" {
+		_, err := r.conn.ExecContext(ctx, `DELETE FROM personal_items WHERE user_id=$1 AND kind=$2 AND item_key=$3`, uid, kind, key)
+		return err
+	}
+	tx, err := r.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `DELETE FROM personal_items WHERE user_id=$1 AND kind=$2 AND item_key=$3`, uid, kind, key); err != nil {
+		return err
+	}
+	// Removing the state also removes this follow's queued messages. Re-following
+	// starts a fresh subscription instead of reviving a stale pending delivery.
+	if _, err = tx.ExecContext(ctx, `DELETE FROM notification_scan_state WHERE user_id=$1 AND film_id=$2`, uid, key); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 func (r *Repo) CreateDeviceLink(ctx context.Context, hash, code string) error {
 	_, err := r.conn.ExecContext(ctx, `DELETE FROM device_links WHERE expires_at<now()`)

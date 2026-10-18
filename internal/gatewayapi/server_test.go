@@ -27,6 +27,29 @@ func TestPosterProxiedToCatalog(t *testing.T) {
 	}
 }
 
+func TestTelegramNotificationRoutesProxyToAuth(t *testing.T) {
+	for _, item := range []struct{ method, path string }{{"GET", "/api/notifications/telegram"}, {"PUT", "/api/notifications/telegram"}, {"DELETE", "/api/notifications/telegram"}, {"POST", "/api/notifications/telegram/link"}} {
+		t.Run(item.method+item.path, func(t *testing.T) {
+			called := false
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				called = true
+				if r.Method != item.method || r.URL.Path != item.path || r.Header.Get("Cookie") != "video_viewer_session=test" {
+					t.Error("request not preserved")
+				}
+				w.WriteHeader(204)
+			}))
+			defer upstream.Close()
+			r := httptest.NewRequest(item.method, item.path, strings.NewReader(`{"enabled":false}`))
+			r.Header.Set("Cookie", "video_viewer_session=test")
+			w := httptest.NewRecorder()
+			NewServer(Config{AuthURL: upstream.URL, WebDir: t.TempDir()}).ServeHTTP(w, r)
+			if !called || w.Code != 204 {
+				t.Fatal("not proxied", w.Code)
+			}
+		})
+	}
+}
+
 func TestSegmentsProxiedToCatalog(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/films/tt1234567/segments" || r.URL.Query().Get("episode") != "2" || r.URL.Query().Get("duration") != "2100" {
@@ -86,6 +109,37 @@ func TestFilesPostBodyProxied(t *testing.T) {
 	h.ServeHTTP(w, r)
 	if !called || w.Code != http.StatusOK {
 		t.Fatalf("files POST: called=%v status=%d", called, w.Code)
+	}
+}
+
+func TestSourceIdentityCheckGoesToCatalog(t *testing.T) {
+	called := false
+	catalog := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		if r.Method != http.MethodPost || r.URL.Path != "/api/films/tt35854736/source-check" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		var candidate struct{ Magnet, Title string }
+		if err := json.NewDecoder(r.Body).Decode(&candidate); err != nil || candidate.Title != "Аватар короля" {
+			t.Errorf("candidate not forwarded: %+v, %v", candidate, err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"status":"mismatch"}`))
+	}))
+	defer catalog.Close()
+	stream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("identity check sent to media service")
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer stream.Close()
+	h := NewServer(Config{WebDir: t.TempDir(), CatalogURL: catalog.URL, StreamURL: stream.URL})
+	r := httptest.NewRequest(http.MethodPost, "/api/films/tt35854736/source-check",
+		strings.NewReader(`{"magnet":"magnet:test","title":"Аватар короля"}`))
+	r.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if !called || w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"mismatch"`) {
+		t.Fatalf("source-check: called=%v status=%d body=%s", called, w.Code, w.Body.String())
 	}
 }
 

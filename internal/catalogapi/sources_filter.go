@@ -1,12 +1,7 @@
-// sources_filter.go — отсев раздач-однофамильцев: поиск идёт по РУССКОМУ названию, и трекеры отдают чужие фильмы
-// с тем же переводом (у «Реальных пацанов» находился сериал «Blue Mountain State») — с сидами они попадали
-// в источники любого сезона, т.к. сезон 0 (сборник) универсален для фронтенда.
-//
-// Правило отсева (намеренно осторожное): сегмент через « / » считаем ЧУЖИМ названием, только если он не совпадает
-// с нашим (в т.ч. через точки/дефисы и с учётом словоформ по основе слова), похож на название (2+ слова кириллицей)
-// и не делит ни одного слова-основы (от 4 букв) с нашими названиями. Латиницу не трогаем: у зарубежных фильмов
-// в раздачах бывают английские варианты, которых нет в наших данных, и отбрасывать из-за них раздачу нельзя.
-// Служебные сегменты («S11E1-20 of 20», «Сезон 5. Часть 2», «Фильм о сериале») названиями не считаются.
+// sources_filter.go — отсев раздач других произведений. В заголовке должно быть полное
+// название из каталога; одного общего слова франшизы («Аватар») недостаточно.
+// Пунктуация, регистр и ё/е не влияют на совпадение. Сезоны могут выходить в разные
+// годы, поэтому год сериала, в отличие от фильма, не ограничивает раздачи.
 package catalogapi
 
 import (
@@ -31,21 +26,18 @@ var nameStopWords = map[string]bool{
 	"полностью": true, "сборник": true, "обновляемая": true, "надпись": true,
 }
 
-// stemLen — сколько первых букв слова считаем «основой» для сопоставления словоформ: «пацаны»/«пацанов» → «паца».
-const stemLen = 4
-
 // titleMatcher — проверка соответствия заголовка раздачи фильму.
 type titleMatcher struct {
-	norm    []string // названия целиком, в нижнем регистре
-	compact []string // названия без разделителей («realnyepatsany»)
-	stems   []string // основы слов названий (по 4 буквы)
-	movie   bool
-	year    int
-	names   []*regexp.Regexp
+	norm        []string // названия целиком, в нижнем регистре
+	words       [][]string
+	seriesNames []*regexp.Regexp
+	movie       bool
+	year        int
+	names       []*regexp.Regexp
 }
 
 // Movies need the complete title: a shared franchise name is not enough.
-// Series keep the tolerant matcher for season subtitles and translated aliases.
+// Series require the complete title too, while allowing season subtitles and later years.
 func newFilmTitleMatcher(film db.Film) *titleMatcher {
 	m := newTitleMatcher(trackerTitles(film))
 	m.movie = !isSeriesKind(film.Kind)
@@ -127,15 +119,23 @@ func (m *titleMatcher) matchesMovie(title string) bool {
 func newTitleMatcher(titles []string) *titleMatcher {
 	m := &titleMatcher{}
 	for _, t := range titles {
-		t = strings.ToLower(strings.TrimSpace(t))
+		t = normalizeMovieName(strings.TrimSpace(t))
 		if t == "" {
 			continue
 		}
 		m.norm = append(m.norm, t)
-		m.compact = append(m.compact, compactName(t))
-		for _, w := range letterWords(t, stemLen) {
-			m.stems = appendUnique(m.stems, stem(w))
+		words := titleWords(t)
+		if len(words) == 0 {
+			continue
 		}
+		m.words = append(m.words, words)
+		escaped := make([]string, len(words))
+		for i, word := range words {
+			escaped[i] = regexp.QuoteMeta(word)
+		}
+		// Keep word boundaries: neither an arbitrary shared stem nor a title
+		// embedded in a longer word identifies a series. Do not span slash aliases.
+		m.seriesNames = append(m.seriesNames, regexp.MustCompile(`(?:^|[^\p{L}\p{N}])`+strings.Join(escaped, `[^\p{L}\p{N}/]+`)+`(?:$|[^\p{L}\p{N}])`))
 	}
 	return m
 }
@@ -170,7 +170,7 @@ func (m *titleMatcher) matches(title string) bool {
 	if m.movie {
 		return m.matchesMovie(title)
 	}
-	low := strings.ToLower(title)
+	low := normalizeMovieName(title)
 	if !m.mentionsTitle(low) {
 		return false // нашего названия нет вообще — это не наш фильм
 	}
@@ -182,13 +182,10 @@ func (m *titleMatcher) matches(title string) bool {
 	return true
 }
 
-// mentionsTitle — упомянуто ли в строке наше название (целиком, без разделителей или словом-основой).
+// mentionsTitle — упомянуто ли полное название с границами слов.
 func (m *titleMatcher) mentionsTitle(low string) bool {
-	if containsAny(low, m.norm) || containsAny(compactName(low), m.compact) {
-		return true
-	}
-	for _, w := range letterWords(low, stemLen) {
-		if containsAny(stem(w), m.stems) {
+	for _, name := range m.seriesNames {
+		if name.MatchString(low) {
 			return true
 		}
 	}
@@ -202,8 +199,8 @@ func (m *titleMatcher) foreignName(seg string) bool {
 		seg = seg[:i]
 	}
 	seg = strings.TrimSpace(seg)
-	if seg == "" || m.mentionsTitle(seg) {
-		return false // это наше название (возможно, в другой словоформе)
+	if seg == "" || m.mentionsTitle(seg) || m.titlePrefix(seg) {
+		return false // полное название или сокращённый вариант перед точным псевдонимом
 	}
 	words := letterWords(seg, 3)
 	cyr := 0
@@ -216,34 +213,39 @@ func (m *titleMatcher) foreignName(seg string) bool {
 	if cyr < 2 {
 		return false
 	}
-	for _, w := range words {
-		if containsAny(stem(w), m.stems) {
-			return false // общая основа с нашим названием — это его вариант
-		}
-	}
 	return true
 }
 
-// stem — основа слова: первые stemLen букв в нижнем регистре.
-func stem(w string) string {
-	rs := []rune(w)
-	if len(rs) > stemLen {
-		rs = rs[:stemLen]
+// titlePrefix permits an abbreviated alias only when another segment supplies
+// the complete title, e.g. «Истребитель демонов / Клинок ...: Бесконечный замок».
+// An overlap such as «Реальная семья» is not an alias of «Реальные пацаны».
+func (m *titleMatcher) titlePrefix(s string) bool {
+	words := titleWords(s)
+	if len(words) == 0 {
+		return false
 	}
-	return string(rs)
-}
-
-// compactName убирает из строки всё, кроме букв и цифр («Realnye patsany» → «realnyepatsany»), чтобы
-// узнавать название, записанное в раздаче через точки/дефисы («Realnye.Patsany.2010»).
-func compactName(s string) string {
-	var b strings.Builder
-	b.Grow(len(s))
-	for _, r := range strings.ToLower(s) {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) {
-			b.WriteRune(r)
+	for _, name := range m.words {
+		if len(words) >= len(name) {
+			continue
+		}
+		prefix := true
+		for i, word := range words {
+			if word != name[i] {
+				prefix = false
+				break
+			}
+		}
+		if prefix {
+			return true
 		}
 	}
-	return b.String()
+	return false
+}
+
+func titleWords(s string) []string {
+	return strings.FieldsFunc(s, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
 }
 
 // letterWords — слова строки (последовательности букв) длиной от minLength.
@@ -273,22 +275,4 @@ func isCyrillic(w string) bool {
 		return unicode.Is(unicode.Cyrillic, r)
 	}
 	return false
-}
-
-func containsAny(s string, subs []string) bool {
-	for _, sub := range subs {
-		if sub != "" && strings.Contains(s, sub) {
-			return true
-		}
-	}
-	return false
-}
-
-func appendUnique(list []string, v string) []string {
-	for _, x := range list {
-		if x == v {
-			return list
-		}
-	}
-	return append(list, v)
 }

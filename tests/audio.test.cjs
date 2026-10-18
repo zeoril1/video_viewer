@@ -31,7 +31,7 @@ test('missing audio falls back to a valid track or video-only', () => {
 function startupHarness() {
   const pending = [], launches = [], notified = [];
   const context = vm.createContext({
-    pendingPlayback: null, mediaRecovery: null, playbackFailurePosition: null, hlsPlayer: null, currentQuality: 'source',
+    pendingPlayback: null, mediaRecovery: null, playbackFailurePosition: null, sourceCheckController: null, hlsPlayer: null, currentQuality: 'source',
     player: { currentTime: 999, pause() {}, removeAttribute() {}, load() {} },
     stage() {}, notify() { notified.push({ preparing: !!context.pendingPlayback, launched: launches.length }); },
     window: { dispatchEvent() {} }, Event: function () {},

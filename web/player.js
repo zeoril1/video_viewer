@@ -76,6 +76,7 @@ const PP = (() => {
   let selectedVoice = '';
   let selectedAudio = null; // Track identity survives reordered/unnamed tracks across episodes.
   let tracksGeneration = 0;
+  let sourceCheckController = null;
   let pendingPlayback = null;
   let mediaRecovery = null;
   let playbackFailurePosition = null;
@@ -329,6 +330,8 @@ const PP = (() => {
   // Resolve tracks before opening HLS. Starting a provisional stream and then
   // restarting it at currentTime can turn an episode transition into a seek.
   function beginPlayback(id, magnet, file, track, position, quality) {
+    if (sourceCheckController) sourceCheckController.abort();
+    sourceCheckController = null;
     clearMediaRecovery();
     playbackFailurePosition = null;
     const pending = { id, magnet, file, position, quality: currentQuality };
@@ -343,13 +346,37 @@ const PP = (() => {
     currentTrack = track;
     currentSubs = -1;
     stage('preparing', 'Определяем аудиодорожку и субтитры следующего потока.');
-    loadTracks(id, magnet, file).then(ready => {
+    let metadata;
+    if (typeof SourceIdentity !== 'undefined') {
+      tracksGeneration++;
+      lastTracksItems = [];
+      currentVideoCodec = '';
+      tracksEl.hidden = true;
+      subsEl.hidden = true;
+      const controller = new AbortController();
+      sourceCheckController = controller;
+      metadata = SourceIdentity.check({ id, magnet, title: releaseTitle, signal: controller.signal }).then(verdict => {
+        if (pendingPlayback !== pending) return false;
+        sourceCheckController = null;
+        if (verdict.status === 'mismatch') {
+          pending.sourceMismatch = true;
+          window.dispatchEvent(new CustomEvent('sourceidentityfailure', { detail: { id, magnet } }));
+          return false;
+        }
+        return loadTracks(id, magnet, file);
+      });
+    } else metadata = loadTracks(id, magnet, file);
+    metadata.then(ready => {
       if (pendingPlayback !== pending) return;
       pendingPlayback = null;
       if (!ready) {
-        const message = 'Не удалось получить аудиодорожки и сведения о видео с сервера. Повторите запуск или выберите другой источник.';
+        if (pending.sourceMismatch) playbackFailurePosition = pending.position;
+        const message = pending.sourceMismatch
+          ? 'Этот источник относится к другому фильму или сериалу. Выберите подходящий источник — позиция просмотра сохранена.'
+          : 'Не удалось получить аудиодорожки и сведения о видео с сервера. Повторите запуск или выберите другой источник.';
         stage('error', message);
-        window.dispatchEvent(new CustomEvent('playbackfailure', { detail: { title: 'Не удалось начать просмотр', message } }));
+        window.dispatchEvent(new CustomEvent('playbackfailure', { detail: { title: pending.sourceMismatch ? 'Неподходящий источник' : 'Не удалось начать просмотр',
+          reason: pending.sourceMismatch ? 'source_mismatch' : 'metadata_unavailable', message } }));
         return;
       }
       playHls(id, magnet, file, currentTrack, pending.position, pending.quality, currentSubs);
@@ -362,6 +389,10 @@ const PP = (() => {
       pendingPlayback.position = start || 0;
       pendingPlayback.quality = currentQuality;
       streamStart = pendingPlayback.position;
+      return;
+    }
+    if (typeof SourceIdentity !== 'undefined' && SourceIdentity.isRejected(id, magnetSrc)) {
+      stage('error', 'Этот источник относится к другому фильму или сериалу. Выберите подходящий источник — позиция просмотра сохранена.');
       return;
     }
     clearMediaRecovery();
@@ -1437,6 +1468,8 @@ const PP = (() => {
 
   // Остановка: гасим поток и прячем плеер (карточка фильма при этом остаётся на месте).
   function stop(opts) {
+    if (sourceCheckController) sourceCheckController.abort();
+    sourceCheckController = null;
     clearMediaRecovery();
     pendingPlayback = null;
  if(currentPlay)leave();

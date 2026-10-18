@@ -47,6 +47,7 @@ const PlaybackSources = (() => {
     } catch (_) {}
     return String(magnet || '');
   }
+  const rejected = (id, magnet) => typeof SourceIdentity !== 'undefined' && SourceIdentity.isRejected(id, magnet);
   function updateSourceBar() {
     const state = PP.state();
     const visible = !!state.active && !!playerWrap && !playerWrap.hidden && !playerWrap.classList.contains('trailer-mode');
@@ -55,7 +56,9 @@ const PlaybackSources = (() => {
     const english = typeof lang !== 'undefined' && lang === 'en';
     const release = PP.release();
     if (release && state.magnet) knownTitles.set(sourceKey(state.magnet), release);
-    sourceBar.querySelector('#playback-source-label').textContent = english ? 'Current source' : 'Текущий источник';
+    sourceBar.querySelector('#playback-source-label').textContent = rejected(state.id, state.magnet)
+      ? (english ? 'Source belongs to another title' : 'Источник относится к другому произведению')
+      : (english ? 'Current source' : 'Текущий источник');
     sourceTitle.textContent = release || knownTitles.get(sourceKey(state.magnet))
       || (english ? 'Open the source list to see its title' : 'Откройте список, чтобы увидеть название');
     sourceButton.textContent = english ? 'Choose source' : 'Выбрать источник';
@@ -102,10 +105,10 @@ const PlaybackSources = (() => {
   function render(current, items) {
     const unique = new Map();
     for (const item of items) {
-      if (item && typeof item.magnet === 'string' && item.magnet) unique.set(sourceKey(item.magnet), item);
+      if (item && typeof item.magnet === 'string' && item.magnet && !rejected(current.id, item.magnet)) unique.set(sourceKey(item.magnet), item);
     }
     const currentKey = sourceKey(current.origin.magnet);
-    if (currentKey && !unique.has(currentKey)) unique.set(currentKey, { magnet: current.origin.magnet, title: PP.release() || 'Текущий источник' });
+    if (currentKey && !unique.has(currentKey) && !rejected(current.id, current.origin.magnet)) unique.set(currentKey, { magnet: current.origin.magnet, title: PP.release() || 'Текущий источник' });
     const all = [...unique.values()];
     for (const item of all) if (item.title) knownTitles.set(sourceKey(item.magnet), item.title);
     updateSourceBar();
@@ -261,6 +264,14 @@ const PlaybackSources = (() => {
   window.addEventListener('playbackstart', close);
   window.addEventListener('playbackstop', close);
   window.addEventListener('playbackrole', () => { if (PP.isFollower()) close(); });
+  window.addEventListener('sourceidentityfailure', event => {
+    const detail = event.detail || {};
+    for (const [key, source] of preferredSources) {
+      if (JSON.parse(key)[0] === detail.id && sourceKey(source.magnet) === sourceKey(detail.magnet)) preferredSources.delete(key);
+    }
+    if (active) render(active, active.items);
+    updateSourceBar();
+  });
   for (const event of ['playbackstart', 'playbackstop', 'playbackchange', 'playbackrole']) {
     window.addEventListener(event, updateSourceBar);
   }
@@ -269,7 +280,10 @@ const PlaybackSources = (() => {
   updateSourceBar();
   window.addEventListener('pagehide', close);
   return { open,
-    preferred: (id, season) => preferredSources.get(preferenceKey(id, season)),
+    preferred: (id, season) => {
+      const source = preferredSources.get(preferenceKey(id, season));
+      return source && rejected(id, source.magnet) ? null : source;
+    },
     clearPreference: (id, season) => preferredSources.delete(preferenceKey(id, season)),
   };
 })();

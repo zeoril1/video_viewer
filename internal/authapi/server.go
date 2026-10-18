@@ -16,6 +16,7 @@ type Config struct {
 	// SecureCookies — принудительный Secure-флаг на куку сессии
 	// (COOKIE_SECURE=1); обычно не нужен — флаг включается сам на HTTPS.
 	SecureCookies bool
+	TelegramBot   TelegramProfile // nil disables Telegram linking and notifications.
 }
 
 // NewServer собирает HTTP-обработчики авторизации и истории в один mux.
@@ -38,6 +39,10 @@ func NewServer(cfg Config) http.Handler {
 	mux.HandleFunc("GET /api/personal", auth.personal)
 	mux.HandleFunc("PUT /api/personal/{kind}/{key}", auth.personal)
 	mux.HandleFunc("DELETE /api/personal/{kind}/{key}", auth.personal)
+	mux.HandleFunc("GET /api/notifications/telegram", auth.telegram(cfg.TelegramBot))
+	mux.HandleFunc("PUT /api/notifications/telegram", auth.telegram(cfg.TelegramBot))
+	mux.HandleFunc("DELETE /api/notifications/telegram", auth.telegram(cfg.TelegramBot))
+	mux.HandleFunc("POST /api/notifications/telegram/link", auth.telegramLink(cfg.TelegramBot))
 	mux.HandleFunc("GET /api/admin/users", auth.adminUsers)
 	mux.HandleFunc("PUT /api/admin/users/{id}/role", auth.adminUserRole)
 	mux.HandleFunc("POST /api/auth/device/start", auth.deviceStart)

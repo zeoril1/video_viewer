@@ -170,6 +170,10 @@ services:
       # COOKIE_SECURE=1 — ставить Secure-флаг на куку сессии (если фронт
       # отдаётся за HTTPS-обратным прокси).
       COOKIE_SECURE: ${COOKIE_SECURE:-}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      NOTIFICATIONS_PUBLIC_URL: ${NOTIFICATIONS_PUBLIC_URL:-https://kino.zeoril.ru}
+      NOTIFICATIONS_CATALOG_URL: http://catalog:8081
+      NOTIFICATIONS_STREAM_URL: http://stream:8082
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8083/api/health >/dev/null || exit 1"]
       interval: 10s

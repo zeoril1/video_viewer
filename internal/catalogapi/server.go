@@ -138,6 +138,13 @@ func NewServer(cfg Config) http.Handler {
 	mux.HandleFunc("GET /api/films/{id}/sources", func(w http.ResponseWriter, r *http.Request) {
 		handleFilmSources(cfg, sourcesMgr, r.PathValue("id"))(w, r)
 	})
+	var checkRepo sourceCheckRepo
+	if cfg.DB != nil {
+		checkRepo = cfg.DB
+	}
+	mux.HandleFunc("POST /api/films/{id}/source-check", func(w http.ResponseWriter, r *http.Request) {
+		handleFilmSourceCheck(checkRepo, r.PathValue("id"))(w, r)
+	})
 
 	// GET /api/health — проверка живости.
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, _ *http.Request) {
