@@ -18,10 +18,11 @@ const episodeHistoryEntry=()=>null,rememberWatchProgress=()=>{},seasonEpisodeCou
 const fetchFiles=async(id,magnet)=>magnet.endsWith('456')?[{index:2,season:1,episode:3}]:[{index:0,season:1,episode:1},{index:1,season:1,episode:2}];
 const Personal={data:null,get:()=>Personal.data,rank:x=>x,preferences:()=>({}),put:async(k,id,data)=>{Personal.data={data:{...data}};window.dispatchEvent(new Event('personalchange'));}};
 const video=document.getElementById('player');
-let paused=true;
+let paused=true,buffered=[];
 Object.defineProperty(video,'paused',{get:()=>paused});
-Object.defineProperty(video,'readyState',{get:()=>4});
-video.load=()=>{video.currentTime=0;};
+Object.defineProperty(video,'readyState',{get:()=>buffered.length?4:0});
+Object.defineProperty(video,'buffered',{get:()=>({length:buffered.length,start:i=>buffered[i][0],end:i=>buffered[i][1]})});
+video.load=()=>{video.currentTime=0;buffered=[];};
 video.play=async()=>{if(paused){paused=false;video.dispatchEvent(new Event('play'));video.dispatchEvent(new Event('playing'));}};
 video.pause=()=>{if(!paused){paused=true;video.dispatchEvent(new Event('pause'));}};
 window.hlsRequests=[];window.hlsConfigs=[];
@@ -30,8 +31,16 @@ window.Hls=class {
  static isSupported(){return true;}
  constructor(config){this.handlers={};this.subtitleTracks=[];window.hlsConfigs.push(config);}
  on(name,fn){this.handlers[name]=fn;}
- loadSource(src){window.lastHlsSource=src;window.hlsRequests.push(src);}
- attachMedia(){setTimeout(()=>{if(!this.dead&&this.handlers.manifest)this.handlers.manifest();},150);}
+ loadSource(src){this.source=src;window.lastHlsSource=src;window.hlsRequests.push(src);}
+ attachMedia(){setTimeout(()=>{
+  if(this.dead)return;
+  // Buffered ranges use the new stream's relative timeline. The room must see
+  // data covering its target before it can release a guest's remote pause.
+  const start=Number(new URL(this.source,location.href).searchParams.get('start')||0);
+  buffered=[[0,Math.max(0,900-start)]];
+  if(this.handlers.manifest)this.handlers.manifest();
+  video.dispatchEvent(new Event('progress'));
+ },150);}
  destroy(){this.dead=true;}
 };
 `;

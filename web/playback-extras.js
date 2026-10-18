@@ -28,7 +28,7 @@ const PlaybackExtras = (() => {
     <p id="room-status" role="status"></p>
     <div id="room-participants" hidden><p id="room-participant-count"></p><ul id="room-participant-list"></ul></div>
   </div>`;
-  wrap.after(panel);
+  (document.getElementById('playback-source') || wrap).after(panel);
   const el = id => document.getElementById(id);
   el('loading-state').className='playback-loading';
   wrap.append(el('loading-state'));

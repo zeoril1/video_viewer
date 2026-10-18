@@ -46,6 +46,8 @@ function dbg(msg) {
   if (msg.startsWith('playHls:')) debugPlaybackContext.set('launch', line);
   else if (msg.startsWith('hls.js: создаём поток') || msg.startsWith('HLS:')) debugPlaybackContext.set('player', line);
   else if (msg.startsWith('tracks: id=')) debugPlaybackContext.set('tracks', line);
+  else if (msg.startsWith('playback: выбранный источник')) debugPlaybackContext.set('selection', line);
+  else if (msg.startsWith('player: кадры @')) debugPlaybackContext.set('frames', line);
   const fatal = /hls: ERROR.*fatal=true|hls: ФАТАЛЬНАЯ/.test(msg);
   if (msg.startsWith('hls: ERROR')) debugRetainErrorDetails = fatal;
   const failureDetail = /^hls: (причина:|медиабуфер:|поток перед остановкой:)/.test(msg);
@@ -99,6 +101,8 @@ const I18N = {
     seeders: 'сидов',
     watch: '▶ Смотреть',
     audioTracks: 'Звуковые дорожки',
+    audioSelected: 'Сейчас выбрана',
+    audioNone: 'В этом видео нет звуковой дорожки',
     tracksLoading: 'Получаю дорожки… ищу пиров',
     tracksUnavailable: 'Не удалось получить дорожки (мало пиров). Попробуйте другой вариант или подождите.',
     trackFallback: 'Дорожка',
@@ -188,6 +192,8 @@ const I18N = {
     seeders: 'seeders',
     watch: '▶ Watch',
     audioTracks: 'Audio tracks',
+    audioSelected: 'Selected audio',
+    audioNone: 'This video has no audio track',
     tracksLoading: 'Loading audio tracks… finding peers',
     tracksUnavailable: 'Could not load audio tracks (few peers). Try another option or wait.',
     trackFallback: 'Track',

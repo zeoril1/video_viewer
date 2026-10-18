@@ -3,6 +3,19 @@
 // Source changes are explicit: listing releases never opens or plays a torrent.
 const PlaybackSources = (() => {
   if (typeof PP === 'undefined' || !PP.available) return { open: () => false };
+  const playerWrap = document.getElementById('player-wrap');
+  const sourceBar = document.createElement('div');
+  sourceBar.id = 'playback-source';
+  sourceBar.className = 'playback-source';
+  sourceBar.hidden = true;
+  sourceBar.innerHTML = `<div class="playback-source-copy"><span id="playback-source-label" class="playback-source-label"></span><span id="playback-source-title" class="playback-source-title"></span></div>
+    <button id="playback-source-change" class="auth-btn" type="button" aria-haspopup="dialog" aria-controls="source-picker"></button>`;
+  playerWrap?.after(sourceBar);
+  const sourceTitle = sourceBar.querySelector('#playback-source-title');
+  const sourceButton = sourceBar.querySelector('#playback-source-change');
+  const knownTitles = new Map();
+  const preferredSources = new Map();
+  const preferenceKey = (id, season) => JSON.stringify([id, Number(season) || 0]);
   const dialog = document.createElement('dialog');
   dialog.id = 'source-picker';
   dialog.className = 'source-picker';
@@ -34,6 +47,22 @@ const PlaybackSources = (() => {
     } catch (_) {}
     return String(magnet || '');
   }
+  function updateSourceBar() {
+    const state = PP.state();
+    const visible = !!state.active && !!playerWrap && !playerWrap.hidden && !playerWrap.classList.contains('trailer-mode');
+    sourceBar.hidden = !visible;
+    if (!visible) return;
+    const english = typeof lang !== 'undefined' && lang === 'en';
+    const release = PP.release();
+    if (release && state.magnet) knownTitles.set(sourceKey(state.magnet), release);
+    sourceBar.querySelector('#playback-source-label').textContent = english ? 'Current source' : 'Текущий источник';
+    sourceTitle.textContent = release || knownTitles.get(sourceKey(state.magnet))
+      || (english ? 'Open the source list to see its title' : 'Откройте список, чтобы увидеть название');
+    sourceButton.textContent = english ? 'Choose source' : 'Выбрать источник';
+    sourceButton.disabled = PP.isFollower();
+    sourceButton.title = PP.isFollower() ? (english ? 'The host chooses the source' : 'Источник выбирает ведущий') : '';
+  }
+  sourceButton.onclick = () => open();
   const playbackKey = state => JSON.stringify([state.id, state.magnet, state.file, state.season || 0, state.episode || 0]);
   const valid = current => active === current && dialog.open && !current.controller.signal.aborted && !PP.isFollower();
   function controls(current) {
@@ -78,6 +107,8 @@ const PlaybackSources = (() => {
     const currentKey = sourceKey(current.origin.magnet);
     if (currentKey && !unique.has(currentKey)) unique.set(currentKey, { magnet: current.origin.magnet, title: PP.release() || 'Текущий источник' });
     const all = [...unique.values()];
+    for (const item of all) if (item.title) knownTitles.set(sourceKey(item.magnet), item.title);
+    updateSourceBar();
     // Preferences affect ordering, never hide a release in manual selection.
     const ranked = typeof Personal !== 'undefined' ? Personal.rank(all, current.origin.voice) : all;
     const ordered = [...ranked, ...all.filter(item => !ranked.includes(item))];
@@ -194,6 +225,7 @@ const PlaybackSources = (() => {
       if (PP.start({ id: current.id, magnet: source.magnet, release: source.title, file: file.index,
         season: current.origin.season, ep: current.origin.episode, voice: current.origin.voice,
         pos: position, quality: 'source' }) === false) throw new Error('Не удалось запустить выбранный источник. Повторите попытку.');
+      preferredSources.set(preferenceKey(current.id, current.origin.season), source);
       try { savePlaybackPage(params); } catch (_) {}
       close();
     } catch (error) {
@@ -229,6 +261,15 @@ const PlaybackSources = (() => {
   window.addEventListener('playbackstart', close);
   window.addEventListener('playbackstop', close);
   window.addEventListener('playbackrole', () => { if (PP.isFollower()) close(); });
+  for (const event of ['playbackstart', 'playbackstop', 'playbackchange', 'playbackrole']) {
+    window.addEventListener(event, updateSourceBar);
+  }
+  if (playerWrap) new MutationObserver(updateSourceBar).observe(playerWrap, { attributes: true, attributeFilter: ['hidden', 'class'] });
+  if (typeof onLang === 'function') onLang(updateSourceBar);
+  updateSourceBar();
   window.addEventListener('pagehide', close);
-  return { open };
+  return { open,
+    preferred: (id, season) => preferredSources.get(preferenceKey(id, season)),
+    clearPreference: (id, season) => preferredSources.delete(preferenceKey(id, season)),
+  };
 })();

@@ -33,6 +33,17 @@ const PP = (() => {
   const tracksEl = document.getElementById('tracks');
   const tracksTitle = document.getElementById('tracks-title');
   const tracksList = document.getElementById('tracks-list');
+  const tracksCurrent = tracksEl ? document.createElement('p') : null;
+  if (tracksCurrent) {
+    tracksCurrent.id = 'tracks-current';
+    tracksCurrent.className = 'tracks-current';
+    tracksCurrent.setAttribute('role', 'status');
+    tracksCurrent.setAttribute('aria-live', 'polite');
+    tracksCurrent.hidden = true;
+    tracksEl.insertBefore(tracksCurrent, tracksList);
+    tracksList.setAttribute('role', 'group');
+    tracksList.setAttribute('aria-labelledby', 'tracks-title');
+  }
   const subsEl = document.getElementById('subs');
   const subsTitle = document.getElementById('subs-title');
   const subsList = document.getElementById('subs-list');
@@ -172,8 +183,10 @@ const PP = (() => {
       position: absTime(),
       duration: totalDuration,
       quality: currentQuality,
+      video_codec: currentVideoCodec,
       stream_start: streamStart,
       track: currentTrack,
+      audio: pendingPlayback ? null : currentAudio(),
       subs: currentSubs,
       season: curSeason,
       episode: curEpisode,
@@ -734,8 +747,10 @@ const PP = (() => {
     // Заявляем ключ длительности, чтобы fetchDuration не дублировал этот же запрос.
     durationFetch.key = id + '|' + (magnetSrc || '') + '|' + (typeof file === 'number' ? file : -1);
     durationFetch.inflight = true;
+    lastTracksItems = [];
     tracksEl.hidden = false;
     tracksList.innerHTML = '';
+    tracksCurrent.hidden = true;
     tracksTitle.textContent = t('tracksLoading');
     try {
       const q = new URLSearchParams({ magnet: magnetSrc });
@@ -778,13 +793,14 @@ const PP = (() => {
       const activeTrack = items.find(tr => tr.ordinal === ordinal);
       if (activeTrack) {
         selectedAudio = { ...activeTrack, magnet: magnetSrc };
-        if (!selectedVoice) {
-          selectedVoice = titleVoices(activeTrack.title || '')[0] || activeTrack.title || trackButtonLabel(activeTrack);
-          notify();
-        }
+        // The preference may be unavailable in this file. Report the track that
+        // was actually resolved, so history and source changes keep that voice.
+        selectedVoice = titleVoices(activeTrack.title || '')[0] || activeTrack.title || trackButtonLabel(activeTrack);
+      } else {
+        selectedAudio = null;
+        selectedVoice = '';
       }
-      if (items.length <= 1) tracksEl.hidden = true;
-      else renderTracks(items, id, magnetSrc);
+      renderTracks(items, id, magnetSrc);
       if (!pendingPlayback && ordinal !== previousTrack) {
         playHls(id, magnetSrc, file, ordinal, absTime(), currentQuality, currentSubs);
       }
@@ -841,27 +857,44 @@ const PP = (() => {
     return lang ? label + ' ' + lang : label;
   }
 
+  function currentAudio() {
+    const track = lastTracksItems.find(item => item.ordinal === currentTrack);
+    return track ? { ordinal: track.ordinal, title: track.title || '', language: track.language || '',
+      codec: track.codec || '', label: trackButtonLabel(track) } : null;
+  }
+
   function renderTracks(items, id, magnetSrc) {
+    tracksEl.hidden = false;
     tracksTitle.textContent = t('audioTracks');
     tracksList.innerHTML = '';
-    const seen = {}; // одинаковые переводы (например TrueHD и его AC3-core) не дублируем
-    items.forEach((tr) => {
+    const active = items.find(tr => tr.ordinal === currentTrack);
+    tracksCurrent.textContent = active ? t('audioSelected') + ': ' + trackButtonLabel(active) : t('audioNone');
+    tracksCurrent.hidden = false;
+    // Keep one button per translation, using its active track when codecs share
+    // a label. Otherwise the selected duplicate would have no selected button.
+    const choices = new Map();
+    items.forEach(tr => {
       const label = trackButtonLabel(tr);
-      if (label in seen) return; // тот же перевод (студия/тип/язык) — пропускаем
-      seen[label] = true;
+      if (!choices.has(label) || tr.ordinal === currentTrack) choices.set(label, tr);
+    });
+    choices.forEach((tr, label) => {
+      const selected = tr.ordinal === currentTrack;
       const btn = document.createElement('button');
       btn.type = 'button';
-      btn.className = 'track-btn' + (tr.ordinal === currentTrack ? ' active' : '');
-      btn.textContent = label;
+      btn.className = 'track-btn' + (selected ? ' active' : '');
+      btn.setAttribute('aria-pressed', String(selected));
+      btn.setAttribute('aria-label', label);
+      btn.textContent = (selected ? '✓ ' : '') + label;
       btn.addEventListener('click', () => {
-        document.querySelectorAll('.track-btn').forEach((b) => b.classList.remove('active'));
-        btn.classList.add('active');
+        if (currentTrack === tr.ordinal) return;
         selectedVoice = titleVoices(tr.title || '')[0] || tr.title || label;
         selectedAudio = { ...tr, magnet: magnetSrc };
         autoVoice = '';
-        notify();
         // Смена дорожки сохраняет позицию, серию, качество и субтитры (ordinal аудио).
         playHls(id, magnetSrc, currentFile, tr.ordinal, absTime(), currentQuality, currentSubs);
+        renderTracks(items, id, magnetSrc);
+        tracksList.querySelector('[aria-pressed="true"]')?.focus({ preventScroll: true });
+        notify();
       });
       tracksList.appendChild(btn);
     });

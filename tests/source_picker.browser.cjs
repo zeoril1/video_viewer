@@ -17,9 +17,9 @@ const shared = fs.readFileSync(path.join(web, 'shared.js'), 'utf8');
 const navigation = shared.slice(shared.indexOf('function playbackPageUrl('), shared.indexOf('// ---- ТВ-режим'));
 const timeFormat = shared.slice(shared.indexOf('function fmtTime('), shared.indexOf('function escapeHtml('));
 
-function bootstrap(series) {
+function bootstrap(series, release = old.title) {
   return `
-const fixture={starts:[],navigation:[],logs:[],follower:false,
+const fixture={starts:[],navigation:[],logs:[],follower:false,release:${JSON.stringify(release)},
   state:${JSON.stringify({ id: 'tt-fixture', magnet: old.magnet, file: 4,
     season: series ? 2 : 0, episode: series ? 3 : 0, voice: series ? 'LostFilm' : 'Red Head Sound',
     position: 1260.5, quality: 'source', active: true, paused: true })}};
@@ -29,15 +29,16 @@ ${timeFormat}
 const isSeriesKind=kind=>kind==='series';
 const Personal={get:()=>({data:{prepare:false}}),rank:items=>items,put:async()=>{}};
 const PP={available:true,isFollower:()=>fixture.follower,playing:()=>true,ready:()=>false,
-  state:()=>({...fixture.state}),release:()=>${JSON.stringify(old.title)},files:()=>[],selectSubtitle:()=>{},
+  state:()=>({...fixture.state}),release:()=>fixture.release,files:()=>[],selectSubtitle:()=>{},
   start:options=>{fixture.starts.push({...options});fixture.state={...fixture.state,...options,
-    episode:options.ep,position:options.pos};window.dispatchEvent(new Event('playbackstart'));return true;}};
+    episode:options.ep,position:options.pos};fixture.release=options.release;
+    window.dispatchEvent(new Event('playbackstart'));return true;}};
 ${navigation}
 go=url=>fixture.navigation.push(url);
 `;
 }
 
-async function scenario(browser, { pageType = 'watch', series = false, theme = 'dark', viewport, tv = false } = {}) {
+async function scenario(browser, { pageType = 'watch', series = false, theme = 'dark', viewport, tv = false, failed = true, initialRelease = old.title } = {}) {
   const context = await browser.newContext({ viewport: viewport || { width: 1280, height: 900 } });
   const page = await context.newPage();
   const errors = [], requests = [], waiters = [], pending = new Set();
@@ -74,13 +75,13 @@ async function scenario(browser, { pageType = 'watch', series = false, theme = '
         assert.ok(start >= 0 && end > start, 'real watch Escape handler is extracted');
         escape = "const filmLink=document.getElementById('film-link');\n" + watch.slice(start, end);
       }
-      html = html.replace('</body>', `<script>${bootstrap(series)}</script><script src="/series.js"></script>
+      html = html.replace('</body>', `<script>${bootstrap(series, initialRelease)}</script><script src="/series.js"></script>
         <script>currentItem={id:'tt-fixture',tmdb_id:123,kind:${JSON.stringify(series ? 'series' : 'movie')}};
           document.documentElement.dataset.theme=${JSON.stringify(theme)};
           document.getElementById('player-wrap').hidden=false;
           document.getElementById('film-watch-layout')?.removeAttribute('hidden');
           document.getElementById('film-playback-column')?.removeAttribute('hidden');
-        </script><script src="/playback-extras.js"></script><script src="/source-picker.js"></script>
+        </script><script src="/source-picker.js"></script><script src="/playback-extras.js"></script>
         <script>${escape}</script><script src="/recovery.js"></script><script src="/tv.js"></script></body>`);
       return route.fulfill({ contentType: 'text/html; charset=utf-8', body: html });
     }
@@ -90,11 +91,11 @@ async function scenario(browser, { pageType = 'watch', series = false, theme = '
       body: fs.readFileSync(file) } : { status: 404 });
   });
   await page.goto('http://fixture.local/' + pageType + '.html?id=tt-fixture' + (tv ? '&tv=1' : ''));
-  await page.evaluate(() => {
+  await page.evaluate(failed => {
     window.dispatchEvent(new Event('playbackstart'));
-    window.dispatchEvent(new CustomEvent('playbackfailure', { detail: { reason: 'repeated_media_fragment',
+    if (failed) window.dispatchEvent(new CustomEvent('playbackfailure', { detail: { reason: 'repeated_media_fragment',
       message: 'Выберите другой источник — позиция просмотра сохранится.' } }));
-  });
+  }, failed);
   const options = page.locator('#source-picker-list .source-picker-option');
   const choose = title => options.filter({ hasText: title }).locator('input[type=radio]').check();
   const open = async selector => {
@@ -111,6 +112,82 @@ async function scenario(browser, { pageType = 'watch', series = false, theme = '
   const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROMIUM_PATH,
     args: ['--no-sandbox'] });
   try {
+    for (const pageType of ['film', 'watch']) {
+      const s = await scenario(browser, { pageType, series: pageType === 'film', failed: false });
+      try {
+        assert.equal(await s.page.locator('#playback-source').isVisible(), true);
+        assert.equal(await s.page.evaluate(() => !!(document.getElementById('playback-source')
+          .compareDocumentPosition(document.querySelector('.playback-extras')) & Node.DOCUMENT_POSITION_FOLLOWING)), true,
+          'current source stays below the player and before extra settings');
+        assert.equal(await s.page.locator('#playback-source-title').textContent(), old.title);
+        assert.equal(s.requests.length, 0, 'showing the current source needs no torrent or source lookup');
+        const sources = s.request('sources');
+        await s.open('#playback-source-change');
+        await (await sources).respond({ items: inventory, status: 'ready' });
+        await s.choose(good.title);
+        const files = s.request('files');
+        await s.page.locator('#source-picker-play').click();
+        await (await files).respond({ files: [{ index: 88, season: 2, episode: 3, name: 'episode.mkv' }] });
+        await s.page.waitForFunction(() => fixture.starts.length === 1);
+        assert.equal(await s.page.locator('#playback-source-title').textContent(), good.title,
+          'the source shown below the player follows the release that actually started');
+        assert.equal(await s.page.evaluate(() => PlaybackSources.preferred('tt-fixture', fixture.state.season).magnet), good.magnet,
+          'an explicit choice is retained for subsequent episodes of this season');
+        assert.equal(await s.page.evaluate(() => PlaybackSources.preferred('tt-other', fixture.state.season)), undefined);
+        assert.equal(await s.page.evaluate(() => PlaybackSources.preferred('tt-fixture', 9)), undefined);
+        await s.page.evaluate(() => { fixture.follower = true; window.dispatchEvent(new Event('playbackrole')); });
+        assert.equal(await s.page.locator('#playback-source-change').isDisabled(), true);
+        assert.equal(await s.page.locator('#playback-source-title').textContent(), good.title,
+          'a room guest can identify the source without replacing it');
+        await s.page.evaluate(() => document.getElementById('player-wrap').classList.add('trailer-mode'));
+        await s.page.locator('#playback-source').waitFor({ state: 'hidden' });
+        await s.page.evaluate(() => document.getElementById('player-wrap').classList.remove('trailer-mode'));
+        await s.page.locator('#playback-source').waitFor({ state: 'visible' });
+        await s.page.evaluate(() => { fixture.state.active = false; window.dispatchEvent(new Event('playbackstop')); });
+        assert.equal(await s.page.locator('#playback-source').isVisible(), false);
+        assert.deepEqual(s.errors, []);
+        console.log('PASS: normal ' + pageType + ' playback identifies its actual source and offers explicit source selection, respecting trailer, stop and room roles.');
+      } finally { await s.close(); }
+    }
+    {
+      const s = await scenario(browser, { failed: false, initialRelease: '' });
+      try {
+        assert.match(await s.page.locator('#playback-source-title').textContent(), /список/,
+          'a legacy link without a release title still has a usable source control');
+        // A newly opened document may not yet know a release title. The source
+        // list identifies it by torrent identity rather than by list order.
+        const sources = s.request('sources');
+        await s.open('#playback-source-change');
+        await (await sources).respond({ items: [good, wrong, old], status: 'ready' });
+        await s.page.waitForFunction(() => document.querySelector('#source-picker-list input[type=radio]'));
+        assert.equal(await s.options.filter({ hasText: old.title }).locator('input[type=radio]').isChecked(), true);
+        assert.equal(await s.page.locator('#playback-source-title').textContent(), old.title);
+        await s.page.locator('#source-picker-close').click();
+        assert.equal(await s.page.evaluate(() => fixture.starts.length), 0);
+        assert.deepEqual(s.errors, []);
+        console.log('PASS: title-less legacy playback remains selectable and identifies its actual release by torrent identity.');
+      } finally { await s.close(); }
+    }
+    for (const config of [{ theme: 'dark', viewport: { width: 1280, height: 900 } },
+      { theme: 'light', viewport: { width: 390, height: 844 } }]) {
+      const s = await scenario(browser, { ...config, failed: false });
+      try {
+        await s.page.evaluate(() => {
+          fixture.release = 'Сверхъестественное / Supernatural [S01–15] BDRip-HEVC 1080p | Рен-ТВ, NovaFilm, LostFilm, Кравец — полное название текущей раздачи';
+          window.dispatchEvent(new Event('playbackchange'));
+        });
+        const bounds = await s.page.locator('#playback-source').evaluate(bar => {
+          const rect = bar.getBoundingClientRect();
+          return { x: rect.x, right: rect.right, width: innerWidth, scroll: bar.scrollWidth, client: bar.clientWidth };
+        });
+        assert.ok(bounds.x >= 0 && bounds.right <= bounds.width + 1);
+        assert.ok(bounds.scroll <= bounds.client + 1, 'long current source title must not overflow the layout');
+        assert.equal(await s.page.locator('#playback-source-change').isVisible(), true);
+        await s.page.locator('#playback-source').screenshot({ path: path.join(output, 'current-source-' + config.theme + '.png') });
+        assert.deepEqual(s.errors, []);
+        console.log('PASS: current source title and manual control fit ' + config.viewport.width + 'px ' + config.theme + ' layout.');
+      } finally { await s.close(); }
+    }
     {
       const s = await scenario(browser);
       try {

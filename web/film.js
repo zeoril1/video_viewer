@@ -530,6 +530,7 @@ async function switchVoice(id, voice) {
   const items = lastSourceItems;
   if (!id || !voice || !items || !items.length) return;
   const season = selectedSeason;
+  if (typeof PlaybackSources !== 'undefined') PlaybackSources.clearPreference?.(id, season);
   const src = pickVoiceSource(items, season, voice);
   voicePref[season] = voice;
   if (src && src.magnet) relPref[season] = src.magnet;
@@ -655,6 +656,11 @@ async function playEpisode(id, season, ep) {
   cands = probeOrder(Personal.rank(cands, voice), season);
   cands = cands.filter((s) => (s.seeds || 0) > 0).concat(cands.filter((s) => !((s.seeds || 0) > 0)));
   cands = cands.slice(0, episodeProbeLimit);
+  // Keep an explicit source choice for this season. It may be absent from the
+  // latest search or ranked below the automatic probe limit. If its next episode
+  // is unavailable, the usual automatic candidates remain available as fallbacks.
+  const manual = typeof PlaybackSources !== 'undefined' ? PlaybackSources.preferred?.(id, season) : null;
+  if (manual) cands = [manual, ...cands.filter(source => source.magnet !== manual.magnet)];
   for (const c of cands) {
     if (!c || !c.magnet) continue;
     const fs = (await fetchFiles(id, c.magnet, c.title)) || [];
@@ -666,13 +672,13 @@ async function playEpisode(id, season, ep) {
     const fit = releaseSeasonFit(fs, season, want);
     const mapped = tmdbMappingOn();
     if (mapped) rememberSeasonFit(c.magnet, season, fit);
-    if (want && mapped && (!fit.fits || (season && fit.count === 0))) {
+    const exact = season && ep ? fs.find((x) => x.season === season && x.episode === ep) : null;
+    if (want && mapped && (!fit.fits || (season && fit.count === 0)) && !(c === manual && exact)) {
       dbg('озвучка: раздача «' + (c.title || '?') + '» не подходит сезону ' + season +
         ' (серий сезона ' + fit.count + ' из ' + want + ', за границей сезона ' + fit.overflow + ')');
       continue;
     }
-    let ff = null;
-    if (season && ep) ff = fs.find((x) => x.season === season && x.episode === ep);
+    const ff = exact;
     if (ff) { src = c; files = fs; f = ff; break; }
     if (!season) {
       const any = fs.find((x) => (x.season || 0) === 0) || fs[0];
