@@ -24,9 +24,8 @@ body.tv #player-controls {
 }
 body.tv #ctrl-fullscreen { display: none !important; }
 
-/* Плавный «рост» при фокусе карточек */
-body.tv .card,
-body.tv .continue-card {
+/* Плавный «рост» при фокусе карточек каталога. */
+body.tv .card {
   transition: transform 0.12s ease, box-shadow 0.12s ease;
   will-change: transform;
 }
@@ -38,17 +37,45 @@ body.tv :focus {
   border-radius: 8px;
 }
 
-/* Карточки каталога/«Продолжить» — контур рамкой + лёгкое увеличение. */
-body.tv .card:focus,
-body.tv .continue-card:focus {
+/* Карточки каталога — контур рамкой + лёгкое увеличение. */
+body.tv .card:focus {
   outline: none !important;
   box-shadow: 0 0 0 4px var(--bg), 0 0 0 7px var(--focus) !important;
   transform: scale(1.04);
   z-index: 3;
   position: relative;
 }
-body.tv .card:focus .play,
-body.tv .continue-card:focus .play { opacity: 1; }
+body.tv .card:focus .play { opacity: 1; }
+
+/* «Продолжить просмотр»: 1/5 прежней ширины и высоты. zoom у содержимого
+   уменьшает также высоту в потоке и область ссылки, без пустого места от scale.
+   Минимальная ширина уменьшается с 300px до 60px. */
+body.tv .continue-list {
+  padding: 10px;
+  scroll-padding: 10px;
+}
+body.tv .continue-card {
+  flex-basis: calc((100% - 40px) / 15);
+  min-width: 60px;
+  border-radius: 3px;
+  transform: none;
+}
+body.tv .continue-link {
+  zoom: 0.2;
+  outline: none !important;
+}
+/* Фокусируем ссылку, а рамку рисуем вокруг всей карточки. Отступы ряда
+   оставляют место для рамки и при прокрутке к первой/последней карточке. */
+body.tv .continue-card:focus-within {
+  border-color: var(--focus);
+  box-shadow: 0 0 0 4px var(--bg), 0 0 0 7px var(--focus);
+}
+@media (max-width: 850px) {
+  body.tv .continue-card { flex-basis: calc((100% - 20px) / 10); }
+}
+@media (max-width: 600px) {
+  body.tv .continue-card { flex-basis: 17%; }
+}
 
 /* Скрываем горизонтальный скролл у рядов чипов — на ТВ листаем фокусом. */
 body.tv .sec-drop { min-width: 260px; }

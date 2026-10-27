@@ -244,8 +244,6 @@ body.tv .site-header { gap: 24px; }
 body.tv .profile-panel .lang-switch { display: flex !important; }
 body.tv .profile-panel { font-size: 20px; width: 350px; }
 body.tv .site-nav-link { font-size: 18px; }
-body.tv .continue-card { min-width: 300px; }
-body.tv .continue-card:focus-within { box-shadow: 0 0 0 4px var(--bg), 0 0 0 7px var(--focus); transform: scale(1.04); }
 @media (max-width: 1100px) {
   .site-header { gap: 14px; }
   .site-nav { gap: 16px; }

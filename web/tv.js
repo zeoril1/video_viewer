@@ -76,7 +76,10 @@
     var out = [];
     var els = container.querySelectorAll(SEL);
     for (var i = 0; i < els.length; i++) {
-      if (isVisible(els[i])) out.push(els[i]);
+      var el = els[i];
+      // Disabled controls cannot receive focus (including children of disabled fieldsets).
+      if (el.disabled || (el.matches && el.matches(':disabled'))) continue;
+      if (isVisible(el)) out.push(el);
     }
     return out;
   }
@@ -92,11 +95,19 @@
     if (dir === 'left' || dir === 'right') {
       if (dir === 'left' && dx >= 0) return Infinity;
       if (dir === 'right' && dx <= 0) return Infinity;
+      var xTolerance = Math.min(fromR.width, toR.width) * 0.15;
+      if (dir === 'left' && toR.right > fromR.left + xTolerance) return Infinity;
+      if (dir === 'right' && toR.left < fromR.right - xTolerance) return Infinity;
       dist = Math.abs(dx);
       perp = overlap(fromR.top, fromR.bottom, toR.top, toR.bottom) / Math.max(1, fromR.height);
     } else {
       if (dir === 'up' && dy >= 0) return Infinity;
       if (dir === 'down' && dy <= 0) return Infinity;
+      // Different title/episode heights must not turn a neighbour in the same row
+      // into an Up/Down target. Allow a small overlap for focus outlines/scaling.
+      var yTolerance = Math.min(fromR.height, toR.height) * 0.15;
+      if (dir === 'up' && toR.bottom > fromR.top + yTolerance) return Infinity;
+      if (dir === 'down' && toR.top < fromR.bottom - yTolerance) return Infinity;
       dist = Math.abs(dy);
       perp = overlap(fromR.left, fromR.right, toR.left, toR.right) / Math.max(1, fromR.width);
     }
@@ -108,7 +119,7 @@
     var best = null, bestS = Infinity;
     for (var i = 0; i < list.length; i++) {
       var c = list[i];
-      if (c === el) continue;
+      if (c === el || c.contains(el) || el.contains(c)) continue;
       var r = c.getBoundingClientRect();
       if (r.width < 2 || r.height < 2) continue;
       var s = score(fromR, r, dir);
@@ -123,7 +134,7 @@
     var best = null, bestK = -Infinity;
     for (var i = 0; i < list.length; i++) {
       var c = list[i];
-      if (c === el) continue;
+      if (c === el || c.contains(el) || el.contains(c)) continue;
       var r = c.getBoundingClientRect();
       if (r.width < 2 || r.height < 2) continue;
       if (dir === 'left' || dir === 'right') {
@@ -200,7 +211,8 @@
     var container = modal || document.body;
 
     var from = null;
-    if (fromEl && isVisible(fromEl)) from = fromEl;
+    if (fromEl && fromEl !== document.body && fromEl !== document.documentElement &&
+        isVisible(fromEl)) from = fromEl;
     else if (tvFocus && isVisible(tvFocus)) from = tvFocus;
     else if (document.activeElement && document.activeElement !== document.body &&
              document.activeElement !== document.documentElement && isVisible(document.activeElement)) {
