@@ -7,6 +7,7 @@
 //	go run . stream    — стриминг (торрент-клиент, HLS/ffmpeg)
 //	go run . auth      — авторизация и история просмотра
 //	go run . iptv      — IPTV (плейлисты M3U/Xtream, каналы, EPG, live-HLS)
+//	go run . torrent-vpn — WireGuard-конфиг и VPN-прокси постеров/.torrent
 //
 // Диспетчер просто запускает нужный сервис через go run ./cmd/<svc>,
 // чтобы сохранить привычный вход через go run .
@@ -20,20 +21,21 @@ import (
 
 func main() {
 	services := map[string]string{
-		"gateway": "cmd/gateway",
-		"catalog": "cmd/catalog",
-		"stream":  "cmd/stream",
-		"auth":    "cmd/auth",
-		"iptv":    "cmd/iptv",
+		"gateway":     "cmd/gateway",
+		"catalog":     "cmd/catalog",
+		"stream":      "cmd/stream",
+		"auth":        "cmd/auth",
+		"iptv":        "cmd/iptv",
+		"torrent-vpn": "cmd/torrent-vpn",
 	}
 
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: go run . [gateway|catalog|stream|auth|iptv] [flags...]")
+		fmt.Fprintln(os.Stderr, "usage: go run . [gateway|catalog|stream|auth|iptv|torrent-vpn] [flags...]")
 		os.Exit(2)
 	}
 	dir, ok := services[os.Args[1]]
 	if !ok {
-		fmt.Fprintf(os.Stderr, "unknown service %q (use: gateway, catalog, stream, auth, iptv)\n", os.Args[1])
+		fmt.Fprintf(os.Stderr, "unknown service %q (use: gateway, catalog, stream, auth, iptv, torrent-vpn)\n", os.Args[1])
 		os.Exit(2)
 	}
 

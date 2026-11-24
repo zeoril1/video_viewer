@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/zeoril1/video_viewer/internal/httpx"
 )
 
 // DefaultBaseURL — базовый адрес TMDB API v3.
@@ -38,7 +40,7 @@ func NewClient(apiKey, accessToken, baseURL string) *Client {
 		apiKey:      strings.TrimSpace(apiKey),
 		accessToken: strings.TrimSpace(accessToken),
 		baseURL:     strings.TrimRight(baseURL, "/"),
-		http:        &http.Client{Timeout: 30 * time.Second},
+		http:        &http.Client{Timeout: 30 * time.Second, Transport: httpx.DirectTransport()},
 		seasonsCache: &seasonsCache{
 			m: map[int64]seasonEntry{},
 		},

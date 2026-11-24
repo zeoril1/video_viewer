@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/zeoril1/video_viewer/internal/httpx"
 )
 
 type User struct {
@@ -22,6 +24,7 @@ type Client struct {
 
 func New(base string) *Client {
 	return &Client{URL: strings.TrimRight(base, "/"), HTTP: &http.Client{
+		Transport:     httpx.DirectTransport(),
 		Timeout:       3 * time.Second,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}}

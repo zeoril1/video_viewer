@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/zeoril1/video_viewer/internal/httpx"
 )
 
 // wdqsURL — Wikidata Query Service (SPARQL): пакетные запросы,
@@ -146,7 +148,7 @@ func postSparql(ctx context.Context, query string) ([]byte, error) {
 	form := url.Values{}
 	form.Set("query", query)
 
-	client := &http.Client{Timeout: 60 * time.Second}
+	client := &http.Client{Timeout: 60 * time.Second, Transport: httpx.DirectTransport()}
 	var lastErr error
 	for attempt := 0; attempt < 4; attempt++ {
 		if attempt > 0 {

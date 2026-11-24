@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/zeoril1/video_viewer/internal/httpx"
 )
 
 type Update struct {
@@ -69,7 +71,7 @@ func (b *TelegramClient) call(ctx context.Context, method string, params any, re
 	req.Header.Set("Content-Type", "application/json")
 	client := b.Client
 	if client == nil {
-		client = &http.Client{Timeout: 40 * time.Second}
+		client = &http.Client{Timeout: 40 * time.Second, Transport: httpx.DirectTransport()}
 	}
 	response, err := client.Do(req)
 	if err != nil {

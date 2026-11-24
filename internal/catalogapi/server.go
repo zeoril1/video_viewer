@@ -20,10 +20,11 @@ import (
 
 // Config — зависимости HTTP-сервиса каталога.
 type Config struct {
-	DB     *db.Repo        // PostgreSQL; может быть nil (режим без БД)
-	IMDB   *imdb.Client    // может быть nil
-	TMDB   *tmdb.Client    // может быть nil
-	Magnet magnet.Provider // поиск источников (Jackett Torznab); может быть nil
+	DB             *db.Repo        // PostgreSQL; может быть nil (режим без БД)
+	IMDB           *imdb.Client    // может быть nil
+	TMDB           *tmdb.Client    // может быть nil
+	Magnet         magnet.Provider // поиск источников (Jackett Torznab); может быть nil
+	PosterProxyURL string          // explicit VPN route for poster images
 	// Context — родительский контекст приложения для фоновых задач (поиск источников): при отмене задания останавливаются.
 	Context context.Context
 }
@@ -31,7 +32,7 @@ type Config struct {
 // NewServer собирает HTTP-обработчики каталога в один mux.
 func NewServer(cfg Config) http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("GET /api/poster", newPosterProxy())
+	mux.Handle("GET /api/poster", newPosterProxy(cfg.PosterProxyURL))
 	svc := newCatalogService(cfg.DB, cfg.IMDB, cfg.TMDB)
 	// Фоновый поиск источников (раздач): медленный Jackett не блокирует HTTP-запросы —
 	// результаты отдаются из кэша и обновляются в фоне.

@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/zeoril1/video_viewer/internal/httpx"
 )
 
 const (
@@ -90,7 +92,7 @@ type Provider struct {
 func NewProvider(opts ProviderOptions) *Provider {
 	client := opts.Client
 	if client == nil {
-		transport := http.DefaultTransport.(*http.Transport).Clone()
+		transport := httpx.DirectTransport()
 		transport.MaxConnsPerHost = 2
 		client = &http.Client{Transport: transport, Timeout: providerTimeout,
 			CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}

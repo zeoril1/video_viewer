@@ -17,6 +17,10 @@ data/*.local.json
 # Секреты и локальное окружение
 .env
 
+# Private WireGuard config for the documented non-Compose setup.
+/data/*.conf
+/data/.wireguard-*
+
 # OS
 .DS_Store
 Thumbs.db

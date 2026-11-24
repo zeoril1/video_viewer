@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 #
 # Один Dockerfile для всех микросервисов video_viewer: ARG SERVICE
-# выбирает, какой бинарник собрать (gateway|catalog|stream|auth), а
+# выбирает, какой бинарник собрать (gateway|catalog|stream|auth|iptv|torrent-vpn), а
 # WITH_FFMPEG=1 включает ffmpeg в образ (нужен только stream-сервису).
 #
 # Пример:

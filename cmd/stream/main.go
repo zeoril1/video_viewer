@@ -41,7 +41,8 @@ func main() {
 		cacheMax = flag.Int("cache-max", 16, "максимум тёплых торрентов в кеше")
 		// tmdbURL — базовый адрес TMDB (ключи — TMDB_API_KEY/TMDB_ACCESS_TOKEN).
 		// Без ключей раскладка файлов сериалов по сезонам TMDB отключена.
-		tmdbURL = flag.String("tmdb-url", tmdb.DefaultBaseURL, "TMDB API v3 base URL")
+		tmdbURL      = flag.String("tmdb-url", tmdb.DefaultBaseURL, "TMDB API v3 base URL")
+		torrentProxy = flag.String("torrent-proxy", os.Getenv("TORRENT_PROXY_URL"), "VPN proxy for magnet xs/as .torrent files, never video or peers")
 	)
 	flag.Parse()
 	if *maxSessions < 1 || *maxCache < 1 || *maxHLS < 1 || *forwardHLS < 1 || *minFree < 0 {
@@ -59,6 +60,7 @@ func main() {
 		SpoolDir:      *spoolDir,
 		CacheTTL:      *cacheTTL,
 		MaxCached:     *cacheMax,
+		MetainfoProxy: *torrentProxy,
 	})
 	if err != nil {
 		log.Fatalf("create torrent manager: %v", err)

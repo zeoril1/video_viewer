@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/zeoril1/video_viewer/internal/httpx"
 )
 
 const (
@@ -58,19 +60,30 @@ type posterProxy struct {
 	bytes   int
 }
 
-func newPosterProxy() *posterProxy {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.Proxy = http.ProxyFromEnvironment // Gluetun in the catalog container.
-	transport.MaxConnsPerHost = 8
+func newPosterProxy(proxyURL ...string) *posterProxy {
+	address := ""
+	if len(proxyURL) > 0 {
+		address = proxyURL[0]
+	}
+	client, err := httpx.VPNHTTPClient(address)
+	if err != nil {
+		// Invalid routing configuration must not silently expose poster requests.
+		client, _ = httpx.VPNHTTPClient("")
+	}
+	if transport, ok := client.Transport.(*http.Transport); ok {
+		transport.MaxConnsPerHost = 8
+	}
+	client.Timeout = 15 * time.Second
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 3 {
+			return fmt.Errorf("too many image redirects")
+		}
+		_, err := allowedPosterURL(req.URL.String())
+		return err
+	}
 	return &posterProxy{
-		client: &http.Client{Transport: transport, Timeout: 15 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 3 {
-				return fmt.Errorf("too many image redirects")
-			}
-			_, err := allowedPosterURL(req.URL.String())
-			return err
-		}},
-		slots: make(chan struct{}, 8), lru: list.New(), entries: map[string]*list.Element{},
+		client: client,
+		slots:  make(chan struct{}, 8), lru: list.New(), entries: map[string]*list.Element{},
 	}
 }
 

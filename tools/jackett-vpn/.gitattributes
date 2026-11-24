@@ -1,0 +1,3 @@
+# A blank context line in a unified diff consists of its required space prefix.
+*.patch text eol=lf whitespace=-blank-at-eol
+svc-jackett-run text eol=lf

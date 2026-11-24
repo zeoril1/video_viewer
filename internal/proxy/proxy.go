@@ -54,7 +54,6 @@ func NewPool(cfg Config) *Pool {
 
 func defaultTransport() *http.Transport {
 	return &http.Transport{
-		Proxy:               http.ProxyFromEnvironment,
 		DialContext:         (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
 		MaxIdleConns:        20,
 		MaxIdleConnsPerHost: 4,

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/zeoril1/video_viewer/internal/db"
+	"github.com/zeoril1/video_viewer/internal/httpx"
 	"github.com/zeoril1/video_viewer/internal/iptv"
 )
 
@@ -80,7 +81,7 @@ func (s *Server) SyncPlaylist(ctx context.Context, id int64) (int, error) {
 func (s *Server) fetchPlaylistChannels(ctx context.Context, pl db.IPTVPlaylist) ([]db.IPTVChannel, error) {
 	switch pl.Kind {
 	case "xtream":
-		hc := &http.Client{Timeout: 60 * time.Second}
+		hc := &http.Client{Timeout: 60 * time.Second, Transport: httpx.DirectTransport()}
 		x := iptv.Xtream{BaseURL: pl.URL, Username: pl.Username, Password: pl.Password, UA: pl.UA, Referer: pl.Referer}
 		list, err := x.LiveChannels(ctx, hc)
 		if err != nil {
@@ -91,7 +92,7 @@ func (s *Server) fetchPlaylistChannels(ctx context.Context, pl db.IPTVPlaylist) 
 		if strings.TrimSpace(pl.URL) == "" {
 			return nil, fmt.Errorf("не задана ссылка на плейлист")
 		}
-		hc := &http.Client{Timeout: 120 * time.Second}
+		hc := &http.Client{Timeout: 120 * time.Second, Transport: httpx.DirectTransport()}
 		data, err := fetchBytes(ctx, hc, pl.URL, pl.UA, pl.Referer)
 		if err != nil {
 			return nil, fmt.Errorf("скачивание плейлиста: %w", err)
@@ -155,7 +156,7 @@ func toDBChannels(list []iptv.Channel, pl db.IPTVPlaylist) []db.IPTVChannel {
 func (s *Server) prepareChannels(ctx context.Context, playlistID int64, chans []db.IPTVChannel) int {
 	var ref *iptv.RefIndex
 	if s.refs != nil {
-		ref = s.refs.get(ctx, &http.Client{Timeout: 120 * time.Second})
+		ref = s.refs.get(ctx, &http.Client{Timeout: 120 * time.Second, Transport: httpx.DirectTransport()})
 	}
 	named := 0
 	for i := range chans {
@@ -191,7 +192,7 @@ func (s *Server) SyncEPG(ctx context.Context, pl db.IPTVPlaylist) (int, error) {
 	if strings.TrimSpace(pl.EPGURL) == "" {
 		return 0, nil
 	}
-	hc := &http.Client{Timeout: 180 * time.Second}
+	hc := &http.Client{Timeout: 180 * time.Second, Transport: httpx.DirectTransport()}
 	open := func() (io.ReadCloser, error) {
 		rc, err := fetchStream(ctx, hc, pl.EPGURL, pl.UA, pl.Referer)
 		if err != nil {

@@ -64,12 +64,11 @@ services:
       jackett:
         condition: service_started
     environment:
-      HTTP_PROXY: http://gluetun:8888
-      HTTPS_PROXY: http://gluetun:8888
-      NO_PROXY: localhost,127.0.0.1,db,jackett,catalog,stream,auth,iptv,192.168.88.0/24
-      http_proxy: http://gluetun:8888
-      https_proxy: http://gluetun:8888
-      no_proxy: localhost,127.0.0.1,db,jackett,catalog,stream,auth,iptv,192.168.88.0/24
+      # Only external .torrent downloads use this proxy, including redirects.
+      # Catalogue metadata and Torznab search use direct connections.
+      TORRENT_PROXY_URL: http://torrent-vpn:8888
+      # Posters retain their VPN route independently of ordinary API requests.
+      POSTER_PROXY_URL: http://torrent-vpn:8888
       DATABASE_URL: ${DATABASE_URL:-postgres://video_viewer:video_viewer@db:5432/video_viewer?sslmode=disable}
       # Дата релиза относится к календарному дню сервера.
       TZ: ${TZ:-Europe/Moscow}
@@ -124,6 +123,8 @@ services:
       STREAM_DATA_DIR: ${STREAM_DATA_DIR:-/app/cache}
       HLS_WORK_ROOT: /app/hls-cache
       AUTH_URL: http://auth:8083
+      # HTTP .torrent files from magnet xs/as only; peers/video stay direct.
+      TORRENT_PROXY_URL: http://torrent-vpn:8888
       # Анализ полностью загруженных серий и постоянное хранение интервалов.
       SEGMENTS_CATALOG_URL: http://catalog:8081
       SEGMENTS_ANALYSIS_ENABLED: ${SEGMENTS_ANALYSIS_ENABLED:-true}
@@ -248,6 +249,7 @@ services:
       STREAM_URL: ${STREAM_URL:-http://stream:8082}
       AUTH_URL: ${AUTH_URL:-http://auth:8083}
       IPTV_URL: ${IPTV_URL:-http://iptv:8084}
+      TORRENT_VPN_URL: http://torrent-vpn:8085
     ports:
       - "8090:8080"        # веб-интерфейс / API (единственный публичный HTTP-порт)
     healthcheck:
@@ -299,8 +301,43 @@ services:
 
   # --- Jackett — поиск раздач на трекерах с антиботом/приватных (RuTracker):
   # сам хранит доступы, решает капчу при настройке и обходит Cloudflare. ---
+  # Isolated userspace WireGuard tunnel: no host routes, NET_ADMIN or Docker
+  # socket. The admin API persists/replaces wg0.conf in its private volume.
+  torrent-vpn:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: torrent-vpn
+    image: video-viewer-torrent-vpn:latest
+    container_name: video-viewer-torrent-vpn
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    depends_on:
+      auth:
+        condition: service_healthy
+    environment:
+      AUTH_URL: http://auth:8083
+    volumes:
+      - torrent-vpn-data:/app/vpn
+    command: ["/app/app", "-addr", ":8085", "-proxy-addr", ":8888", "-config", "/app/vpn/wg0.conf"]
+    healthcheck:
+      # Missing/invalid VPN config must not block the admin upload page.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8085/api/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
   jackett:
-    image: linuxserver/jackett
+    build:
+      context: .
+      dockerfile: tools/jackett-vpn/Dockerfile
+    image: video-viewer-jackett:latest
     container_name: video-viewer-jackett
     restart: unless-stopped
     logging:
@@ -312,7 +349,13 @@ services:
       PUID: ${PUID:-1000}
       PGID: ${PGID:-1000}
       TZ: ${TZ:-Europe/Moscow}
-      AUTO_UPDATE: "true"
+      # The pinned build routes only /dl upstream requests through WireGuard.
+      # Automatic binary updates would remove that routing patch.
+      AUTO_UPDATE: "false"
+      TORRENT_DOWNLOAD_PROXY: http://torrent-vpn:8888
+    depends_on:
+      torrent-vpn:
+        condition: service_healthy
     ports:
       - "${JACKETT_PORT:-9117}:9117"  # веб-интерфейс Jackett (добавить индексер RuTracker)
     volumes:
@@ -335,6 +378,8 @@ volumes:
   # Временные HLS-сессии ffmpeg сервиса IPTV (плейлист и сегменты канала);
   # сессия гасится после бездействия, каталог удаляется.
   iptv-cache:
+  # Private WireGuard configuration uploaded from the admin page.
+  torrent-vpn-data:
   # Caddy (профиль public): сертификаты Let's Encrypt и его конфиг —
   # не пересоздавать при обновлении контейнера, иначе легко упереться
   # в лимиты Let's Encrypt на выпуск сертификатов.

@@ -6,6 +6,7 @@ package torrents
 import (
 	"errors"
 	"github.com/zeoril1/video_viewer/internal/disklimit"
+	"github.com/zeoril1/video_viewer/internal/httpx"
 	"log"
 	"os"
 	"runtime"
@@ -31,6 +32,9 @@ type Config struct {
 	CacheTTL time.Duration
 	// MaxCached — лимит «тёплых» торрентов (0 — defaultMaxCached); при переполнении выгружается самый старый.
 	MaxCached int
+	// MetainfoProxy applies only to HTTP .torrent sources (magnet xs/as).
+	// An empty value blocks those downloads; P2P metadata exchange stays direct.
+	MetainfoProxy string
 }
 
 // DropGrace — сколько ждать после закрытия последнего читателя, прежде чем
@@ -66,6 +70,9 @@ func NewManager(cfg Config) (*Manager, error) {
 	cc.Seed = false
 	cc.DataDir = ""
 	cc.ListenPort = cfg.ListenPort
+	if err := configureNetwork(cc, cfg.MetainfoProxy); err != nil {
+		return nil, err
+	}
 
 	var spool *spoolClient
 	if cfg.SpoolDir != "" {
@@ -105,6 +112,18 @@ func NewManager(cfg Config) (*Manager, error) {
 		maxCached:  maxCached,
 		rates:      make(map[string]downloadSample),
 	}, nil
+}
+
+func configureNetwork(cc *torrent.ClientConfig, proxyURL string) error {
+	metadataClient, err := httpx.VPNHTTPClient(proxyURL)
+	if err != nil {
+		return err
+	}
+	cc.MetainfoSourcesClient = metadataClient
+	// Peer traffic, trackers and webseeds retain an independent direct transport.
+	cc.HTTPProxy = nil
+	cc.WebTransport = httpx.DirectTransport()
+	return nil
 }
 
 // Close закрывает клиент: торренты удаляют свои спул-файлы, плюс подчищаем осиротевшие.

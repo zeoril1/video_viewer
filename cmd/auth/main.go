@@ -79,10 +79,10 @@ func main() {
 		if streamURL == "" {
 			streamURL = "http://stream:8082"
 		}
-		bot := &releasewatch.TelegramClient{Token: token, Client: &http.Client{Timeout: 40 * time.Second}}
+		bot := &releasewatch.TelegramClient{Token: token, Client: &http.Client{Transport: httpx.DirectTransport(), Timeout: 40 * time.Second}}
 		config.TelegramBot = bot
 		worker := &releasewatch.Worker{Store: repo, Bot: bot, PublicURL: publicURL,
-			Discovery: &releasewatch.HTTPDiscovery{CatalogURL: catalogURL, StreamURL: streamURL, Client: &http.Client{Timeout: 70 * time.Second}}}
+			Discovery: &releasewatch.HTTPDiscovery{CatalogURL: catalogURL, StreamURL: streamURL, Client: &http.Client{Transport: httpx.DirectTransport(), Timeout: 70 * time.Second}}}
 		go worker.Run(ctx)
 		log.Printf("telegram notifications enabled; release checks every 6h")
 	}

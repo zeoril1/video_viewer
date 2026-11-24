@@ -9,6 +9,7 @@ require (
 	github.com/anacrolix/generics v0.1.1-0.20251125230353-15d98d46693b // ~53 KB
 	github.com/anacrolix/torrent v1.61.0 // ~1.8 MB
 	github.com/jackc/pgx/v5 v5.10.0 // ~2.1 MB
+	golang.zx2c4.com/wireguard v0.0.0-20261024220952-b3bc704ef0ee
 )
 
 require (
@@ -91,6 +92,8 @@ require (
 	golang.org/x/sys v0.39.0 // indirect; indirect (~9 MB)
 	golang.org/x/text v0.32.0 // indirect; indirect (~39 MB)
 	golang.org/x/time v0.14.0 // indirect; indirect (~39 KB)
+	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
+	gvisor.dev/gvisor v0.0.0-20250503011706-39ed1f5ac29c // indirect
 	lukechampine.com/blake3 v1.1.6 // indirect; indirect (~192 KB)
 	modernc.org/libc v1.22.3 // indirect; indirect (~36 MB)
 	modernc.org/mathutil v1.5.0 // indirect; indirect (~637 KB)

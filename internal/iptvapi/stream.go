@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/zeoril1/video_viewer/internal/db"
+	"github.com/zeoril1/video_viewer/internal/httpx"
 )
 
 // tokenTTL — сколько живёт ссылка на сегмент/вложенный плейлист: живые
@@ -82,7 +83,7 @@ func newLiveManager(cfg Config) *liveManager {
 		sessions: make(map[int64]*liveSession),
 		tokens:   make(map[string]tokenRef),
 		// Таймаут с запасом: провайдеры любят держать соединение открытым.
-		hc: &http.Client{Timeout: 30 * time.Second},
+		hc: &http.Client{Timeout: 30 * time.Second, Transport: httpx.DirectTransport()},
 	}
 }
 

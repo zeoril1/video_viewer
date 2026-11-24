@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/anacrolix/torrent/metainfo"
+	"github.com/zeoril1/video_viewer/internal/httpx"
 )
 
 // maxTorrentFetches — сколько раздач без готового магнета индексера может
@@ -28,22 +29,65 @@ const maxTorrentFetches = 8
 // Jackett — поиск раздач через Jackett (Torznab). indexer — ID индексера
 // в Jackett ("rutracker-ru"), список через запятую или "all" (все настроенные).
 type Jackett struct {
-	baseURL string
-	apiKey  string
-	indexer string
-	hc      *http.Client
+	baseURL     string
+	apiKey      string
+	indexer     string
+	hc          *http.Client
+	torrentHTTP *http.Client
 }
 
 // NewJackett создаёт провайдер Jackett; rt — необязательный RoundTripper (пул прокси).
 func NewJackett(baseURL, apiKey, indexer string, rt http.RoundTripper) *Jackett {
-	hc := &http.Client{Timeout: 30 * time.Second}
+	hc := &http.Client{Timeout: 30 * time.Second, Transport: httpx.DirectTransport()}
 	if rt != nil {
 		hc.Transport = rt
 	}
 	if indexer == "" {
 		indexer = "rutracker-ru"
 	}
-	return &Jackett{baseURL: strings.TrimRight(baseURL, "/"), apiKey: apiKey, indexer: indexer, hc: hc}
+	j := &Jackett{baseURL: strings.TrimRight(baseURL, "/"), apiKey: apiKey, indexer: indexer, hc: hc}
+	metadata, _ := httpx.VPNHTTPClient("")
+	j.SetTorrentHTTPClient(metadata)
+	return j
+}
+
+// SetTorrentHTTPClient configures the external .torrent route independently of
+// Torznab search. Local /dl requests must reach the patched Jackett directly;
+// its Download scope sends the actual tracker request through the VPN proxy.
+// Redirects out of Jackett are always handled by the external VPN transport.
+func (j *Jackett) SetTorrentHTTPClient(client *http.Client) {
+	if client == nil || client.Transport == nil {
+		client, _ = httpx.VPNHTTPClient("")
+	}
+	copy := *client
+	copy.Transport = jackettTorrentTransport{baseURL: j.baseURL, local: j.hc.Transport, external: client.Transport}
+	copy.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		// Jackett download URLs can include its API key: never send that URL as
+		// a Referer to an external torrent host when following a redirect.
+		req.Header.Del("Referer")
+		if client.CheckRedirect != nil {
+			return client.CheckRedirect(req, via)
+		}
+		if len(via) >= 10 {
+			return fmt.Errorf("too many torrent download redirects")
+		}
+		return nil
+	}
+	j.torrentHTTP = &copy
+}
+
+type jackettTorrentTransport struct {
+	baseURL         string
+	local, external http.RoundTripper
+}
+
+func (t jackettTorrentTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	base, err := url.Parse(t.baseURL)
+	if err == nil && strings.EqualFold(r.URL.Scheme, base.Scheme) && strings.EqualFold(r.URL.Host, base.Host) &&
+		strings.HasPrefix(r.URL.Path, strings.TrimRight(base.Path, "/")+"/dl/") {
+		return t.local.RoundTrip(r)
+	}
+	return t.external.RoundTrip(r)
 }
 
 // Name возвращает имя провайдера.
@@ -333,7 +377,11 @@ func (j *Jackett) downloadMagnet(ctx context.Context, u string) (string, error) 
 		return "", err
 	}
 	req.Header.Set("User-Agent", userAgent)
-	resp, err := j.hc.Do(req)
+	client := j.torrentHTTP
+	if client == nil {
+		return "", fmt.Errorf("jackett: torrent VPN client is not configured")
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
 	}

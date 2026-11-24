@@ -217,3 +217,40 @@ tr.flash-err {
 .log-error {
   color: var(--error);
 }
+
+/* ---- Конфигурация VPN ---- */
+.vpn-panel {
+  max-width: 680px;
+  padding: 22px 24px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+.vpn-panel h2 { margin: 0 0 12px; font-size: 20px; }
+.vpn-details { display: grid; gap: 12px; margin: 22px 0; }
+.vpn-details > div { display: grid; grid-template-columns: 130px minmax(0, 1fr); gap: 12px; }
+.vpn-details dt { color: var(--muted); }
+.vpn-details dd { margin: 0; overflow-wrap: anywhere; }
+.vpn-form { display: grid; gap: 10px; }
+.vpn-form label { font-weight: 600; }
+.vpn-form input { min-width: 0; max-width: 100%; color: var(--text); }
+.vpn-form input::file-selector-button {
+  padding: 8px 12px;
+  margin-right: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--text);
+  cursor: pointer;
+}
+.vpn-form .storage-note { margin: 0 0 6px; }
+.vpn-form button { justify-self: start; }
+.vpn-form button:disabled { opacity: .5; cursor: default; }
+.vpn-status { min-height: 1.5em; margin-bottom: 0; color: var(--muted); overflow-wrap: anywhere; }
+.vpn-status.error { color: var(--error); }
+.vpn-status.success { color: var(--success); }
+@media (max-width: 600px) {
+  .vpn-panel { padding: 18px 16px; }
+  .vpn-details > div { grid-template-columns: 1fr; gap: 2px; }
+  .vpn-form button { justify-self: stretch; }
+}

@@ -6,7 +6,7 @@
   <title>Админ-панель — Кинотека</title>
   <script src="theme.js?v=1"></script>
   <link rel="stylesheet" href="style.css?v=17" />
-  <link rel="stylesheet" href="admin.css?v=5" />
+  <link rel="stylesheet" href="admin.css?v=6" />
   <link rel="stylesheet" href="storage.css?v=2" />
   <link rel="stylesheet" href="redesign.css?v=3" />
 </head>
@@ -26,6 +26,7 @@
       <button id="tab-missing" class="section-btn active" type="button">Пустые поля</button>
       <button id="tab-notfound" class="section-btn" type="button">Не удалось обновить</button>
       <button id="tab-users" class="section-btn" type="button">Пользователи</button>
+      <button id="tab-vpn" class="section-btn" type="button">VPN</button>
     </div>
 
     <div class="admin-controls">
@@ -48,6 +49,23 @@
           <tbody id="users-body"></tbody>
         </table>
       </div>
+    </section>
+
+    <section id="vpn-panel" class="vpn-panel" aria-labelledby="vpn-heading" hidden>
+      <h2 id="vpn-heading">Конфигурация VPN</h2>
+      <p class="storage-note">Через VPN загружаются постеры и файлы .torrent. Само видео по BitTorrent скачивается через обычное соединение.</p>
+      <dl class="vpn-details">
+        <div><dt>Текущий файл</dt><dd id="vpn-name">—</dd></div>
+        <div><dt>Загружен</dt><dd id="vpn-updated">—</dd></div>
+        <div><dt>Состояние</dt><dd id="vpn-state">—</dd></div>
+      </dl>
+      <form id="vpn-form" class="vpn-form">
+        <label for="vpn-config">Конфиг WireGuard (.conf)</label>
+        <input id="vpn-config" name="config" type="file" accept=".conf" aria-describedby="vpn-help" required />
+        <p id="vpn-help" class="storage-note">Выберите файл до 64 КБ. После загрузки он заменит текущий конфиг и будет применён автоматически.</p>
+        <button id="vpn-submit" class="auth-btn auth-btn-primary" type="submit" disabled>Загрузить и применить</button>
+      </form>
+      <p id="vpn-status" class="vpn-status" role="status" aria-live="polite"></p>
     </section>
 
     <div id="admin-films-layout" class="admin-layout">
@@ -137,6 +155,6 @@
     </div>
   </main>
 
-  <script src="admin.js?v=5"></script>
+  <script src="admin.js?v=6"></script>
 </body>
 </html>

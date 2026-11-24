@@ -18,12 +18,13 @@ func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
 	var (
-		addr       = flag.String("addr", ":8080", "HTTP listen address")
-		webDir     = flag.String("web", "web", "path to static web assets directory")
-		catalogURL = flag.String("catalog-url", envOr("CATALOG_URL", "http://127.0.0.1:8081"), "catalog-service base URL")
-		streamURL  = flag.String("stream-url", envOr("STREAM_URL", "http://127.0.0.1:8082"), "stream-service base URL")
-		authURL    = flag.String("auth-url", envOr("AUTH_URL", "http://127.0.0.1:8083"), "auth-service base URL")
-		iptvURL    = flag.String("iptv-url", envOr("IPTV_URL", "http://127.0.0.1:8084"), "iptv-service base URL")
+		addr          = flag.String("addr", ":8080", "HTTP listen address")
+		webDir        = flag.String("web", "web", "path to static web assets directory")
+		catalogURL    = flag.String("catalog-url", envOr("CATALOG_URL", "http://127.0.0.1:8081"), "catalog-service base URL")
+		streamURL     = flag.String("stream-url", envOr("STREAM_URL", "http://127.0.0.1:8082"), "stream-service base URL")
+		authURL       = flag.String("auth-url", envOr("AUTH_URL", "http://127.0.0.1:8083"), "auth-service base URL")
+		iptvURL       = flag.String("iptv-url", envOr("IPTV_URL", "http://127.0.0.1:8084"), "iptv-service base URL")
+		torrentVPNURL = flag.String("torrent-vpn-url", envOr("TORRENT_VPN_URL", "http://127.0.0.1:8085"), "torrent VPN configuration service URL")
 	)
 	flag.Parse()
 
@@ -35,12 +36,13 @@ func main() {
 		*addr, *catalogURL, *streamURL, *authURL, *iptvURL, *webDir)
 
 	handler := gatewayapi.NewServer(gatewayapi.Config{
-		WebDir:       *webDir,
-		TrustedProxy: os.Getenv("TRUSTED_PROXY"),
-		CatalogURL:   *catalogURL,
-		StreamURL:    *streamURL,
-		AuthURL:      *authURL,
-		IPTVURL:      *iptvURL,
+		WebDir:        *webDir,
+		TrustedProxy:  os.Getenv("TRUSTED_PROXY"),
+		CatalogURL:    *catalogURL,
+		StreamURL:     *streamURL,
+		AuthURL:       *authURL,
+		IPTVURL:       *iptvURL,
+		TorrentVPNURL: *torrentVPNURL,
 	})
 
 	httpx.Serve(ctx, *addr, handler, nil)

@@ -10,7 +10,11 @@ video_viewer.exe
 # Логи и локальные данные
 *.log
 data/*.local.json
+data/*.conf
+data/.wireguard-*
 output/design-preview
+tools/jackett-vpn/tests/bin
+tools/jackett-vpn/tests/obj
 
 # Jackett — отдельный сервис, его конфиг не нужен в контексте сборки
 jackett

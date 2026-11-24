@@ -1,0 +1,188 @@
+diff --git a/src/Jackett.Common/Utils/Clients/WebClient.cs b/src/Jackett.Common/Utils/Clients/WebClient.cs
+index a4d00cf..91ae0f5 100644
+--- a/src/Jackett.Common/Utils/Clients/WebClient.cs
++++ b/src/Jackett.Common/Utils/Clients/WebClient.cs
+@@ -37,57 +37,10 @@ namespace Jackett.Common.Utils.Clients
+ 
+         public void InitProxy(ServerConfig serverConfig)
+         {
+-            // dispose old SocksWebProxy
+-            if (webProxy is SocksWebProxy proxy)
+-                proxy.Dispose();
+-            webProxy = null;
+-
++            // Ignore stored/ambient global proxies. The routing policy is per
++            // asynchronous download operation, never a process-wide switch.
+             webProxyUrl = serverConfig.GetProxyUrl();
+-            if (serverConfig.ProxyType == ProxyType.Disabled || string.IsNullOrWhiteSpace(webProxyUrl))
+-                return;
+-            if (serverConfig.ProxyType == ProxyType.Http)
+-            {
+-                NetworkCredential creds = null;
+-                if (!serverConfig.ProxyIsAnonymous)
+-                {
+-                    var username = serverConfig.ProxyUsername;
+-                    var password = serverConfig.ProxyPassword;
+-                    creds = new NetworkCredential(username, password);
+-                }
+-                webProxy = new WebProxy(serverConfig.GetProxyUrl(false)) // proxy URL without credentials
+-                {
+-                    BypassProxyOnLocal = false,
+-                    Credentials = creds
+-                };
+-            }
+-            else if (serverConfig.ProxyType == ProxyType.Socks4 || serverConfig.ProxyType == ProxyType.Socks5)
+-            {
+-                // in case of error in DNS resolution, we use a fake proxy to avoid leaking the user IP (disabling proxy)
+-                // https://github.com/Jackett/Jackett/issues/8826
+-                var addresses = new[] { IPAddress.Parse(serverConfig.LocalBindAddress) };
+-                try
+-                {
+-                    addresses = Dns.GetHostAddressesAsync(serverConfig.ProxyUrl).Result;
+-                }
+-                catch (Exception e)
+-                {
+-                    logger.Error($"Unable to resolve proxy URL: {serverConfig.ProxyUrl}. The proxy will not work properly.\n{e}");
+-                }
+-                var socksConfig = new ProxyConfig
+-                {
+-                    SocksAddress = addresses.FirstOrDefault(),
+-                    Username = serverConfig.ProxyUsername,
+-                    Password = serverConfig.ProxyPassword,
+-                    Version = serverConfig.ProxyType == ProxyType.Socks4 ?
+-                        ProxyConfig.SocksVersion.Four :
+-                        ProxyConfig.SocksVersion.Five
+-                };
+-                if (serverConfig.ProxyPort.HasValue)
+-                    socksConfig.SocksPort = serverConfig.ProxyPort.Value;
+-                webProxy = new SocksWebProxy(socksConfig, false);
+-            }
+-            else
+-                throw new Exception($"Proxy type '{serverConfig.ProxyType}' is not implemented!");
++            webProxy = new TorrentDownloadProxy(Environment.GetEnvironmentVariable("TORRENT_DOWNLOAD_PROXY"));
+         }
+ 
+         public double requestDelay
+diff --git a/src/Jackett.Common/Utils/Clients/HttpWebClient.cs b/src/Jackett.Common/Utils/Clients/HttpWebClient.cs
+index 129eed6..1dde279 100644
+--- a/src/Jackett.Common/Utils/Clients/HttpWebClient.cs
++++ b/src/Jackett.Common/Utils/Clients/HttpWebClient.cs
+@@ -75,9 +75,7 @@ namespace Jackett.Common.Utils.Clients
+             using (var clearanceHandlr = new ClearanceHandler(serverConfig.FlareSolverrUrl))
+             {
+                 clearanceHandlr.MaxTimeout = serverConfig.FlareSolverrMaxTimeout;
+-                clearanceHandlr.ProxyUrl = serverConfig.GetProxyUrl(false);
+-                clearanceHandlr.ProxyUsername = serverConfig.ProxyUsername;
+-                clearanceHandlr.ProxyPassword = serverConfig.ProxyPassword;
++                clearanceHandlr.ProxyUrl = string.Empty;
+ 
+                 using (var clientHandlr = new HttpClientHandler
+                 {
+@@ -92,7 +90,7 @@ namespace Jackett.Common.Utils.Clients
+                 })
+                 {
+                     clearanceHandlr.InnerHandler = clientHandlr;
+-                    using (var client = new HttpClient(clearanceHandlr))
++                    using (var client = new HttpClient(TorrentDownloadScope.IsActive ? (HttpMessageHandler)clientHandlr : clearanceHandlr))
+                     {
+                         client.Timeout = TimeSpan.FromSeconds(ClientTimeout);
+                         using (var request = new HttpRequestMessage())
+diff --git a/src/Jackett.Common/Utils/Clients/HttpWebClient2.cs b/src/Jackett.Common/Utils/Clients/HttpWebClient2.cs
+index d2bc729..cb88fa5 100644
+--- a/src/Jackett.Common/Utils/Clients/HttpWebClient2.cs
++++ b/src/Jackett.Common/Utils/Clients/HttpWebClient2.cs
+@@ -24,6 +24,7 @@ namespace Jackett.Common.Utils.Clients
+         private ClearanceHandler clearanceHandlr;
+         private HttpClientHandler clientHandlr;
+         private HttpClient client;
++        private HttpClient torrentDownloadClient;
+ 
+         public HttpWebClient2(IProcessService p, Logger l, IConfigurationService c, ServerConfig sc)
+             : base(p: p,
+@@ -65,9 +66,7 @@ namespace Jackett.Common.Utils.Clients
+             clearanceHandlr = new ClearanceHandler(serverConfig.FlareSolverrUrl)
+             {
+                 MaxTimeout = serverConfig.FlareSolverrMaxTimeout,
+-                ProxyUrl = serverConfig.GetProxyUrl(false),
+-                ProxyUsername = serverConfig.ProxyUsername,
+-                ProxyPassword = serverConfig.ProxyPassword
++                ProxyUrl = string.Empty
+             };
+             clientHandlr = new HttpClientHandler
+             {
+@@ -83,6 +82,9 @@ namespace Jackett.Common.Utils.Clients
+ 
+             clearanceHandlr.InnerHandler = clientHandlr;
+             client = new HttpClient(clearanceHandlr);
++            // Bypass an external browser service for downloads: it has its own
++            // network route, outside this request-scoped proxy policy.
++            torrentDownloadClient = new HttpClient(clientHandlr, disposeHandler: false);
+ 
+             SetTimeout(ClientTimeout);
+         }
+@@ -102,6 +104,7 @@ namespace Jackett.Common.Utils.Clients
+         {
+             ClientTimeout = seconds;
+             client.Timeout = TimeSpan.FromSeconds(ClientTimeout);
++            torrentDownloadClient.Timeout = TimeSpan.FromSeconds(ClientTimeout);
+         }
+ 
+         protected override async Task<WebResult> Run(WebRequest webRequest)
+@@ -171,7 +174,7 @@ namespace Jackett.Common.Utils.Clients
+                 request.Method = HttpMethod.Get;
+             }
+ 
+-            using var responseMessage = await client.SendAsync(request);
++            using var responseMessage = await (TorrentDownloadScope.IsActive ? torrentDownloadClient : client).SendAsync(request);
+ 
+             var result = new WebResult
+             {
+diff --git a/src/Jackett.Server/Controllers/DownloadController.cs b/src/Jackett.Server/Controllers/DownloadController.cs
+index f2b108f..b72d55d 100644
+--- a/src/Jackett.Server/Controllers/DownloadController.cs
++++ b/src/Jackett.Server/Controllers/DownloadController.cs
+@@ -6,6 +6,7 @@ using BencodeNET.Parsing;
+ using Jackett.Common.Models.Config;
+ using Jackett.Common.Services.Interfaces;
+ using Jackett.Common.Utils;
++using Jackett.Common.Utils.Clients;
+ using Jackett.Server.ActionFilters;
+ using Microsoft.AspNetCore.Authorization;
+ using Microsoft.AspNetCore.Mvc;
+@@ -53,7 +54,11 @@ namespace Jackett.Server.Controllers
+                 path = _protectionService.UnProtect(path);
+ 
+                 var target = new Uri(path, UriKind.RelativeOrAbsolute);
+-                var downloadBytes = await indexer.Download(target);
++                byte[] downloadBytes;
++                using (TorrentDownloadScope.Begin())
++                {
++                    downloadBytes = await indexer.Download(target);
++                }
+ 
+                 // handle magnet URLs
+                 if (downloadBytes.Length >= 7
+diff --git a/src/Jackett.Server/Controllers/BlackholeController.cs b/src/Jackett.Server/Controllers/BlackholeController.cs
+index 027511a..8392fe8 100644
+--- a/src/Jackett.Server/Controllers/BlackholeController.cs
++++ b/src/Jackett.Server/Controllers/BlackholeController.cs
+@@ -5,6 +5,7 @@ using System.Threading.Tasks;
+ using Jackett.Common.Models.Config;
+ using Jackett.Common.Services.Interfaces;
+ using Jackett.Common.Utils;
++using Jackett.Common.Utils.Clients;
+ using Microsoft.AspNetCore.Authorization;
+ using Microsoft.AspNetCore.Mvc;
+ using Microsoft.AspNetCore.WebUtilities;
+@@ -56,7 +57,10 @@ namespace Jackett.Server.Controllers
+                 if (remoteFile.OriginalString.StartsWith("magnet"))
+                     downloadBytes = Encoding.UTF8.GetBytes(remoteFile.OriginalString);
+                 else
+-                    downloadBytes = await indexer.Download(remoteFile);
++                    using (TorrentDownloadScope.Begin())
++                    {
++                        downloadBytes = await indexer.Download(remoteFile);
++                    }
+ 
+                 // handle magnet URLs
+                 if (downloadBytes.Length >= 7

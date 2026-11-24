@@ -21,12 +21,13 @@ import (
 
 // Config — адреса внутренних сервисов и каталог статики.
 type Config struct {
-	TrustedProxy string // доверенный прокси (caddy): хост/IP, иначе пусто
-	WebDir       string // каталог статики фронтенда (web/)
-	CatalogURL   string // http://catalog:8081
-	StreamURL    string // http://stream:8082
-	AuthURL      string // http://auth:8083
-	IPTVURL      string // http://iptv:8084
+	TrustedProxy  string // доверенный прокси (caddy): хост/IP, иначе пусто
+	WebDir        string // каталог статики фронтенда (web/)
+	CatalogURL    string // http://catalog:8081
+	StreamURL     string // http://stream:8082
+	AuthURL       string // http://auth:8083
+	IPTVURL       string // http://iptv:8084
+	TorrentVPNURL string // isolated WireGuard configuration service
 }
 
 // NewServer собирает шлюз: reverse-proxy к сервисам + статика + health.
@@ -47,6 +48,8 @@ func NewServer(cfg Config) http.Handler {
 	mux.HandleFunc("/api/admin/", proxyTo(cfg.CatalogURL))
 	mux.HandleFunc("GET /api/admin/users", proxyTo(cfg.AuthURL))
 	mux.HandleFunc("PUT /api/admin/users/{id}/role", proxyTo(cfg.AuthURL))
+	mux.HandleFunc("GET /api/admin/vpn", proxyTo(cfg.TorrentVPNURL))
+	mux.HandleFunc("PUT /api/admin/vpn", proxyTo(cfg.TorrentVPNURL))
 	mux.HandleFunc("GET /api/admin/storage", proxyTo(cfg.StreamURL))
 	mux.HandleFunc("DELETE /api/admin/storage/{hash}", proxyTo(cfg.StreamURL))
 
@@ -148,6 +151,7 @@ func proxyTo(target string) http.HandlerFunc {
 		}
 	}
 	rp := httputil.NewSingleHostReverseProxy(u)
+	rp.Transport = httpx.DirectTransport()
 	rp.FlushInterval = -1
 	return rp.ServeHTTP
 }
@@ -164,7 +168,7 @@ func healthHandler(cfg Config) http.HandlerFunc {
 			{"auth", cfg.AuthURL},
 			{"iptv", cfg.IPTVURL},
 		}
-		client := &http.Client{Timeout: 3 * time.Second}
+		client := &http.Client{Timeout: 3 * time.Second, Transport: httpx.DirectTransport()}
 		statuses := make(map[string]string, len(checks))
 		// Сервисы опрашиваются ПАРАЛЛЕЛЬНО: при недоступном сервисе health
 		// не должен ждать 3×Timeout последовательно.

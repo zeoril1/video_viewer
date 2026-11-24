@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/zeoril1/video_viewer/internal/httpx"
 	"github.com/zeoril1/video_viewer/internal/tmdb"
 )
 
@@ -126,7 +127,7 @@ func registerWatchOrder(mux *http.ServeMux, cfg Config, svc *catalogService) {
 	slots := make(chan struct{}, 2)
 	flights := map[string]chan struct{}{}
 	failures := map[string]time.Time{}
-	anime := &animeProvider{client: &http.Client{Timeout: 15 * time.Second}, endpoint: "https://graphql.anilist.co"}
+	anime := &animeProvider{client: &http.Client{Timeout: 15 * time.Second, Transport: httpx.DirectTransport()}, endpoint: "https://graphql.anilist.co"}
 	mux.HandleFunc("GET /api/films/{id}/watch-order", func(w http.ResponseWriter, r *http.Request) {
 		if cfg.TMDB == nil {
 			http.Error(w, "metadata provider not configured", 503)

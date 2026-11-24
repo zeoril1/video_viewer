@@ -15,21 +15,33 @@ const logoutBtn = document.getElementById('admin-logout');
 const tabMissing = document.getElementById('tab-missing');
 const tabNotfound = document.getElementById('tab-notfound');
 const tabUsers = document.getElementById('tab-users');
+const tabVPN = document.getElementById('tab-vpn');
 const usersPanel = document.getElementById('users-panel');
 const usersBody = document.getElementById('users-body');
 const usersStatus = document.getElementById('users-status');
+const vpnPanel = document.getElementById('vpn-panel');
+const vpnForm = document.getElementById('vpn-form');
+const vpnFile = document.getElementById('vpn-config');
+const vpnSubmit = document.getElementById('vpn-submit');
+const vpnName = document.getElementById('vpn-name');
+const vpnUpdated = document.getElementById('vpn-updated');
+const vpnState = document.getElementById('vpn-state');
+const vpnStatusEl = document.getElementById('vpn-status');
 const filmsLayout = document.getElementById('admin-films-layout');
 const filmNote = document.getElementById('admin-film-note');
 const notfoundWrap = document.getElementById('notfound-wrap');
 const notfoundBody = document.getElementById('notfound-body');
 
 let lastSeq = 0;
-let currentTab = 'missing'; // 'missing' | 'notfound' | 'users'
+let currentTab = 'missing'; // 'missing' | 'notfound' | 'users' | 'vpn'
 let missingCount = 0;
 let notFoundCount = 0;
 let reloadTimer = null;
 let adminUserID = 0;
 let usersCount = 0;
+let vpnConfigured = false;
+let vpnSaving = false;
+let vpnOperation = 0;
 
 // ---- Авторизация (доступ только для роли admin) ----
 async function init() {
@@ -49,7 +61,9 @@ async function init() {
     tabMissing.hidden = true;
     tabNotfound.hidden = true;
     tabUsers.hidden = true;
+    tabVPN.hidden = true;
     usersPanel.hidden = true;
+    vpnPanel.hidden = true;
     filmsLayout.hidden = true;
     refreshAllBtn.hidden = true;
     reloadBtn.hidden = true;
@@ -61,6 +75,7 @@ async function init() {
   tabMissing.addEventListener('click', () => showTab('missing'));
   tabNotfound.addEventListener('click', () => showTab('notfound'));
   tabUsers.addEventListener('click', () => { showTab('users'); loadUsers(); });
+  tabVPN.addEventListener('click', () => { showTab('vpn'); loadVPN(); });
   loadFilms();
   loadNotFound();
   pollLogs();
@@ -180,20 +195,27 @@ function showTab(name) {
   currentTab = name;
   const isMissing = name === 'missing';
   const isUsers = name === 'users';
-  filmsLayout.hidden = isUsers;
+  const isVPN = name === 'vpn';
+  filmsLayout.hidden = isUsers || isVPN;
   usersPanel.hidden = !isUsers;
-  filmNote.hidden = isUsers;
-  refreshAllBtn.hidden = isUsers;
+  vpnPanel.hidden = !isVPN;
+  filmNote.hidden = isUsers || isVPN;
+  refreshAllBtn.hidden = isUsers || isVPN;
+  countEl.hidden = isVPN;
+  reloadBtn.textContent = isVPN ? 'Обновить статус' : 'Обновить список';
   table.closest('.admin-table-wrap').hidden = !isMissing;
   notfoundWrap.hidden = name !== 'notfound';
   tabMissing.classList.toggle('active', isMissing);
   tabNotfound.classList.toggle('active', name === 'notfound');
   tabUsers.classList.toggle('active', isUsers);
+  tabVPN.classList.toggle('active', isVPN);
   updateCount();
 }
 
 function updateCount() {
-  if (currentTab === 'users') {
+  if (currentTab === 'vpn') {
+    countEl.textContent = '';
+  } else if (currentTab === 'users') {
     countEl.textContent = 'Пользователей: ' + usersCount;
   } else if (currentTab === 'notfound') {
     countEl.textContent = 'Не удалось обновить: ' + notFoundCount;
@@ -201,6 +223,79 @@ function updateCount() {
     countEl.textContent = 'Записей с пустыми полями: ' + missingCount;
   }
 }
+
+// ---- Конфигурация VPN ----
+function vpnStatus(text, kind = '') {
+  vpnStatusEl.textContent = text;
+  vpnStatusEl.className = 'vpn-status' + (kind ? ' ' + kind : '');
+}
+
+function updateVPNSubmit() {
+  vpnFile.disabled = vpnSaving;
+  vpnSubmit.disabled = vpnSaving || !vpnFile.files || !vpnFile.files.length;
+  vpnSubmit.textContent = vpnSaving ? 'Применяем конфиг…'
+    : vpnConfigured ? 'Заменить конфиг' : 'Загрузить и применить';
+}
+
+function renderVPN(data) {
+  vpnConfigured = data.configured === true;
+  vpnName.textContent = vpnConfigured ? (data.name || 'Конфиг загружен') : 'Конфиг не загружен';
+  const date = data.updated_at ? new Date(data.updated_at) : null;
+  vpnUpdated.textContent = date && !Number.isNaN(date.getTime()) ? date.toLocaleString('ru-RU') : '—';
+  vpnState.textContent = data.status === 'ready' ? 'Конфиг применён'
+    : data.status === 'error' ? 'Ошибка VPN' : vpnConfigured ? 'Конфиг сохранён' : 'Не настроен';
+  updateVPNSubmit();
+}
+
+async function vpnResponseError(response) {
+  const text = (await response.text()).trim();
+  try {
+    const data = JSON.parse(text);
+    return typeof data.message === 'string' ? data.message
+      : typeof data.error === 'string' ? data.error : 'Ошибка ' + response.status;
+  } catch (error) { return text || 'Ошибка ' + response.status; }
+}
+
+async function loadVPN() {
+  if (vpnSaving) return;
+  const operation = ++vpnOperation;
+  vpnStatus('Загружаем состояние VPN…');
+  try {
+    const response = await fetch('/api/admin/vpn', { cache: 'no-store' });
+    if (!response.ok) throw new Error(await vpnResponseError(response));
+    const data = await response.json();
+    if (operation !== vpnOperation) return;
+    renderVPN(data);
+    vpnStatus(data.message || '', data.status === 'error' ? 'error' : '');
+  } catch (error) {
+    if (operation === vpnOperation) vpnStatus('Не удалось загрузить состояние VPN: ' + error.message, 'error');
+  }
+}
+
+vpnFile.addEventListener('change', () => { vpnStatus(''); updateVPNSubmit(); });
+vpnForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (vpnSaving) return;
+  const file = vpnFile.files && vpnFile.files[0];
+  if (!file) { vpnStatus('Выберите конфиг WireGuard (.conf).', 'error'); return; }
+  if (!/\.conf$/i.test(file.name)) { vpnStatus('Выберите файл WireGuard с расширением .conf.', 'error'); return; }
+  if (!file.size || file.size > 64 * 1024) { vpnStatus('Размер конфига должен быть от 1 байта до 64 КБ.', 'error'); return; }
+  ++vpnOperation;
+  vpnSaving = true;
+  updateVPNSubmit();
+  vpnStatus('Загружаем и применяем конфиг…');
+  try {
+    const form = new FormData();
+    form.append('config', file);
+    const response = await fetch('/api/admin/vpn', { method: 'PUT', body: form });
+    if (!response.ok) throw new Error(await vpnResponseError(response));
+    const data = await response.json();
+    renderVPN(data);
+    vpnFile.value = '';
+    vpnStatus(data.message || (response.status === 202 ? 'Конфиг загружен и применяется.' : 'Конфиг загружен и применён.'), data.status === 'error' ? 'error' : 'success');
+  } catch (error) { vpnStatus('Не удалось заменить конфиг: ' + error.message, 'error'); }
+  finally { vpnSaving = false; updateVPNSubmit(); }
+});
 
 // ---- Пользователи ----
 function userStatus(text, kind = '') {
@@ -379,7 +474,11 @@ refreshAllBtn.addEventListener('click', () => {
     .catch((e) => { logLine('error', 'Не удалось запустить массовое обновление: ' + e.message); refreshAllBtn.disabled = false; });
 });
 
-reloadBtn.addEventListener('click', () => { if (currentTab === 'users') loadUsers(); else { loadFilms(); loadNotFound(); } });
+reloadBtn.addEventListener('click', () => {
+  if (currentTab === 'users') loadUsers();
+  else if (currentTab === 'vpn') loadVPN();
+  else { loadFilms(); loadNotFound(); }
+});
 clearLogBtn.addEventListener('click', () => { logEl.innerHTML = ''; });
 
 function flash(tr, ok) {

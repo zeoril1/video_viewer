@@ -13,6 +13,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/zeoril1/video_viewer/internal/httpx"
 )
 
 const (
@@ -85,7 +87,7 @@ func NewAnalysisClient(baseURL string) *AnalysisClient {
 		parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
 		baseURL = ""
 	}
-	return &AnalysisClient{baseURL: baseURL, client: &http.Client{Timeout: 5 * time.Second,
+	return &AnalysisClient{baseURL: baseURL, client: &http.Client{Timeout: 5 * time.Second, Transport: httpx.DirectTransport(),
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}}
 }
 

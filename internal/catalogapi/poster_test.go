@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -17,6 +18,26 @@ type posterTransport func(*http.Request) (*http.Response, error)
 func (f posterTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 const testPosterURL = "https://image.tmdb.org/t/p/w500/abc.jpg"
+
+func TestPostersKeepExplicitVPNRoute(t *testing.T) {
+	var connects atomic.Int32
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodConnect || r.Host != "image.tmdb.org:443" {
+			t.Errorf("unexpected poster proxy request: %s %s", r.Method, r.Host)
+		}
+		connects.Add(1)
+		// A controlled proxy failure must be reported without a direct retry.
+		http.Error(w, "test VPN unavailable", http.StatusBadGateway)
+	}))
+	defer proxy.Close()
+	p := newPosterProxy(proxy.URL)
+	if w := posterRequest(p, testPosterURL); w.Code != http.StatusBadGateway {
+		t.Fatal("poster proxy failure was not reported", w.Code)
+	}
+	if connects.Load() != 1 {
+		t.Fatal("posters did not retain their VPN route", connects.Load())
+	}
+}
 
 var testPosterBytes = []byte("\x89PNG\r\n\x1a\nimage content")
 

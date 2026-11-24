@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/zeoril1/video_viewer/internal/httpx"
 	"github.com/zeoril1/video_viewer/internal/imdb"
 )
 
@@ -239,7 +240,7 @@ func (d *HTTPDiscovery) json(ctx context.Context, method, base, endpoint string,
 	}
 	client := d.Client
 	if client == nil {
-		client = http.DefaultClient
+		client = &http.Client{Transport: httpx.DirectTransport()}
 	}
 	response, err := client.Do(req)
 	if err != nil {

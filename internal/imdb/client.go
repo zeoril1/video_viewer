@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/zeoril1/video_viewer/internal/httpx"
 )
 
 const (
@@ -50,7 +52,7 @@ func NewClient(cfg Config) *Client {
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = 30 * time.Second
 	}
-	hc := &http.Client{Timeout: cfg.Timeout}
+	hc := &http.Client{Timeout: cfg.Timeout, Transport: httpx.DirectTransport()}
 	if cfg.Transport != nil {
 		hc.Transport = cfg.Transport
 	}

@@ -46,8 +46,14 @@ func main() {
 		proxyStatic     = flag.String("proxy-static", envOr("PROXY_STATIC", ""), "comma-separated static proxies host:port")
 		proxyTimeout    = flag.Duration("proxy-timeout", envDur("PROXY_TIMEOUT", 10*time.Second), "proxy connect timeout")
 		proxyMax        = flag.Int("proxy-max-attempts", envInt("PROXY_MAX_ATTEMPTS", 3), "proxy failover attempts per request")
+		torrentProxy    = flag.String("torrent-proxy", os.Getenv("TORRENT_PROXY_URL"), "VPN HTTP proxy for external .torrent downloads only")
+		posterProxy     = flag.String("poster-proxy", envOr("POSTER_PROXY_URL", os.Getenv("HTTPS_PROXY")), "VPN HTTP proxy for poster images")
 	)
 	flag.Parse()
+	torrentClient, err := httpx.VPNHTTPClient(*torrentProxy)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	// Контекст приложения для фоновых задач и graceful shutdown.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -135,7 +141,9 @@ func main() {
 		if *jackettAPIKey == "" {
 			log.Printf("warn: JACKETT_URL задан, но JACKETT_API_KEY пуст — поиск источников не будет работать")
 		}
-		jackettProv = magnet.NewJackett(*jackettURL, *jackettAPIKey, *jackettIndexer, nil)
+		jackett := magnet.NewJackett(*jackettURL, *jackettAPIKey, *jackettIndexer, nil)
+		jackett.SetTorrentHTTPClient(torrentClient)
+		jackettProv = jackett
 		log.Printf("jackett: %s indexer=%s", *jackettURL, *jackettIndexer)
 	} else {
 		log.Printf("warn: JACKETT_URL не задан — поиск источников (раздач) отключён")
@@ -145,11 +153,12 @@ func main() {
 		*addr, repo != nil, imdbClient != nil, tmdbClient != nil, jackettProv != nil, *jackettIndexer)
 
 	handler := catalogapi.NewServer(catalogapi.Config{
-		DB:      repo,
-		IMDB:    imdbClient,
-		TMDB:    tmdbClient,
-		Magnet:  jackettProv,
-		Context: ctx, // родитель фоновых задач — останавливаются при shutdown
+		DB:             repo,
+		IMDB:           imdbClient,
+		TMDB:           tmdbClient,
+		Magnet:         jackettProv,
+		PosterProxyURL: *posterProxy,
+		Context:        ctx, // родитель фоновых задач — останавливаются при shutdown
 	})
 
 	httpx.Serve(ctx, *addr, handler, nil)
