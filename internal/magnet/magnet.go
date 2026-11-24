@@ -13,6 +13,7 @@ type Result struct {
 	Magnet   string
 	Size     string
 	Seeds    int
+	Voices   []string // студии, явно перечисленные в аудиометаданных раздачи
 }
 
 // Provider — поисковик магнет-ссылок (например, через Jackett Torznab).

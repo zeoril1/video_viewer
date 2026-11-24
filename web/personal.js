@@ -123,9 +123,10 @@ const Personal = (() => {
         i,
         score:
           (preferred &&
-          String(s.title || "")
-            .toLowerCase()
-            .includes(preferred)
+          (typeof sourceHasVoice === "function"
+            ? sourceHasVoice(s, preferred)
+            : (Array.isArray(s.voices) && s.voices.some(name => String(name).trim().toLowerCase() === preferred)) ||
+              String(s.title || "").toLowerCase().includes(preferred))
             ? 1000000
             : 0) +
           ((s.seeds || 0) > 0 ? 100000 : 0) +

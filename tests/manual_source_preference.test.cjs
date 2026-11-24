@@ -14,7 +14,7 @@ function setup(preferred, files) {
     lastSourceItems: automatic, voicePref: { 7: 'LostFilm' }, relPref: {}, playToken: 0, episodeProbeLimit: 6,
     Personal: { preferences: () => ({}), rank: items => items.slice().reverse() },
     PlaybackSources: { preferred: (id, season) => id === 'tt-test' && season === 7 ? preferred : null },
-    seasonReleaseSources: items => items, titleVoices: () => ['LostFilm'], probeOrder: items => items,
+    seasonReleaseSources: items => items, sourceHasVoice: () => true, probeOrder: items => items,
     seasonEpisodeCount: () => 23, tmdbMappingOn: () => true,
     releaseSeasonFit: items => ({ fits: items.length >= 23, count: items.length }), rememberSeasonFit() {},
     fetchFiles: async (id, magnet) => { requested.push(magnet); return files(magnet); },

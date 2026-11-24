@@ -29,11 +29,12 @@ const maxTorrentFetches = 8
 // Jackett — поиск раздач через Jackett (Torznab). indexer — ID индексера
 // в Jackett ("rutracker-ru"), список через запятую или "all" (все настроенные).
 type Jackett struct {
-	baseURL     string
-	apiKey      string
-	indexer     string
-	hc          *http.Client
-	torrentHTTP *http.Client
+	baseURL      string
+	apiKey       string
+	indexer      string
+	hc           *http.Client
+	torrentHTTP  *http.Client
+	voiceDetails *voiceDetailsEnricher
 }
 
 // NewJackett создаёт провайдер Jackett; rt — необязательный RoundTripper (пул прокси).
@@ -46,6 +47,7 @@ func NewJackett(baseURL, apiKey, indexer string, rt http.RoundTripper) *Jackett 
 		indexer = "rutracker-ru"
 	}
 	j := &Jackett{baseURL: strings.TrimRight(baseURL, "/"), apiKey: apiKey, indexer: indexer, hc: hc}
+	j.voiceDetails = newVoiceDetailsEnricher()
 	metadata, _ := httpx.VPNHTTPClient("")
 	j.SetTorrentHTTPClient(metadata)
 	return j
@@ -101,12 +103,14 @@ func (j *Jackett) SearchIndexer(ctx context.Context, id, q string, limit int) ([
 
 // Парсинг Torznab RSS.
 var (
-	jtItemRe      = regexp.MustCompile(`(?is)<item\b.*?</item>`)
-	jtTitleRe     = regexp.MustCompile(`(?is)<title>(.*?)</title>`)
-	jtLinkRe      = regexp.MustCompile(`(?is)<link>(.*?)</link>`)
-	jtEnclosureRe = regexp.MustCompile(`(?is)<enclosure[^>]*url="([^"]+)"`)
-	jtAttrRe      = regexp.MustCompile(`(?is)<torznab:attr name="([^"]+)" value="([^"]+)"`)
-	jtSizeRe      = regexp.MustCompile(`(?is)<size>(.*?)</size>`)
+	jtItemRe        = regexp.MustCompile(`(?is)<item\b.*?</item>`)
+	jtTitleRe       = regexp.MustCompile(`(?is)<title>(.*?)</title>`)
+	jtLinkRe        = regexp.MustCompile(`(?is)<link>(.*?)</link>`)
+	jtEnclosureRe   = regexp.MustCompile(`(?is)<enclosure[^>]*url="([^"]+)"`)
+	jtAttrRe        = regexp.MustCompile(`(?is)<torznab:attr name="([^"]+)" value="([^"]+)"`)
+	jtSizeRe        = regexp.MustCompile(`(?is)<size>(.*?)</size>`)
+	jtDescriptionRe = regexp.MustCompile(`(?is)<description>(.*?)</description>`)
+	jtCommentsRe    = regexp.MustCompile(`(?is)<comments>(.*?)</comments>`)
 	// Jackett при проблемах (несуществующий индексера, отсутствие настроек)
 	// отдаёт HTTP 200 с XML-ошибкой вместо результатов.
 	jtErrorRe = regexp.MustCompile(`(?is)<error\s+code="([^"]+)"\s+description="([^"]*)"`)
@@ -119,6 +123,8 @@ type jackettItem struct {
 	sizeHuman   string
 	magnet      string
 	downloadURL string // ссылка на .torrent через Jackett (если не magnet)
+	description string
+	detailsURL  string
 }
 
 // indexerIDs возвращает список индексеров для опроса: один ID, несколько
@@ -249,11 +255,14 @@ func (j *Jackett) searchIndexer(ctx context.Context, id, q string, limit int) ([
 				return
 			}
 			mu.Lock()
-			out[i] = Result{Title: it.Title, Size: it.sizeHuman, Seeds: it.seeds, Magnet: m}
+			out[i] = Result{Title: it.Title, Size: it.sizeHuman, Seeds: it.seeds, Magnet: m, Voices: voicesFromDescription(it.description)}
 			mu.Unlock()
 		}(i)
 	}
 	wg.Wait()
+	if j.voiceDetails != nil {
+		j.voiceDetails.enrich(ctx, id, items, out)
+	}
 
 	results := make([]Result, 0, len(out))
 	for _, r := range out {
@@ -284,7 +293,7 @@ func magnetInfoHash(m string) string {
 // dedupJackettResults оставляет первую запись по info_hash — один релиз
 // может найтись на нескольких индексерах.
 func dedupJackettResults(in []Result) []Result {
-	seen := make(map[string]struct{}, len(in))
+	seen := make(map[string]int, len(in))
 	out := make([]Result, 0, len(in))
 	for _, r := range in {
 		key := magnetInfoHash(r.Magnet)
@@ -292,10 +301,11 @@ func dedupJackettResults(in []Result) []Result {
 			out = append(out, r)
 			continue
 		}
-		if _, ok := seen[key]; ok {
+		if i, ok := seen[key]; ok {
+			out[i].Voices = mergeVoices(out[i].Voices, r.Voices)
 			continue
 		}
-		seen[key] = struct{}{}
+		seen[key] = len(out)
 		out = append(out, r)
 	}
 	return out
@@ -308,6 +318,12 @@ func parseJackettItems(xml string) []jackettItem {
 		var it jackettItem
 		if m := jtTitleRe.FindStringSubmatch(block); len(m) == 2 {
 			it.Title = html.UnescapeString(strings.TrimSpace(m[1]))
+		}
+		if m := jtDescriptionRe.FindStringSubmatch(block); len(m) == 2 {
+			it.description = jackettXMLText(m[1])
+		}
+		if m := jtCommentsRe.FindStringSubmatch(block); len(m) == 2 {
+			it.detailsURL = jackettXMLText(m[1])
 		}
 		if m := jtEnclosureRe.FindStringSubmatch(block); len(m) == 2 {
 			u := html.UnescapeString(strings.TrimSpace(m[1]))

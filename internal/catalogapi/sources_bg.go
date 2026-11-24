@@ -288,6 +288,7 @@ func (m *sourcesManager) run(ctx context.Context, filmID string) error {
 			FilmID: filmID, Magnet: it.Magnet, Title: it.Title,
 			Size: it.Size, Seeds: it.Seeds, Quality: it.Quality,
 			Audio: it.Audio, Season: it.Season, Provider: it.Provider,
+			Voices: db.MergeSourceVoices(it.Voices),
 		})
 	}
 	if added, updated, removed, err := m.db.SaveSources(ctx, filmID, srcs, searchErr != nil); err != nil {
@@ -301,15 +302,19 @@ func (m *sourcesManager) run(ctx context.Context, filmID string) error {
 	return searchErr
 }
 
+// movieSourceLimit оставляет место для разных переводов после вариантов размера
+// и качества первых студий. Четыре индексера дают до 240 результатов, ниже
+// maxSourceItems; отдельный бюджет скачиваний .torrent остаётся ограниченным.
+const movieSourceLimit = 60
+
 // runQueries ищет по списку запросов и собирает варианты с дедупом; isSeries включает правила отбора сериалов (нужны и раздачи без сидов, см. ниже).
 func runQueries(ctx context.Context, fn func(c context.Context, q string, limit int) ([]magnet.Result, error), filmID string, queries []sourceQuery, providerName string, isSeries bool) []sourceItem {
-	seen := map[string]bool{}
-	seenTS := map[string]bool{}
+	seen := map[string]int{}
 	items := make([]sourceItem, 0, 16)
 	for _, sq := range queries {
 		// У сериала запросы ищем ШИРЕ (у сезона бывают разные студии озвучки), а общий запрос по названию
 		// должен отдать ВСЕ сезоны: RuTracker сортирует по дате, и при лимите 30 свежие сезоны вытесняли старые.
-		limit := 12
+		limit := movieSourceLimit
 		if isSeries {
 			if sq.seasonHint > 0 {
 				limit = 20 // запрос по конкретному сезону
@@ -323,12 +328,15 @@ func runQueries(ctx context.Context, fn func(c context.Context, q string, limit 
 		}
 		log.Printf("sources: %s поиск %q (%s): найдено %d", filmID, sq.q, providerName, len(res))
 		for _, s := range res {
-			tsKey := strings.ToLower(strings.TrimSpace(s.Title)) + "\x00" + s.Size
-			if s.Magnet == "" || seen[s.Magnet] || seenTS[tsKey] {
+			if s.Magnet == "" {
 				continue
 			}
-			seen[s.Magnet] = true
-			seenTS[tsKey] = true
+			voices := db.MergeSourceVoices(s.Voices)
+			key := sourceDedupKey(s.Magnet)
+			if index, exists := seen[key]; exists {
+				items[index].Voices = db.MergeSourceVoices(items[index].Voices, voices)
+				continue
+			}
 			quality, audio, season := magnet.ParseTitle(s.Title)
 			// Сезон из заголовка (до подстановки подсказки) — отличаем раздачу нужного сезона от мусора широкого запроса.
 			namedSeason := season > 0
@@ -340,16 +348,18 @@ func runQueries(ctx context.Context, fn func(c context.Context, q string, limit 
 			// Раздачи без сидов: у фильма отбрасываем (мёртвую раздачу не посмотреть), у сериала оставляем
 			// при названной студии озвучки, полном сборнике или явном сезоне — старые сезоны длинных сериалов
 			// часто лежат только без сидов. Явный сезон/студия отсекают мусор широкой выдачи.
-			if s.Seeds <= 0 && !(isSeries && (namedSeason || magnet.NamesVoiceStudio(s.Title) || magnet.IsFullCollection(s.Title))) {
+			if s.Seeds <= 0 && !(isSeries && (namedSeason || len(voices) > 0 || magnet.NamesVoiceStudio(s.Title) || magnet.IsFullCollection(s.Title))) {
 				continue
 			}
 			provider := s.Provider
 			if provider == "" {
 				provider = providerName
 			}
+			seen[key] = len(items)
 			items = append(items, sourceItem{
 				Title: s.Title, Size: s.Size, Seeds: s.Seeds, Magnet: s.Magnet,
 				Quality: quality, Audio: audio, Season: season, Provider: provider,
+				Voices: voices,
 			})
 		}
 		// Все запросы проходим целиком (лишнее отсекает дедуп); обрыв только на maxSourceItems:
@@ -436,20 +446,32 @@ func missingSeasonQueriesFor(f db.Film, title string, items []sourceItem, used [
 	return out
 }
 
-// mergeSourceItems объединяет проходы поиска, убирая дубли по магнет-ссылке (один релиз приходит на разные запросы).
+// sourceDedupKey uses the content hash rather than tracker tokens or display
+// names. Equal titles and sizes may still identify different audio releases.
+func sourceDedupKey(raw string) string {
+	if hash := sourceCheckHash(raw); hash != "" {
+		return "hash:" + hash
+	}
+	return "magnet:" + raw
+}
+
+// mergeSourceItems combines searches and studio metadata for the same release.
 func mergeSourceItems(base, extra []sourceItem) []sourceItem {
-	seen := make(map[string]bool, len(base)+len(extra))
-	for _, it := range base {
-		seen[it.Magnet] = true
-	}
-	for _, it := range extra {
-		if it.Magnet != "" && seen[it.Magnet] {
-			continue
+	seen := make(map[string]int, len(base)+len(extra))
+	out := make([]sourceItem, 0, len(base)+len(extra))
+	for _, group := range [][]sourceItem{base, extra} {
+		for _, it := range group {
+			key := sourceDedupKey(it.Magnet)
+			if index, exists := seen[key]; it.Magnet != "" && exists {
+				out[index].Voices = db.MergeSourceVoices(out[index].Voices, it.Voices)
+				continue
+			}
+			seen[key] = len(out)
+			it.Voices = db.MergeSourceVoices(it.Voices)
+			out = append(out, it)
 		}
-		seen[it.Magnet] = true
-		base = append(base, it)
 	}
-	return base
+	return out
 }
 
 // sortSourceItems ранжирует: озвучка > качество > сиды; у сериалов — по сезону, внутри сезона по рангу, сборники без сезона последними.
@@ -478,6 +500,7 @@ func sourceItemsFromDB(srcs []db.Source, film db.Film) []sourceItem {
 		items = append(items, sourceItem{
 			Title: s.Title, Size: s.Size, Seeds: s.Seeds, Magnet: s.Magnet,
 			Quality: s.Quality, Audio: s.Audio, Season: s.Season, Provider: s.Provider,
+			Voices: db.MergeSourceVoices(s.Voices),
 		})
 	}
 	items = newFilmTitleMatcher(film).filterWithLog(film.IMDBID, items, false)

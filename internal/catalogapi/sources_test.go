@@ -99,8 +99,8 @@ func TestRunQueriesDropsZeroSeedForMovie(t *testing.T) {
 	}
 }
 
-// TestRunQueriesLimits — сериал ищется шире фильма: у сезона бывает много
-// раздач с разными студиями, а ОБЩИЙ запрос по названию должен вмещать все
+// TestRunQueriesLimits — общий запрос сериала ищется шире фильма и запроса
+// отдельного сезона: ОБЩИЙ запрос по названию должен вмещать все
 // сезоны целиком (RuTracker сортирует выдачу по дате, и с лимитом 30 в неё
 // попадали только свежие сезоны — «Реальные пацаны» теряли 1–8).
 func TestRunQueriesLimits(t *testing.T) {
@@ -117,7 +117,7 @@ func TestRunQueriesLimits(t *testing.T) {
 	var movie []int
 	runQueries(context.Background(), fakeSearch(nil, &movie), "tt2",
 		[]sourceQuery{{q: "F 2020"}}, "test", false)
-	if want := []int{12}; !equalInts(movie, want) {
+	if want := []int{movieSourceLimit}; !equalInts(movie, want) {
 		t.Errorf("лимиты для фильма: %v, ожидали %v", movie, want)
 	}
 }

@@ -306,17 +306,19 @@ function renderMovieSources(items, id) {
     return;
   }
   if (sourcesMovieWrap.previousElementSibling !== sourcesRelWrap) sourcesMovieWrap.before(sourcesRelWrap);
-  const voices = [...new Set(items.flatMap(source => titleVoices(source.title)))];
+  const voices = sourceVoices({ voices: items.flatMap(sourceVoices) });
   if (!movieSelectionReady) {
     const entry = historyEntry(id);
     const preferred = wantVoice || entry?.voice || Personal.preferences().voice || '';
-    selectedMovieVoice = voices.includes(preferred) ? preferred : '';
+    selectedMovieVoice = voices.find(voice => sourceHasVoice({ voices: [voice] }, preferred)) || '';
     selectedMovieMagnet = startMagnet || entry?.magnet || '';
     movieSelectionReady = true;
   }
-  if (selectedMovieVoice && !voices.includes(selectedMovieVoice)) selectedMovieVoice = '';
+  if (selectedMovieVoice && !voices.includes(selectedMovieVoice)) {
+    selectedMovieVoice = voices.find(voice => sourceHasVoice({ voices: [voice] }, selectedMovieVoice)) || '';
+  }
   const candidates = selectedMovieVoice
-    ? items.filter(source => titleVoices(source.title).includes(selectedMovieVoice)) : items;
+    ? items.filter(source => sourceHasVoice(source, selectedMovieVoice)) : items;
   if (!candidates.some(source => source.magnet === selectedMovieMagnet)) {
     selectedMovieMagnet = (Personal.rank(candidates, selectedMovieVoice)[0] || candidates[0])?.magnet || '';
   }
@@ -635,7 +637,7 @@ async function playEpisode(id, season, ep) {
   const voice = voicePref[season] || Personal.preferences().voice || '';
   let cands;
   if (voice) {
-    cands = seasonReleaseSources(items, season).filter((s) => titleVoices(s.title).includes(voice));
+    cands = seasonReleaseSources(items, season).filter((s) => sourceHasVoice(s, voice));
     if (!cands.length) cands = seasonReleaseSources(items, season);
   } else {
     const pref = pickSeasonSource(items, season);

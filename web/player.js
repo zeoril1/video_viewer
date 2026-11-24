@@ -818,15 +818,18 @@ const PP = (() => {
       renderSubtitles(subtitles, id, magnetSrc);
 
       const previousTrack = currentTrack;
-      const ordinal = audioOrdinal(items, selectedAudio, autoVoice || selectedVoice, magnetSrc);
+      const requestedVoice = autoVoice || selectedVoice;
+      const ordinal = audioOrdinal(items, selectedAudio, requestedVoice, magnetSrc);
       autoVoice = '';
       currentTrack = ordinal;
       const activeTrack = items.find(tr => tr.ordinal === ordinal);
       if (activeTrack) {
         selectedAudio = { ...activeTrack, magnet: magnetSrc };
-        // The preference may be unavailable in this file. Report the track that
-        // was actually resolved, so history and source changes keep that voice.
-        selectedVoice = titleVoices(activeTrack.title || '')[0] || activeTrack.title || trackButtonLabel(activeTrack);
+        // Preserve an explicit studio name only when this real track confirms it.
+        // Otherwise save the resolved track, not an unavailable preference.
+        selectedVoice = requestedVoice && matchVoiceOrdinal([activeTrack], requestedVoice) === ordinal
+          ? requestedVoice
+          : titleVoices(activeTrack.title || '')[0] || activeTrack.title || trackButtonLabel(activeTrack);
       } else {
         selectedAudio = null;
         selectedVoice = '';

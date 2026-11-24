@@ -5,8 +5,10 @@ import (
 	"database/sql"
 	"encoding/base32"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 )
@@ -25,10 +27,11 @@ type Source struct {
 	Title     string // заголовок раздачи
 	Size      string
 	Seeds     int
-	Quality   string // 2160/1080/720/480 (парсится из заголовка)
-	Audio     string // dub/multi/two/single/original/subs
-	Season    int    // сезон (0 — не определён/полный сборник)
-	Provider  string // имя провайдера (jackett и т.п.)
+	Quality   string   // 2160/1080/720/480 (парсится из заголовка)
+	Audio     string   // dub/multi/two/single/original/subs
+	Voices    []string // названные студии из метаданных раздачи, независимо от заголовка
+	Season    int      // сезон (0 — не определён/полный сборник)
+	Provider  string   // имя провайдера (jackett и т.п.)
 	CheckedAt time.Time
 	CreatedAt time.Time
 	UpdatedAt time.Time
@@ -45,6 +48,7 @@ CREATE TABLE IF NOT EXISTS sources (
 	seeds INT NOT NULL DEFAULT 0,
 	quality TEXT NOT NULL DEFAULT '',
 	audio TEXT NOT NULL DEFAULT '',
+	voices JSONB NOT NULL DEFAULT '[]'::jsonb,
 	season INT NOT NULL DEFAULT 0,
 	provider TEXT NOT NULL DEFAULT '',
 	checked_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -63,9 +67,12 @@ func (r *Repo) ensureSourcesSchema(ctx context.Context) error {
 	if _, err := r.conn.ExecContext(ctx, "ALTER TABLE sources ADD COLUMN IF NOT EXISTS info_hash TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
+	if _, err := r.conn.ExecContext(ctx, "ALTER TABLE sources ADD COLUMN IF NOT EXISTS voices JSONB NOT NULL DEFAULT '[]'::jsonb"); err != nil {
+		return err
+	}
 	// Старый уникальный ключ по (film_id, magnet) убираем.
 	if _, err := r.conn.ExecContext(ctx, `DO $$ BEGIN
-		IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname='sources_film_id_magnet_key') THEN
+		IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname='sources_film_id_magnet_key' AND conrelid='sources'::regclass) THEN
 			ALTER TABLE sources DROP CONSTRAINT sources_film_id_magnet_key;
 		END IF;
 	END $$`); err != nil {
@@ -115,7 +122,7 @@ func (r *Repo) ensureSourcesSchema(ctx context.Context) error {
 	}
 	// Новый ключ по (film_id, info_hash).
 	if _, err := r.conn.ExecContext(ctx, `DO $$ BEGIN
-		IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='sources_film_id_info_hash_key') THEN
+		IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='sources_film_id_info_hash_key' AND conrelid='sources'::regclass) THEN
 			ALTER TABLE sources ADD CONSTRAINT sources_film_id_info_hash_key UNIQUE (film_id, info_hash);
 		END IF;
 	END $$`); err != nil {
@@ -151,6 +158,25 @@ func magnetInfoHash(magnet string) string {
 	return ""
 }
 
+// MergeSourceVoices combines canonical studio labels without changing caller-owned
+// slices. A release's audio tracks are immutable for an info hash: an empty or
+// partial enrichment must not erase labels learned in an earlier search.
+func MergeSourceVoices(groups ...[]string) []string {
+	out := make([]string, 0)
+	seen := make(map[string]bool)
+	for _, group := range groups {
+		for _, label := range group {
+			label = strings.TrimSpace(label)
+			if label != "" && !seen[label] {
+				seen[label] = true
+				out = append(out, label)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // SaveSources сохраняет свежую выдачу источников фильма. Ключ записи — info_hash: новые релизы
 // вставляются, существующие обновляются ТОЛЬКО если изменились метаданные (размер/сиды/качество/
 // озвучка/сезон/провайдер), а источники, которых больше нет в выдаче, удаляются. Полная строка
@@ -166,8 +192,8 @@ func (r *Repo) SaveSources(ctx context.Context, filmID string, srcs []Source, pr
 	defer func() { _ = tx.Rollback() }()
 
 	stmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO sources (film_id, info_hash, magnet, title, size, seeds, quality, audio, season, provider, checked_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now())
+		INSERT INTO sources (film_id, info_hash, magnet, title, size, seeds, quality, audio, season, provider, voices, checked_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, now())
 		ON CONFLICT (film_id, info_hash) DO UPDATE SET
 			magnet     = EXCLUDED.magnet,
 			title      = EXCLUDED.title,
@@ -177,6 +203,11 @@ func (r *Repo) SaveSources(ctx context.Context, filmID string, srcs []Source, pr
 			audio      = EXCLUDED.audio,
 			season     = EXCLUDED.season,
 			provider   = EXCLUDED.provider,
+			voices     = (
+				SELECT COALESCE(jsonb_agg(studio ORDER BY studio), '[]'::jsonb)
+				FROM (SELECT DISTINCT value AS studio
+				      FROM jsonb_array_elements(sources.voices || EXCLUDED.voices)) AS studios
+			),
 			checked_at = now(),
 			updated_at = now()
 		WHERE sources.title    IS DISTINCT FROM EXCLUDED.title
@@ -186,6 +217,7 @@ func (r *Repo) SaveSources(ctx context.Context, filmID string, srcs []Source, pr
 		   OR sources.audio    IS DISTINCT FROM EXCLUDED.audio
 		   OR sources.season   IS DISTINCT FROM EXCLUDED.season
 		   OR sources.provider IS DISTINCT FROM EXCLUDED.provider
+		   OR NOT (sources.voices @> EXCLUDED.voices)
 		RETURNING (xmax = 0) AS is_insert
 	`)
 	if err != nil {
@@ -211,9 +243,10 @@ func (r *Repo) SaveSources(ctx context.Context, filmID string, srcs []Source, pr
 		}
 		hashes = append(hashes, hash)
 		var isInsert bool
+		voices, _ := json.Marshal(MergeSourceVoices(s.Voices))
 		err := stmt.QueryRowContext(ctx,
 			filmID, hash, s.Magnet, s.Title, s.Size, s.Seeds,
-			s.Quality, s.Audio, s.Season, s.Provider,
+			s.Quality, s.Audio, s.Season, s.Provider, string(voices),
 		).Scan(&isInsert)
 		if err == sql.ErrNoRows {
 			// Метаданные не изменились — только освежаем магнет/checked_at.
@@ -268,7 +301,7 @@ func (r *Repo) SaveSources(ctx context.Context, filmID string, srcs []Source, pr
 // ListSources возвращает сохранённые источники фильма (по убыванию сидов).
 func (r *Repo) ListSources(ctx context.Context, filmID string) ([]Source, error) {
 	rows, err := r.conn.QueryContext(ctx, `
-		SELECT id, film_id, info_hash, magnet, title, size, seeds, quality, audio, season, provider,
+		SELECT id, film_id, info_hash, magnet, title, size, seeds, quality, audio, season, provider, voices,
 		       checked_at, created_at, updated_at
 		FROM sources
 		WHERE film_id = $1
@@ -282,11 +315,16 @@ func (r *Repo) ListSources(ctx context.Context, filmID string) ([]Source, error)
 	var out []Source
 	for rows.Next() {
 		var s Source
+		var voices []byte
 		if err := rows.Scan(&s.ID, &s.FilmID, &s.InfoHash, &s.Magnet, &s.Title, &s.Size, &s.Seeds,
-			&s.Quality, &s.Audio, &s.Season, &s.Provider,
+			&s.Quality, &s.Audio, &s.Season, &s.Provider, &voices,
 			&s.CheckedAt, &s.CreatedAt, &s.UpdatedAt); err != nil {
 			return nil, err
 		}
+		if err := json.Unmarshal(voices, &s.Voices); err != nil {
+			return nil, fmt.Errorf("source %d voices: %w", s.ID, err)
+		}
+		s.Voices = MergeSourceVoices(s.Voices)
 		out = append(out, s)
 	}
 	return out, rows.Err()

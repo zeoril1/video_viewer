@@ -18,12 +18,13 @@ import (
 // Quality — разрешение (2160/1080/720/480), Audio — ключ озвучки, Season — сезон (0 — не определён);
 // поля парсятся из заголовка и используются для ранжирования и группировки «сезон → озвучка → качество».
 type sourceItem struct {
-	Title   string `json:"title"`
-	Size    string `json:"size"`
-	Seeds   int    `json:"seeds"`
-	Magnet  string `json:"magnet"`
-	Quality string `json:"quality,omitempty"`
-	Audio   string `json:"audio,omitempty"`
+	Title   string   `json:"title"`
+	Size    string   `json:"size"`
+	Seeds   int      `json:"seeds"`
+	Magnet  string   `json:"magnet"`
+	Quality string   `json:"quality,omitempty"`
+	Audio   string   `json:"audio,omitempty"`
+	Voices  []string `json:"voices,omitempty"` // названные студии из метаданных, не обязательно из заголовка
 	// Season всегда в JSON (без omitempty): сезон 0 (полный сборник) должен приходить явно,
 	// иначе на фронтенде s.season === undefined и проверки вида s.season === 0 ломаются.
 	Season int `json:"season"`

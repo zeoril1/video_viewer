@@ -265,13 +265,12 @@ function srcHeight(s) {
   return m ? parseInt(m[1], 10) : 0;
 }
 
-// Оценка числа озвучек в раздаче по названию (студии + MVO/Dub/…): для сезона
+// Оценка числа озвучек в раздаче (студии из названия/метаданных + MVO/Dub/…): для сезона
 // выбирается раздача с большим числом переводов, а не первая одиночная.
 function sourceRichness(s) {
   const t = String((s && s.title) || '').toLowerCase();
-  const set = new Set();
+  const set = new Set(sourceVoices(s).map(voiceNameKey));
   const add = (re) => { const m = t.match(re); if (m) m.forEach((x) => set.add(x)); };
-  add(/lostfilm|newstudio|tvshows|hdrezka|baibako|amedia|novamedia|jaskier|gears\s?media|сыендук|кураж[- ]бамбей|кипарис|red head sound|rhs|newcomers|le-production|невафильм|coldfilm|котов|яроцкий|сербин|доценко|гоблин|кубик в кубе/g);
   add(/\bmvo\b|\bdub\b|\bavo\b|многоголос\w*|дубляж|дублирован\w*|одноголос\w*|двухголос\w*/g);
   return set.size;
 }
@@ -305,17 +304,29 @@ function pickSeasonSource(items, season) {
 
 // Озвучки, заявленные в заголовке раздачи (без дублей) — для подписи раздачи в списке.
 function titleVoices(title) {
-  const low = ' ' + String(title || '').toLowerCase().replace(/[`’'']/g, '') + ' ';
+  const raw = String(title || '').replace(/[`’'']/g, '');
+  const low = ' ' + raw.toLowerCase() + ' ';
   const out = [];
   const add = (d) => { if (!out.includes(d)) out.push(d); };
+  const aliasesPattern = (name, excluded = []) => {
+    const aliases = VOICE_ALIASES[name.toLowerCase()].filter(alias => !excluded.includes(alias));
+    const escaped = aliases.map(alias => alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+    return new RegExp('(?:^|[^a-zа-яё0-9])(?:' + escaped.join('|') + ')(?=$|[^a-zа-яё0-9])');
+  };
   const pats = [
     [/lostfilm/, 'LostFilm'], [/newstudi/, 'NewStudio'],
     [/tvshows/, 'TVShows'], [/hdrezka\s*studio/, 'HDRezka Studio'], [/hdrezka/, 'HDRezka'],
+    [aliasesPattern('MovieDalen'), 'MovieDalen'],
+    [aliasesPattern('ViruseProject'), 'ViruseProject'],
+    [aliasesPattern('Смотри кино'), 'Смотри кино'],
+    [aliasesPattern('Dragon Money Studio'), 'Dragon Money Studio'],
     [/baibako/, 'BaibaKo'], [/jaskier/, 'Jaskier'],
     [/gears\s?media/, 'Gears Media'],
     [/novamedia/, 'НоваМедиа'], [/невафильм/, 'Невафильм'], [/coldfilm/, 'ColdFilm'],
     [/newcomers/, 'NewComers'], [/le[- ]production/, 'LE-Production'],
-    [/red head sound/, 'Red Head Sound'], [/сыендук/, 'Сыендук'],
+    // The short track alias "red head" is too ambiguous in a film title.
+    [aliasesPattern('Red Head Sound', ['red head']), 'Red Head Sound'],
+    [aliasesPattern('Продубляж'), 'Продубляж'], [/сыендук/, 'Сыендук'],
     [/кураж[- ]бамбей/, 'Кураж-Бамбей'], [/кипарис/, 'Кипарис'], [/кириллица/, 'Кириллица'],
     [/rg\.?\s?paravozik/, 'RG.Paravozik'], [/котов/, 'Котов'],
     [/яроцкий/, 'Яроцкий'], [/сербин/, 'Сербин'], [/доценко/, 'Доценко'],
@@ -325,7 +336,8 @@ function titleVoices(title) {
   // Amedia ищем границей слова — иначе ловится внутри novamedia (как и LF/HDr/TVS).
   if (!out.includes('Amedia') && /(?:^|[^a-zа-я0-9])amedia/.test(low)) add('Amedia');
   if (!out.includes('LostFilm') && /\blf\b/.test(low)) add('LostFilm');
-  if (!out.includes('HDRezka') && /\bhdr\b/.test(low)) add('HDRezka');
+  // Preserve the studio abbreviation HDr; uppercase HDR is a video format.
+  if (!out.includes('HDRezka') && /\bHDr\b/.test(raw)) add('HDRezka');
   if (!out.includes('TVShows') && /\btvs\b/.test(low)) add('TVShows');
   if (/\beng(?:lish)?\b/.test(low) || /\boriginal\b/.test(low) || /оригинал/.test(low)) add('Оригинал');
   // «HDRezka Studio» уже покрывает и «HDRezka» — лишнее не дублируем.
@@ -336,6 +348,50 @@ function titleVoices(title) {
   return out;
 }
 
+function voiceNameKey(value) {
+  return String(value || '').toLowerCase().replace(/[\s._-]+/g, '');
+}
+
+// Metadata contains explicit studio names, not arbitrary tracker descriptions.
+// Keep unfamiliar names: discovering a studio must not require a new whitelist entry.
+function canonicalVoiceName(value) {
+  if (typeof value !== 'string' || value.length > 160 || /[\u0000-\u001f\u007f<>]|:\/\//.test(value)) return '';
+  const name = value.trim().replace(/\s+/g, ' ');
+  if (!name || !/\p{L}/u.test(name)) return '';
+  if (/^(?:[DPALДРАЛ][12]?)(?:[\s,;+\/|]+[DPALДРАЛ][12]?)*$/i.test(name) ||
+      /^(?:dub(?:bed)?|mvo|dvo|avo|svo|vo|2vo|multi|single|дубляж|дублирован[а-яё]*|(?:профессиональн[а-яё]*\s+)?(?:многоголос[а-яё]*|двухголос[а-яё]*|одноголос[а-яё]*))$/i.test(name)) return '';
+  if (/^(?:original|english|eng|оригинал)$/i.test(name)) return 'Оригинал';
+  if (name === 'HDr') return 'HDRezka';
+  if (/^(?:hdr(?:10\+?)?|sdr|uhd|4k|imax|dolby vision)$/i.test(name)) return '';
+  const key = voiceNameKey(name);
+  const entries = Object.entries(VOICE_ALIASES);
+  const match = entries.find(([label]) => voiceNameKey(label) === key) ||
+    entries.find(([, aliases]) => aliases.some(alias => voiceNameKey(alias) === key));
+  return match ? titleVoices(match[0])[0] || titleVoices(match[1][0])[0] || name : name;
+}
+
+// The source list may name additional tracks only in tracker details. Union those
+// verified names with the title; their position never implies an audio ordinal.
+function sourceVoices(source) {
+  const out = [], seen = new Set();
+  const add = name => {
+    const key = voiceNameKey(name);
+    if (name && !seen.has(key)) { seen.add(key); out.push(name); }
+  };
+  titleVoices(source && source.title).forEach(add);
+  if (source && Array.isArray(source.voices)) source.voices.forEach(value => add(canonicalVoiceName(value)));
+  if (seen.has(voiceNameKey('HDRezka Studio'))) {
+    const index = out.indexOf('HDRezka');
+    if (index >= 0) out.splice(index, 1);
+  }
+  return out;
+}
+
+function sourceHasVoice(source, voice) {
+  const wanted = voiceNameKey(canonicalVoiceName(voice));
+  return !!wanted && sourceVoices(source).some(name => voiceNameKey(name) === wanted);
+}
+
 // Алиасы озвучек для сопоставления чипа с дорожками файла (LF/HDr/TVS и т.п.).
 const VOICE_ALIASES = {
   'lostfilm': ['lostfilm', 'lf'],
@@ -343,16 +399,21 @@ const VOICE_ALIASES = {
   'tvshows': ['tvshows', 'tvs'],
   'hdrezka studio': ['hdrezka studio', 'hdrezka', 'hdr'],
   'hdrezka': ['hdrezka', 'hdr'],
+  'moviedalen': ['moviedalen', 'movie dalen', 'movie-dalen', 'movie_dalen', 'movie.dalen'],
+  'viruseproject': ['viruseproject', 'viruse project', 'viruse-project'],
+  'смотри кино': ['смотри кино', 'смотрикино'],
+  'dragon money studio': ['dragon money studio', 'dragonmoneystudio', 'dragon money'],
   'baibako': ['baibako', 'baiba ko'],
   'gears media': ['gears media', 'gearsmedia', 'gears'],
   'amedia': ['amedia'],
   'jaskier': ['jaskier'],
   'red head sound': ['red head sound', 'red head', 'rhs'],
+  'продубляж': ['продубляж'],
   'newcomers': ['newcomers'],
   'le-production': ['le-production', 'leproduction', 'le production'],
   'невафильм': ['невафильм'],
   'coldfilm': ['coldfilm'],
-  'novamedia': ['novamedia'],
+  'novamedia': ['novamedia', 'новамедиа'],
   'сыендук': ['сыендук', 'syenduk', 'съендук'],
   'кураж-бамбей': ['кураж-бамбей', 'кураж бамбей', 'кураж'],
   'кипарис': ['кипарис'],
@@ -428,9 +489,10 @@ function seasonReleaseSources(items, season) {
 // Озвучки сезона — объединение по его раздачам без дублей; «Оригинал» всегда последним.
 function seasonVoices(items, season) {
   const out = [];
-  const add = (d) => { if (!out.includes(d)) out.push(d); };
+  const seen = new Set();
+  const add = (d) => { const key = voiceNameKey(d); if (!seen.has(key)) { seen.add(key); out.push(d); } };
   for (const s of seasonReleaseSources(items, season)) {
-    titleVoices(s.title).forEach(add);
+    sourceVoices(s).forEach(add);
   }
   if (!out.includes('Оригинал')) out.push('Оригинал');
   return out;
@@ -439,6 +501,6 @@ function seasonVoices(items, season) {
 // Раздача сезона с этой озвучкой: сначала живая, затем любая с ней, затем
 // просто лучшая раздача сезона (озвучка могла не быть указана в заголовке).
 function pickVoiceSource(items, season, voice) {
-  const same = seasonReleaseSources(items, season).filter((s) => titleVoices(s.title).includes(voice));
+  const same = seasonReleaseSources(items, season).filter((s) => sourceHasVoice(s, voice));
   return same.find((s) => (s.seeds || 0) > 0) || same[0] || seasonSourceOf(items, season);
 }
