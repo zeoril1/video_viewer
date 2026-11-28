@@ -20,7 +20,11 @@ VPN. A download that requires that external browser service fails instead of
 using an uncontrolled route. Ordinary searches may still use FlareSolverr
 directly; its legacy proxy settings are not forwarded.
 
-There is no direct retry when the VPN proxy is unavailable. Blackhole downloads
+The central `torrent-vpn:8888` service prefers WireGuard and uses its checked
+HTTP(S) proxy pool when VPN connections fail. Discovery, latency checks and
+manual controls are available in the site's admin Proxy tab; the scheduler runs
+every five minutes. Neither route falls back to a direct tracker connection.
+There is no direct retry when the central service is unavailable. Blackhole downloads
 use the same scope. Regular updates must rebuild this image: the startup command
 always supplies `--NoUpdates`, even if an old stack still sets AUTO_UPDATE=true.
 

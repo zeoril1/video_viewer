@@ -11,11 +11,16 @@ import (
 	"github.com/zeoril1/video_viewer/internal/remoteauth"
 )
 
-func NewControlHandler(manager *Manager, authURL string) http.Handler {
+func NewControlHandler(manager *Manager, authURL string, options ...ProxyControlOptions) http.Handler {
 	auth := remoteauth.New(authURL)
 	// Control-plane authentication always uses the ordinary container network.
 	auth.HTTP.Transport = &http.Transport{Proxy: nil}
 	mux := http.NewServeMux()
+	var proxyOptions ProxyControlOptions
+	if len(options) > 0 {
+		proxyOptions = options[0]
+	}
+	registerProxyAdmin(mux, auth, manager, proxyOptions)
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})

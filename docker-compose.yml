@@ -302,7 +302,8 @@ services:
   # --- Jackett — поиск раздач на трекерах с антиботом/приватных (RuTracker):
   # сам хранит доступы, решает капчу при настройке и обходит Cloudflare. ---
   # Isolated userspace WireGuard tunnel: no host routes, NET_ADMIN or Docker
-  # socket. The admin API persists/replaces wg0.conf in its private volume.
+  # socket. The admin API persists wg0.conf and proxy fallback settings in its
+  # private volume; the proxy checker refreshes its public lists every 5 minutes.
   torrent-vpn:
     build:
       context: .
@@ -324,7 +325,7 @@ services:
       AUTH_URL: http://auth:8083
     volumes:
       - torrent-vpn-data:/app/vpn
-    command: ["/app/app", "-addr", ":8085", "-proxy-addr", ":8888", "-config", "/app/vpn/wg0.conf"]
+    command: ["/app/app", "-addr", ":8085", "-proxy-addr", ":8888", "-config", "/app/vpn/wg0.conf", "-proxy-config", "/app/vpn/proxies.json"]
     healthcheck:
       # Missing/invalid VPN config must not block the admin upload page.
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8085/api/health >/dev/null || exit 1"]

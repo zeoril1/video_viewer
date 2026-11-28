@@ -6,7 +6,7 @@
   <title>Админ-панель — Кинотека</title>
   <script src="theme.js?v=1"></script>
   <link rel="stylesheet" href="style.css?v=17" />
-  <link rel="stylesheet" href="admin.css?v=6" />
+  <link rel="stylesheet" href="admin.css?v=7" />
   <link rel="stylesheet" href="storage.css?v=2" />
   <link rel="stylesheet" href="redesign.css?v=3" />
 </head>
@@ -27,6 +27,7 @@
       <button id="tab-notfound" class="section-btn" type="button">Не удалось обновить</button>
       <button id="tab-users" class="section-btn" type="button">Пользователи</button>
       <button id="tab-vpn" class="section-btn" type="button">VPN</button>
+      <button id="tab-proxies" class="section-btn" type="button">Прокси</button>
     </div>
 
     <div class="admin-controls">
@@ -66,6 +67,42 @@
         <button id="vpn-submit" class="auth-btn auth-btn-primary" type="submit" disabled>Загрузить и применить</button>
       </form>
       <p id="vpn-status" class="vpn-status" role="status" aria-live="polite"></p>
+    </section>
+
+    <section id="proxies-panel" class="proxies-panel" aria-labelledby="proxies-heading" hidden>
+      <h2 id="proxies-heading">Резервные прокси</h2>
+      <p class="storage-note">Основной маршрут для постеров и файлов .torrent — VPN. При ошибке VPN автоматически используются проверенные прокси. Само видео по BitTorrent скачивается через обычное соединение.</p>
+      <dl class="proxy-details">
+        <div><dt>Текущий маршрут</dt><dd id="proxies-route">—</dd></div>
+        <div><dt>Доступно / кандидатов</dt><dd id="proxies-count">—</dd></div>
+        <div><dt>Состояние проверки</dt><dd id="proxies-state">—</dd></div>
+        <div><dt>Последний запуск</dt><dd id="proxies-started">—</dd></div>
+        <div><dt>Проверка завершена</dt><dd id="proxies-finished">—</dd></div>
+        <div><dt>Следующая проверка</dt><dd id="proxies-next">—</dd></div>
+      </dl>
+      <p id="proxies-interval" class="storage-note">Автопроверка выполняется на сервере каждые 5 минут, даже если админка закрыта.</p>
+      <p id="proxies-check-error" class="proxy-check-error" hidden></p>
+      <button id="proxies-refresh" class="auth-btn auth-btn-primary" type="button" disabled>Найти и проверить сейчас</button>
+      <p id="proxies-status" class="proxy-status" role="status" aria-live="polite"></p>
+      <div class="proxy-table-wrap">
+        <table class="storage-table proxy-table" aria-label="Доступные проверенные прокси">
+          <thead><tr><th>Адрес</th><th>Задержка</th><th>Проверен</th><th>Источник</th></tr></thead>
+          <tbody id="proxies-body"></tbody>
+        </table>
+      </div>
+      <p id="proxies-empty" class="storage-note">Загружаем список прокси…</p>
+      <form id="proxies-form" class="proxy-form" aria-labelledby="proxies-settings-heading">
+        <h3 id="proxies-settings-heading">Настройки резервного маршрута</h3>
+        <label class="proxy-toggle"><input id="proxies-enabled" type="checkbox" disabled /> Использовать резервные прокси</label>
+        <label for="proxies-sources">HTTPS-источники списков</label>
+        <textarea id="proxies-sources" rows="4" placeholder="https://example.org/proxies.txt" aria-describedby="proxies-sources-help" spellcheck="false" disabled></textarea>
+        <p id="proxies-sources-help" class="storage-note">Одна HTTPS-ссылка на строку.</p>
+        <label for="proxies-static">Прокси вручную</label>
+        <textarea id="proxies-static" rows="4" placeholder="1.2.3.4:8080" aria-describedby="proxies-static-help" spellcheck="false" disabled></textarea>
+        <p id="proxies-static-help" class="storage-note">Один HTTP(S)-прокси на строку: IP:порт или http://IP:порт. Прокси с логином и паролем не поддерживаются.</p>
+        <p id="proxies-dirty" class="storage-note" hidden>Изменения ещё не сохранены.</p>
+        <button id="proxies-save" class="auth-btn" type="submit" disabled>Сохранить настройки</button>
+      </form>
     </section>
 
     <div id="admin-films-layout" class="admin-layout">
@@ -155,6 +192,6 @@
     </div>
   </main>
 
-  <script src="admin.js?v=6"></script>
+  <script src="admin.js?v=7"></script>
 </body>
 </html>

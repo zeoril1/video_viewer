@@ -13,14 +13,24 @@ import (
 
 type proxyHandler struct {
 	manager *Manager
+	network FallbackNetwork
 	slots   chan struct{}
 }
 
 // NewProxyHandler accepts forward HTTP and CONNECT requests on an internal-only
 // listener. Every upstream TCP connection and destination DNS lookup uses the
-// active WireGuard netstack. There is no direct-network fallback.
-func NewProxyHandler(manager *Manager) http.Handler {
-	return &proxyHandler{manager: manager, slots: make(chan struct{}, 32)}
+// active WireGuard netstack, with an optional checked-proxy fallback. There is
+// no direct-network fallback when both protected routes are unavailable.
+func NewProxyHandler(manager *Manager, fallbacks ...FallbackNetwork) http.Handler {
+	var network FallbackNetwork = manager
+	if len(fallbacks) > 0 && fallbacks[0] != nil {
+		if router, ok := fallbacks[0].(*fallbackRouter); ok && router.primary == manager {
+			network = router
+		} else {
+			network = newFallbackRouter(manager, fallbacks[0])
+		}
+	}
+	return &proxyHandler{manager: manager, network: network, slots: make(chan struct{}, 32)}
 }
 
 func (p *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -31,7 +41,7 @@ func (p *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "VPN proxy busy", http.StatusServiceUnavailable)
 		return
 	}
-	if _, err := p.manager.active(); err != nil {
+	if _, err := p.manager.active(); err != nil && p.network == p.manager {
 		http.Error(w, "VPN is not configured", http.StatusServiceUnavailable)
 		return
 	}
@@ -53,7 +63,7 @@ func (p *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	out.RequestURI = ""
 	out.Header = r.Header.Clone()
 	removeHopHeaders(out.Header)
-	resp, err := p.manager.RoundTrip(out)
+	resp, err := p.network.RoundTrip(out)
 	if err != nil {
 		proxyError(w, err)
 		return
@@ -76,7 +86,7 @@ func (p *proxyHandler) connect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid CONNECT address", http.StatusBadRequest)
 		return
 	}
-	upstream, err := p.manager.DialContext(r.Context(), "tcp", r.Host)
+	upstream, err := p.network.DialContext(r.Context(), "tcp", r.Host)
 	if err != nil {
 		proxyError(w, err)
 		return
@@ -111,7 +121,7 @@ func proxyError(w http.ResponseWriter, err error) {
 	if errors.Is(err, ErrUnconfigured) {
 		http.Error(w, "VPN is not configured", http.StatusServiceUnavailable)
 	} else {
-		http.Error(w, "VPN download connection failed", http.StatusBadGateway)
+		http.Error(w, "Protected download connection failed", http.StatusBadGateway)
 	}
 }
 func removeHopHeaders(header http.Header) {

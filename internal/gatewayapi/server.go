@@ -50,6 +50,9 @@ func NewServer(cfg Config) http.Handler {
 	mux.HandleFunc("PUT /api/admin/users/{id}/role", proxyTo(cfg.AuthURL))
 	mux.HandleFunc("GET /api/admin/vpn", proxyTo(cfg.TorrentVPNURL))
 	mux.HandleFunc("PUT /api/admin/vpn", proxyTo(cfg.TorrentVPNURL))
+	mux.HandleFunc("GET /api/admin/proxies", proxyTo(cfg.TorrentVPNURL))
+	mux.HandleFunc("PUT /api/admin/proxies", proxyTo(cfg.TorrentVPNURL))
+	mux.HandleFunc("POST /api/admin/proxies/refresh", proxyTo(cfg.TorrentVPNURL))
 	mux.HandleFunc("GET /api/admin/storage", proxyTo(cfg.StreamURL))
 	mux.HandleFunc("DELETE /api/admin/storage/{hash}", proxyTo(cfg.StreamURL))
 

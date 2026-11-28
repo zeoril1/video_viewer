@@ -254,3 +254,55 @@ tr.flash-err {
   .vpn-details > div { grid-template-columns: 1fr; gap: 2px; }
   .vpn-form button { justify-self: stretch; }
 }
+
+/* ---- Резервные прокси ---- */
+.proxies-panel {
+  max-width: 1100px;
+  min-width: 0;
+  padding: 22px 24px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+.proxies-panel h2 { margin: 0 0 12px; font-size: 20px; }
+.proxy-details { display: grid; gap: 10px; margin: 22px 0 16px; }
+.proxy-details > div { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 12px; }
+.proxy-details dt { color: var(--muted); }
+.proxy-details dd { margin: 0; overflow-wrap: anywhere; }
+.proxy-status { min-height: 1.5em; color: var(--muted); overflow-wrap: anywhere; }
+.proxy-status.error, .proxy-check-error { color: var(--error); }
+.proxy-status.success { color: var(--success); }
+.proxy-check-error { overflow-wrap: anywhere; font-size: 13px; }
+.proxy-table-wrap { max-width: 100%; overflow-x: auto; }
+.proxy-table { min-width: 550px; table-layout: fixed; }
+.proxy-table th:nth-child(1) { width: 28%; }
+.proxy-table th:nth-child(2) { width: 14%; }
+.proxy-table th:nth-child(3) { width: 23%; }
+.proxy-table th:nth-child(4) { width: 35%; }
+.proxy-table td { overflow-wrap: anywhere; }
+.proxy-table td:nth-child(2) { white-space: nowrap; }
+.proxy-form { display: grid; gap: 10px; margin-top: 26px; max-width: 760px; }
+.proxy-form h3 { margin: 0 0 4px; font-size: 17px; }
+.proxy-form label { font-weight: 600; }
+.proxy-form .proxy-toggle { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+.proxy-form input[type="checkbox"] { accent-color: var(--accent); }
+.proxy-form textarea {
+  width: 100%;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--input-bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  resize: vertical;
+}
+.proxy-form .storage-note { margin: 0 0 6px; }
+.proxy-form button { justify-self: start; }
+.proxies-panel button:disabled { opacity: .5; cursor: default; }
+@media (max-width: 600px) {
+  .proxies-panel { padding: 18px 16px; }
+  .proxy-details > div { grid-template-columns: 1fr; gap: 2px; }
+  .proxy-form button { justify-self: stretch; }
+}

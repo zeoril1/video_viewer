@@ -7,9 +7,11 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
+	"github.com/zeoril1/video_viewer/internal/proxycheck"
 	"github.com/zeoril1/video_viewer/internal/torrentvpn"
 )
 
@@ -17,6 +19,7 @@ func main() {
 	addr := flag.String("addr", ":8085", "internal control HTTP listen address")
 	proxyAddr := flag.String("proxy-addr", ":8888", "internal torrent download HTTP proxy listen address")
 	path := flag.String("config", "/app/vpn/wg0.conf", "persistent WireGuard configuration file")
+	proxyConfig := flag.String("proxy-config", "", "persistent proxy pool settings (default: proxies.json beside VPN config)")
 	authURL := os.Getenv("AUTH_URL")
 	if authURL == "" {
 		authURL = "http://127.0.0.1:8083"
@@ -26,8 +29,21 @@ func main() {
 	defer stop()
 	manager := torrentvpn.NewManager(*path)
 	defer manager.Close()
-	control := &http.Server{Addr: *addr, Handler: torrentvpn.NewControlHandler(manager, authURL), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10}
-	proxy := &http.Server{Addr: *proxyAddr, Handler: torrentvpn.NewProxyHandler(manager), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 2 * time.Minute, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10}
+	if *proxyConfig == "" {
+		*proxyConfig = filepath.Join(filepath.Dir(*path), "proxies.json")
+	}
+	pool, err := proxycheck.NewManager(*proxyConfig)
+	if err != nil {
+		log.Print("torrent-vpn: saved proxy settings could not be loaded; update them in the admin panel")
+	}
+	if pool == nil {
+		log.Fatal("torrent-vpn: proxy checker could not be initialized")
+	}
+	pool.Start(ctx)
+	defer pool.Close()
+	router := torrentvpn.NewFallbackRouter(manager, pool)
+	control := &http.Server{Addr: *addr, Handler: torrentvpn.NewControlHandler(manager, authURL, torrentvpn.ProxyControlOptions{Pool: pool, Router: router}), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10}
+	proxy := &http.Server{Addr: *proxyAddr, Handler: torrentvpn.NewProxyHandler(manager, router), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 2 * time.Minute, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10}
 	failed := make(chan error, 2)
 	for _, server := range []*http.Server{control, proxy} {
 		go func(s *http.Server) {

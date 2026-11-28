@@ -16,6 +16,7 @@ const tabMissing = document.getElementById('tab-missing');
 const tabNotfound = document.getElementById('tab-notfound');
 const tabUsers = document.getElementById('tab-users');
 const tabVPN = document.getElementById('tab-vpn');
+const tabProxies = document.getElementById('tab-proxies');
 const usersPanel = document.getElementById('users-panel');
 const usersBody = document.getElementById('users-body');
 const usersStatus = document.getElementById('users-status');
@@ -27,13 +28,24 @@ const vpnName = document.getElementById('vpn-name');
 const vpnUpdated = document.getElementById('vpn-updated');
 const vpnState = document.getElementById('vpn-state');
 const vpnStatusEl = document.getElementById('vpn-status');
+const proxiesPanel = document.getElementById('proxies-panel');
+const proxiesForm = document.getElementById('proxies-form');
+const proxiesEnabled = document.getElementById('proxies-enabled');
+const proxiesSources = document.getElementById('proxies-sources');
+const proxiesStatic = document.getElementById('proxies-static');
+const proxiesSave = document.getElementById('proxies-save');
+const proxiesRefresh = document.getElementById('proxies-refresh');
+const proxiesBody = document.getElementById('proxies-body');
+const proxiesEmpty = document.getElementById('proxies-empty');
+const proxiesStatusEl = document.getElementById('proxies-status');
+const proxiesDirtyNote = document.getElementById('proxies-dirty');
 const filmsLayout = document.getElementById('admin-films-layout');
 const filmNote = document.getElementById('admin-film-note');
 const notfoundWrap = document.getElementById('notfound-wrap');
 const notfoundBody = document.getElementById('notfound-body');
 
 let lastSeq = 0;
-let currentTab = 'missing'; // 'missing' | 'notfound' | 'users' | 'vpn'
+let currentTab = 'missing'; // 'missing' | 'notfound' | 'users' | 'vpn' | 'proxies'
 let missingCount = 0;
 let notFoundCount = 0;
 let reloadTimer = null;
@@ -42,6 +54,14 @@ let usersCount = 0;
 let vpnConfigured = false;
 let vpnSaving = false;
 let vpnOperation = 0;
+let proxiesData = null;
+let proxiesLoaded = false;
+let proxiesDirty = false;
+let proxiesEditVersion = 0;
+let proxiesRequest = null;
+let proxiesPollTimer = null;
+let proxiesAccessDenied = false;
+let proxiesMessageOrigin = '';
 
 // ---- Авторизация (доступ только для роли admin) ----
 async function init() {
@@ -62,8 +82,12 @@ async function init() {
     tabNotfound.hidden = true;
     tabUsers.hidden = true;
     tabVPN.hidden = true;
+    tabProxies.hidden = true;
     usersPanel.hidden = true;
     vpnPanel.hidden = true;
+    proxiesPanel.hidden = true;
+    proxiesAccessDenied = true;
+    stopProxyPolling(true);
     filmsLayout.hidden = true;
     refreshAllBtn.hidden = true;
     reloadBtn.hidden = true;
@@ -76,12 +100,15 @@ async function init() {
   tabNotfound.addEventListener('click', () => showTab('notfound'));
   tabUsers.addEventListener('click', () => { showTab('users'); loadUsers(); });
   tabVPN.addEventListener('click', () => { showTab('vpn'); loadVPN(); });
+  tabProxies.addEventListener('click', () => showTab('proxies'));
   loadFilms();
   loadNotFound();
   pollLogs();
 }
 
 logoutBtn.addEventListener('click', async () => {
+  proxiesAccessDenied = true;
+  stopProxyPolling(true);
   await fetch('/api/auth/logout', { method: 'POST' }).catch(() => {});
   location.href = '/';
 });
@@ -196,24 +223,29 @@ function showTab(name) {
   const isMissing = name === 'missing';
   const isUsers = name === 'users';
   const isVPN = name === 'vpn';
-  filmsLayout.hidden = isUsers || isVPN;
+  const isProxies = name === 'proxies';
+  filmsLayout.hidden = isUsers || isVPN || isProxies;
   usersPanel.hidden = !isUsers;
   vpnPanel.hidden = !isVPN;
-  filmNote.hidden = isUsers || isVPN;
-  refreshAllBtn.hidden = isUsers || isVPN;
-  countEl.hidden = isVPN;
-  reloadBtn.textContent = isVPN ? 'Обновить статус' : 'Обновить список';
+  proxiesPanel.hidden = !isProxies;
+  filmNote.hidden = isUsers || isVPN || isProxies;
+  refreshAllBtn.hidden = isUsers || isVPN || isProxies;
+  countEl.hidden = isVPN || isProxies;
+  reloadBtn.textContent = isVPN || isProxies ? 'Обновить статус' : 'Обновить список';
   table.closest('.admin-table-wrap').hidden = !isMissing;
   notfoundWrap.hidden = name !== 'notfound';
   tabMissing.classList.toggle('active', isMissing);
   tabNotfound.classList.toggle('active', name === 'notfound');
   tabUsers.classList.toggle('active', isUsers);
   tabVPN.classList.toggle('active', isVPN);
+  tabProxies.classList.toggle('active', isProxies);
+  stopProxyPolling(true);
+  if (isProxies && !document.hidden) loadProxies();
   updateCount();
 }
 
 function updateCount() {
-  if (currentTab === 'vpn') {
+  if (currentTab === 'vpn' || currentTab === 'proxies') {
     countEl.textContent = '';
   } else if (currentTab === 'users') {
     countEl.textContent = 'Пользователей: ' + usersCount;
@@ -295,6 +327,249 @@ vpnForm.addEventListener('submit', async (event) => {
     vpnStatus(data.message || (response.status === 202 ? 'Конфиг загружен и применяется.' : 'Конфиг загружен и применён.'), data.status === 'error' ? 'error' : 'success');
   } catch (error) { vpnStatus('Не удалось заменить конфиг: ' + error.message, 'error'); }
   finally { vpnSaving = false; updateVPNSubmit(); }
+});
+
+// ---- Резервные прокси ----
+function proxyStatus(text, kind = '', origin = 'action') {
+  proxiesStatusEl.textContent = text;
+  proxiesStatusEl.className = 'proxy-status' + (kind ? ' ' + kind : '');
+  proxiesMessageOrigin = origin;
+}
+
+function proxyDate(value) {
+  const date = value ? new Date(value) : null;
+  return date && !Number.isNaN(date.getTime()) ? date.toLocaleString('ru-RU') : '—';
+}
+
+function proxyNumber(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0;
+}
+
+function proxyPanelVisible() {
+  return currentTab === 'proxies' && !proxiesPanel.hidden && !document.hidden && !proxiesAccessDenied;
+}
+
+function updateProxyControls() {
+  const action = proxiesRequest && proxiesRequest.kind !== 'status';
+  const disabled = !proxiesLoaded || proxiesAccessDenied || (proxiesRequest && proxiesRequest.kind === 'save');
+  for (const input of [proxiesEnabled, proxiesSources, proxiesStatic]) input.disabled = !!disabled;
+  proxiesSave.disabled = !proxiesLoaded || proxiesAccessDenied || !!action || !proxiesDirty;
+  proxiesRefresh.disabled = !proxiesLoaded || proxiesAccessDenied || !!action || !!(proxiesData && proxiesData.running);
+  proxiesSave.textContent = proxiesRequest && proxiesRequest.kind === 'save' ? 'Сохраняем…' : 'Сохранить настройки';
+  proxiesRefresh.textContent = proxiesRequest && proxiesRequest.kind === 'refresh' ? 'Запускаем проверку…'
+    : proxiesData && proxiesData.running ? 'Проверяем прокси…' : 'Найти и проверить сейчас';
+  proxiesDirtyNote.hidden = !proxiesDirty;
+}
+
+function fillProxyForm(config) {
+  proxiesEnabled.checked = !!config.enabled;
+  proxiesSources.value = Array.isArray(config.sources) ? config.sources.join('\n') : '';
+  proxiesStatic.value = Array.isArray(config.static) ? config.static.join('\n') : '';
+}
+
+function renderProxies(data) {
+  if (!data || !data.config || typeof data.config !== 'object') throw new Error('Сервер вернул неполные настройки прокси.');
+  proxiesData = data;
+  proxiesLoaded = true;
+  if (!proxiesDirty) fillProxyForm(data.config);
+  const routes = { vpn: 'VPN (основной)', proxy: 'Резервные прокси', unavailable: 'Нет доступного маршрута' };
+  document.getElementById('proxies-route').textContent = routes[data.active_route] || '—';
+  document.getElementById('proxies-count').textContent = proxyNumber(data.available) + ' / ' + proxyNumber(data.candidates);
+  document.getElementById('proxies-state').textContent = data.running ? 'Идёт поиск и проверка'
+    : data.config.enabled ? 'Ожидает следующей проверки' : 'Резервные прокси выключены';
+  document.getElementById('proxies-started').textContent = proxyDate(data.last_started_at);
+  document.getElementById('proxies-finished').textContent = proxyDate(data.last_finished_at);
+  document.getElementById('proxies-next').textContent = proxyDate(data.next_run_at);
+  const seconds = proxyNumber(data.interval_seconds) || 300;
+  const interval = seconds % 60 === 0 ? (seconds / 60) + ' мин.' : seconds + ' сек.';
+  document.getElementById('proxies-interval').textContent = 'Автопроверка выполняется на сервере каждые ' + interval + ', даже если админка закрыта.';
+  const lastError = document.getElementById('proxies-check-error');
+  lastError.textContent = data.last_error ? 'Последняя проверка: ' + data.last_error : '';
+  lastError.hidden = !data.last_error;
+  proxiesBody.replaceChildren();
+  const items = Array.isArray(data.items) ? data.items : [];
+  for (const item of items) {
+    const row = document.createElement('tr');
+    const latency = item.latency_ms === null || item.latency_ms === '' ? NaN : Number(item.latency_ms);
+    for (const text of [item.address || '—', Number.isFinite(latency) && latency >= 0 ? Math.round(latency) + ' мс' : '—',
+      proxyDate(item.checked_at), item.source === 'static' || item.source === 'manual' ? 'Вручную' : item.source || '—']) {
+      const cell = document.createElement('td');
+      cell.textContent = text;
+      row.appendChild(cell);
+    }
+    proxiesBody.appendChild(row);
+  }
+  proxiesEmpty.hidden = items.length > 0;
+  proxiesEmpty.textContent = data.running ? 'Идёт поиск и проверка прокси…'
+    : !data.config.enabled ? 'Резервные прокси выключены. Включите их в настройках, чтобы использовать резервный маршрут.'
+    : data.candidates ? 'Доступных прокси не найдено. Проверьте источники или добавьте адреса вручную.'
+    : 'Проверенных прокси пока нет. Добавьте источники или адреса и запустите проверку.';
+  updateProxyControls();
+}
+
+function stopProxyPolling(cancelStatus = false) {
+  if (proxiesPollTimer !== null) clearTimeout(proxiesPollTimer);
+  proxiesPollTimer = null;
+  if (cancelStatus && proxiesRequest && proxiesRequest.kind === 'status') {
+    const request = proxiesRequest;
+    proxiesRequest = null;
+    clearTimeout(request.timeout);
+    if (request.controller) request.controller.abort();
+  }
+}
+
+function scheduleProxyPoll() {
+  stopProxyPolling();
+  if (!proxyPanelVisible() || proxiesRequest) return;
+  proxiesPollTimer = setTimeout(() => {
+    proxiesPollTimer = null;
+    if (proxyPanelVisible()) loadProxies(true);
+  }, proxiesData && proxiesData.running ? 2000 : 10000);
+}
+
+function beginProxyRequest(kind) {
+  if (proxiesAccessDenied || (proxiesRequest && (kind === 'status' || proxiesRequest.kind !== 'status'))) return null;
+  stopProxyPolling(kind !== 'status');
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  const request = { kind, controller, timeout: null, timedOut: false };
+  request.timeout = setTimeout(() => { request.timedOut = true; if (controller) controller.abort(); }, 20000);
+  proxiesRequest = request;
+  updateProxyControls();
+  return request;
+}
+
+function finishProxyRequest(request) {
+  clearTimeout(request.timeout);
+  if (proxiesRequest !== request) return;
+  proxiesRequest = null;
+  updateProxyControls();
+  scheduleProxyPoll();
+}
+
+async function checkProxyResponse(response) {
+  if (response.status === 401 || response.status === 403) {
+    const error = new Error(response.status === 401 ? 'Сессия истекла. Войдите в аккаунт снова.' : 'Нет доступа. Требуется роль администратора.');
+    error.accessDenied = true;
+    throw error;
+  }
+  if (!response.ok) throw new Error(await vpnResponseError(response));
+}
+
+function proxyRequestError(request, error, prefix) {
+  if (proxiesRequest !== request) return;
+  if (error.accessDenied) { proxiesAccessDenied = true; stopProxyPolling(); }
+  const message = request.timedOut ? 'Превышено время ожидания ответа сервера.' : error.message;
+  proxyStatus(prefix + message, 'error', request.kind === 'status' ? 'load' : 'action');
+}
+
+async function loadProxies(quiet = false) {
+  const request = beginProxyRequest('status');
+  if (!request) return;
+  if (!quiet) proxyStatus('Загружаем состояние прокси…', '', 'load');
+  try {
+    const response = await fetch('/api/admin/proxies', { cache: 'no-store', signal: request.controller && request.controller.signal });
+    if (proxiesRequest !== request) return;
+    await checkProxyResponse(response);
+    const data = await response.json();
+    if (proxiesRequest !== request) return;
+    renderProxies(data);
+    if (proxiesMessageOrigin === 'load') proxyStatus('', '', 'load');
+  } catch (error) { proxyRequestError(request, error, 'Не удалось обновить состояние прокси: '); }
+  finally { finishProxyRequest(request); }
+}
+
+function proxyLines(value) {
+  return [...new Set(String(value || '').split(/\r?\n/).map(line => line.trim()).filter(Boolean))];
+}
+
+function proxyConfigFromForm() {
+  const sources = proxyLines(proxiesSources.value), addresses = proxyLines(proxiesStatic.value);
+  sources.forEach((source, index) => {
+    let url;
+    try { url = new URL(source); } catch (error) {}
+    if (!url || url.protocol !== 'https:' || url.username || url.password || url.hash) {
+      throw new Error('Источник ' + (index + 1) + ': укажите HTTPS-ссылку без логина и пароля.');
+    }
+  });
+  addresses.forEach((address, index) => {
+    let url;
+    try { url = new URL(address.includes('://') ? address : 'http://' + address); } catch (error) {}
+    if (!url || !['http:', 'https:'].includes(url.protocol) || !url.hostname || url.username || url.password ||
+      (url.pathname && url.pathname !== '/') || url.search || url.hash) {
+      throw new Error('Прокси ' + (index + 1) + ': укажите HTTP(S)-адрес IP:порт без логина и пароля.');
+    }
+  });
+  return { enabled: !!proxiesEnabled.checked, sources, static: addresses };
+}
+
+function proxyFormChanged() {
+  proxiesDirty = true;
+  proxiesEditVersion++;
+  updateProxyControls();
+}
+proxiesEnabled.addEventListener('change', proxyFormChanged);
+proxiesSources.addEventListener('input', proxyFormChanged);
+proxiesStatic.addEventListener('input', proxyFormChanged);
+
+proxiesForm.addEventListener('submit', async event => {
+  event.preventDefault();
+  if (!proxiesLoaded || proxiesAccessDenied || (proxiesRequest && proxiesRequest.kind !== 'status')) return;
+  let config;
+  try { config = proxyConfigFromForm(); }
+  catch (error) { proxyStatus(error.message, 'error'); return; }
+  const request = beginProxyRequest('save');
+  if (!request) return;
+  const editVersion = proxiesEditVersion;
+  proxyStatus('Сохраняем настройки прокси…');
+  let saved = false;
+  try {
+    const response = await fetch('/api/admin/proxies', { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(config), signal: request.controller && request.controller.signal });
+    if (proxiesRequest !== request) return;
+    await checkProxyResponse(response);
+    const data = response.status === 204 ? null : await response.json().catch(() => null);
+    if (proxiesRequest !== request) return;
+    if (editVersion === proxiesEditVersion) proxiesDirty = false;
+    if (data && data.config) renderProxies(data);
+    else {
+      proxiesData = { ...(proxiesData || {}), config };
+      if (!proxiesDirty) fillProxyForm(config);
+    }
+    proxyStatus('Настройки резервных прокси сохранены.', 'success');
+    saved = true;
+  } catch (error) { proxyRequestError(request, error, 'Не удалось сохранить настройки: '); }
+  finally { finishProxyRequest(request); }
+  if (saved && proxyPanelVisible()) await loadProxies(true);
+});
+
+proxiesRefresh.addEventListener('click', async () => {
+  if (!proxiesLoaded || proxiesAccessDenied || (proxiesData && proxiesData.running)) return;
+  const request = beginProxyRequest('refresh');
+  if (!request) return;
+  proxyStatus('Запускаем поиск и проверку прокси…');
+  let started = false;
+  try {
+    const response = await fetch('/api/admin/proxies/refresh', { method: 'POST', signal: request.controller && request.controller.signal });
+    if (proxiesRequest !== request) return;
+    await checkProxyResponse(response);
+    const data = response.status === 204 ? null : await response.json().catch(() => null);
+    if (proxiesRequest !== request) return;
+    if (data && data.config) renderProxies(data);
+    else {
+      proxiesData = { ...(proxiesData || {}), running: true };
+      document.getElementById('proxies-state').textContent = 'Идёт поиск и проверка';
+    }
+    proxyStatus('Проверка запущена. Результаты появятся после завершения.', 'success');
+    started = true;
+  } catch (error) { proxyRequestError(request, error, 'Не удалось запустить проверку: '); }
+  finally { finishProxyRequest(request); }
+  if (started && proxyPanelVisible()) await loadProxies(true);
+});
+
+if (document.addEventListener) document.addEventListener('visibilitychange', () => {
+  stopProxyPolling(true);
+  if (proxyPanelVisible()) loadProxies(true);
 });
 
 // ---- Пользователи ----
@@ -477,6 +752,7 @@ refreshAllBtn.addEventListener('click', () => {
 reloadBtn.addEventListener('click', () => {
   if (currentTab === 'users') loadUsers();
   else if (currentTab === 'vpn') loadVPN();
+  else if (currentTab === 'proxies') loadProxies();
   else { loadFilms(); loadNotFound(); }
 });
 clearLogBtn.addEventListener('click', () => { logEl.innerHTML = ''; });

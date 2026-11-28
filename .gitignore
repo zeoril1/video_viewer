@@ -20,6 +20,7 @@ data/*.local.json
 # Private WireGuard config for the documented non-Compose setup.
 /data/*.conf
 /data/.wireguard-*
+/data/proxies.json
 
 # OS
 .DS_Store
